@@ -1,0 +1,8 @@
+function(neflux_compiler_options target)
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /utf-8 /wd4819 /bigobj $<$<CONFIG:Release>:/O2> $<$<CONFIG:Debug>:/Od /Zi>)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8 -Wno-unused-result -Wno-psabi $<$<CONFIG:Release>:-O2> $<$<CONFIG:Debug>:-O0 -g>)
+    endif()
+endfunction()

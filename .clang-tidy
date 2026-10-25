@@ -1,0 +1,264 @@
+# 配置原则：
+# 1. 默认启用所有主流规则集
+# 2. 按需禁用不适用的规则，每条禁用必须有明确的技术理由
+# 3. 安全相关的警告视为错误，阻断 CI
+#
+# 由于本库横跨底层（内存操作、网络字节序、系统调用）到上层（HTTP、反射），
+# 部分规则在特定场景下必须豁免。
+
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-branch-clone,
+  -bugprone-casting-through-void,
+  -bugprone-crtp-constructor-accessibility,
+  -bugprone-derived-method-shadowing-base-method,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-forwarding-reference-overload,
+  -bugprone-inc-dec-in-conditions,
+  -bugprone-macro-parentheses,
+  -bugprone-reserved-identifier,
+  -bugprone-return-const-ref-from-parameter,
+  -bugprone-signed-bitwise,
+  -bugprone-std-exception-baseclass,
+  -bugprone-unhandled-self-assignment,
+  clang-analyzer-*,
+  -clang-analyzer-core.uninitialized.Assign,
+  -clang-analyzer-deadcode.DeadStores,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-optin.cplusplus.UninitializedObject,
+  concurrency-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-avoid-reference-coroutine-parameters,
+  -cppcoreguidelines-c-copy-assignment-signature,
+  -cppcoreguidelines-explicit-constructor,
+  -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-missing-std-forward,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-prefer-member-initializer,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-const-cast,
+  -cppcoreguidelines-pro-type-member-init,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-rvalue-reference-param-not-moved,
+  -cppcoreguidelines-special-member-functions,
+  -cppcoreguidelines-use-default-member-init,
+  -cppcoreguidelines-use-enum-class,
+  -cppcoreguidelines-no-malloc,
+  hicpp-*,
+  -hicpp-avoid-c-arrays,
+  -hicpp-avoid-magic-numbers,
+  -hicpp-exception-baseclass,
+  -hicpp-explicit-conversions,
+  -hicpp-member-init,
+  -hicpp-no-array-decay,
+  -hicpp-no-assembler,
+  -hicpp-no-malloc,
+  -hicpp-signed-bitwise,
+  -hicpp-special-member-functions,
+  -hicpp-static-assert,
+  -hicpp-vararg,
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-avoid-c-style-cast,
+  -modernize-avoid-variadic-functions,
+  -modernize-loop-convert,
+  -modernize-return-braced-init-list,
+  -modernize-use-bool-literals,
+  -modernize-use-constraints,
+  -modernize-use-default-member-init,
+  -modernize-use-designated-initializers,
+  -modernize-use-std-bit,
+  -modernize-use-std-numbers,
+  -modernize-use-structured-binding,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  -performance-unnecessary-value-param,
+  portability-*,
+  -portability-no-assembler,
+  -portability-simd-intrinsics,
+  readability-*,
+  -readability-avoid-const-params-in-decls,
+  -readability-avoid-nested-conditional-operator,
+  -readability-avoid-unconditional-preprocessor-if,
+  -readability-convert-member-functions-to-static,
+  -readability-else-after-return,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-identifier-naming,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-make-member-function-const,
+  -readability-math-missing-parentheses,
+  -readability-named-parameter,
+  -readability-non-const-parameter,
+  -readability-redundant-access-specifiers,
+  -readability-redundant-casting,
+  -readability-redundant-declaration,
+  -readability-redundant-lambda-parameter-list,
+  -readability-redundant-parentheses,
+  -readability-redundant-qualified-alias,
+  -readability-redundant-typename,
+  -readability-static-accessed-through-instance,
+  -readability-suspicious-call-argument,
+  -readability-trailing-comma,
+  -readability-use-anyofallof,
+  -readability-use-concise-preprocessor-directives
+
+WarningsAsErrors: >
+  bugprone-narrowing-conversions,
+  bugprone-unchecked-optional-access,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-pro-type-*,
+  cppcoreguidelines-slicing,
+  modernize-avoid-bind,
+  performance-*,
+  performance-inefficient-vector-operation,
+  readability-braces-around-statements,
+  readability-redundant-declaration
+
+HeaderFilterRegex: '^(include/|src/).*\.(h|hpp)$'
+FormatStyle: file
+SystemHeaders: false
+
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  - key: readability-identifier-naming.NamespacePrefix
+    value: ''
+
+  - key: readability-identifier-naming.ClassCase
+    value: lower_case
+
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+
+  - key: readability-identifier-naming.EnumCase
+    value: ''
+
+  - key: readability-identifier-naming.EnumConstantCase
+    value: ''
+
+  - key: readability-identifier-naming.ConstantCase
+    value: ''
+
+  - key: readability-identifier-naming.ConstantPrefix
+    value: ''
+
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.VariablePrefix
+    value: ''
+
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.GlobalVariablePrefix
+    value: 'g_'
+
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: '_'
+
+  - key: readability-identifier-naming.PublicMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '^__.*'
+
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ParameterPrefix
+    value: ''
+
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '.*_HPP_*'
+
+  - key: readability-identifier-naming.TypedefCase
+    value: ''
+
+  - key: readability-identifier-naming.TypeAliasCase
+    value: ''
+
+  - key: readability-identifier-naming.ConceptCase
+    value: ''
+
+  - key: readability-identifier-length.IgnoredVariableNames
+    value: '^[ijkn]$|^x$|^y$|^z$|^e$|^id$|^io$'
+
+  - key: readability-line-length.LineLength
+    value: 120
+
+  - key: readability-magic-numbers.IgnoredNumbers
+    value: '0;1;2;3;4;8;16;32;64;128;256;512;1024;2048;4096'
+
+  - key: clang-analyzer-optin.cplusplus.VirtualCall.FunctionSizeThreshold
+    value: 200
+
+  - key: modernize-use-auto.MinTypeNameLength
+    value: 5
+
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'neforce::cbyte_view;neforce::byte_view;neforce::string_view;neforce::function'
+
+  - key: bugprone-assert-side-effect.AssertMacros
+    value: 'assert;NEFORCE_DEBUG_VERIFY;NEFORCE_CONSTEXPR_ASSERT;NEFORCE_ASSERTION'
+
+  - key: cppcoreguidelines-function-params-max-parameters.AllowedCount
+    value: 5
+
+  - key: performance-unnecessary-copy-initialization.AllowedTypes
+    value: 'neforce::shared_ptr;neforce::unique_ptr;neforce::weak_ptr'
+
+  - key: readability-uppercase-literal-suffix.IgnoreMacros
+    value: true
+
+  - key: cppcoreguidelines-avoid-capturing-lambda-by-reference-default.IgnoredRegexp
+    value: '^.*$'
+
+  - key: cppcoreguidelines-avoid-non-const-global-variables.AllowNonConstGlobals
+    value: false
+
+  - key: readability-identifier-naming.IgnoreFailedSplit
+    value: true
+
+  - key: cert-err33-c.CheckedFunctions
+    value: 'neforce::expected'
+
+  - key: cppcoreguidelines-pro-type-union-access.Allow
+    value: true

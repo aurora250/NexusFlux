@@ -1,0 +1,18 @@
+{
+  "standard": 20,
+  "project": {
+    "name": "NexusFlux",
+    "binary": "nexus-flux",
+    "alias": "neflux",
+    "version": "0.1.0"
+  },
+  "build": {
+    "tests": true,
+    "warnings-as-errors": false
+  },
+  "platform": {
+    "windows": ["ws2_32", "iphlpapi", "psapi", "dxgi", "user32", "advapi32"],
+    "linux": [],
+    "macos": []
+  }
+}

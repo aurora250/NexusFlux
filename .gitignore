@@ -1,0 +1,82 @@
+# ====================
+# tmp files
+# ====================
+*~
+*.orig
+*.rej
+*.pyc
+.tmp*
+.DS_Store
+
+# ====================
+# IDE and editors
+# ====================
+.idea/
+.qtcreator/
+.vs/
+.vscode/
+.cache/
+.clangd/
+.scratch*/
+.cache
+
+# ====================
+# python
+# ====================
+pythonenv*
+
+# ====================
+# docs and LLM
+# ====================
+/lldb/docs/python_api/
+.agents/
+/CLAUDE.md
+/instructions.md
+.claude/
+/GEMINI.md
+.gemini/
+AGENTS.md
+.codex/
+
+# ====================
+# cursor
+# ====================
+.cursor
+.cursorignore
+.cursorindexingignore
+
+# ====================
+# build and compilation
+# ====================
+out/
+vcpkg_installed/
+/tags
+/TAGS
+/build*
+/cmake-build*
+/bench_out
+
+# ====================
+# test resources
+# ====================
+tests/resource/authcode
+tests/resource/db_config.json
+
+# ====================
+# user and compilation configs
+# ====================
+.gitusers
+/compile_commands.json
+/tablegen_compile_commands.yml
+valgrind.xml
+/CMakeSettings.json
+/*/CMakeUserPresets.json
+CMakeLists.txt.user
+test_log*
+
+# ====================
+# others
+# ====================
+examples/network/vue-app
+PROMOTION.md
+tests/unit/snapshots/.fuse_hidden*
