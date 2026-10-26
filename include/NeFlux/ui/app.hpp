@@ -30,7 +30,7 @@ namespace neforce::neflux::ui {
      * @param height 终端行数
      * @return 纯文本帧
      */
-    NEFORCE_NODISCARD string render_plaintext(const snapshot& value, const inventory& data, config cfg,
+    NEFORCE_NODISCARD string render_plaintext(const snapshot& value, const inventory& data, const config& cfg,
                                               const string& view_name, int width, int height);
 
     /**
@@ -44,9 +44,9 @@ namespace neforce::neflux::ui {
      * @param height 终端行数
      * @return SVG 文本
      */
-    NEFORCE_NODISCARD string render_svg_history(const vector<snapshot>& values, const inventory& data, config cfg,
-                                                const string& view_name, const string& gpu_panel, int width,
-                                                int height);
+    NEFORCE_NODISCARD string render_svg_history(const vector<snapshot>& values, const inventory& data,
+                                                const config& cfg, const string& view_name, const string& gpu_panel,
+                                                int width, int height);
 
     /**
      * @brief 离屏渲染 SVG

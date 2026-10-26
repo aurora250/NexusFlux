@@ -1,29 +1,28 @@
+#include <NeForce/core/container/flat_unordered_map.hpp>
 #include <NeFlux/common.hpp>
 #include <NeFlux/collect.hpp>
-#include <NeFlux/advanced.hpp>
 #include <NeFlux/connections.hpp>
+#include <NeFlux/advanced.hpp>
 #include <NeFlux/gpu.hpp>
+#include <NeFlux/model.hpp>
+#include <NeFlux/platform.hpp>
 #include <NeFlux/util.hpp>
-#include <NeForce/core/file/filesystem.hpp>
+#include <NeForce/core/file/path.hpp>
+#include <NeForce/core/string/format.hpp>
+#include <NeForce/core/system/process.hpp>
 #include <NeForce/core/system/sysinfo.hpp>
-#include <NeForce/core/system/mount.hpp>
-#include <NeForce/core/container/set.hpp>
-#include <cstddef>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/statvfs.h>
-#include <sys/utsname.h>
-#include <unistd.h>
+#if NEFLUX_PLATFORM_LINUX
+#    include <sys/statvfs.h>
+#    include <sys/utsname.h>
+#    include <unistd.h>
+#    include <cstdio>
+#endif
 namespace neforce::neflux {
 
     namespace {
-
+#if NEFLUX_PLATFORM_LINUX
         constexpr double sensor_refresh_seconds = 2.0;
         constexpr double storage_refresh_seconds = 10.0;
-
-        string proc_path(const char* format_value) { return string("/proc/") + format_value; }
 
         string read_file(const string& file_path, size_t limit = 0) {
             auto text = read_text_file(file_path);
@@ -35,12 +34,10 @@ namespace neforce::neflux {
             }
             return *text;
         }
-
         string host_name() {
             const auto text = trim(read_file("/proc/sys/kernel/hostname"));
             return text.empty() ? "localhost" : text;
         }
-
         string kernel_version() {
             ::utsname info{};
             if (::uname(&info) == 0) {
@@ -48,7 +45,6 @@ namespace neforce::neflux {
             }
             return {};
         }
-
         string os_name() {
             string name;
             string version;
@@ -73,14 +69,12 @@ namespace neforce::neflux {
             }
             return version.empty() ? format("Linux ({})", name) : format("Linux ({} {})", name, version);
         }
-
         uint64_t uptime_seconds() {
             const auto text = read_file("/proc/uptime");
             const auto first = text.substr(0, text.find(' '));
             const auto value = parse_f64(first.view());
             return value.has_value() ? static_cast<uint64_t>(*value) : 0;
         }
-
         string cpu_brand() {
             const auto text = read_file("/proc/cpuinfo");
             for (const auto& line: split_lines(text)) {
@@ -99,7 +93,6 @@ namespace neforce::neflux {
             }
             return {};
         }
-
         uint64_t physical_core_count() {
             const auto text = read_file("/proc/cpuinfo");
             set<string> seen;
@@ -123,100 +116,6 @@ namespace neforce::neflux {
             }
             return seen.empty() ? 0 : seen.size();
         }
-
-        struct cpu_line {
-            uint64_t fields[10] = {};
-            size_t count = 0;
-        };
-
-        vector<cpu_line> read_cpu_lines() {
-            vector<cpu_line> lines;
-            const auto text = read_file("/proc/stat");
-            for (const auto& line: split_lines(text)) {
-                if (!starts_with(line.view(), "cpu")) {
-                    continue;
-                }
-                size_t begin = 3;
-                while (begin < line.size() && line[begin] >= '0' && line[begin] <= '9') {
-                    ++begin;
-                }
-                cpu_line entry;
-                const auto parts = split_whitespace(line.view().substr(begin));
-                for (size_t i = 0; i < parts.size() && i < 10; ++i) {
-                    const auto value = parse_u64(parts[i].view());
-                    entry.fields[i] = value.has_value() ? *value : 0;
-                    entry.count = i + 1;
-                }
-                if (entry.count >= 4) {
-                    lines.push_back(entry);
-                }
-            }
-            return lines;
-        }
-
-        vector<uint64_t> aggregate_counters(const vector<cpu_line>& lines) {
-            vector<uint64_t> out;
-            if (lines.empty()) {
-                return out;
-            }
-            for (size_t i = 0; i < lines[0].count; ++i) {
-                out.push_back(lines[0].fields[i]);
-            }
-            return out;
-        }
-
-        vector<float> core_percentages(const vector<cpu_line>& previous, const vector<cpu_line>& current) {
-            vector<float> out;
-            if (previous.size() != current.size()) {
-                return out;
-            }
-            out.reserve(current.size());
-            for (size_t index = 1; index < current.size(); ++index) {
-                uint64_t total_delta = 0;
-                uint64_t idle_delta = 0;
-                bool valid = true;
-                for (size_t field = 0; field < 4; ++field) {
-                    if (current[index].fields[field] < previous[index].fields[field]) {
-                        valid = false;
-                        break;
-                    }
-                    total_delta += current[index].fields[field] - previous[index].fields[field];
-                    if (field == 3) {
-                        idle_delta = current[index].fields[field] - previous[index].fields[field];
-                    }
-                }
-                if (!valid || total_delta == 0) {
-                    out.push_back(0.0F);
-                    continue;
-                }
-                out.push_back(static_cast<float>(100.0 * static_cast<double>(total_delta - idle_delta) /
-                                                 static_cast<double>(total_delta)));
-            }
-            return out;
-        }
-
-        float global_cpu_percent(const vector<cpu_line>& previous, const vector<cpu_line>& current) {
-            if (previous.empty() || current.empty()) {
-                return 0.0F;
-            }
-            uint64_t total_delta = 0;
-            uint64_t idle_delta = 0;
-            for (size_t field = 0; field < 4; ++field) {
-                if (current[0].fields[field] < previous[0].fields[field]) {
-                    return 0.0F;
-                }
-                total_delta += current[0].fields[field] - previous[0].fields[field];
-                if (field == 3) {
-                    idle_delta = current[0].fields[field] - previous[0].fields[field];
-                }
-            }
-            if (total_delta == 0) {
-                return 0.0F;
-            }
-            return static_cast<float>(100.0 * static_cast<double>(total_delta - idle_delta) /
-                                      static_cast<double>(total_delta));
-        }
-
         uint64_t cpu_frequency_mhz() {
             uint64_t total = 0;
             uint64_t count = 0;
@@ -243,7 +142,6 @@ namespace neforce::neflux {
             }
             return 0;
         }
-
         struct topology_entry {
             optional<uint32_t> package;
             optional<uint32_t> core;
@@ -265,7 +163,6 @@ namespace neforce::neflux {
             }
             return out;
         }
-
         vector<optional<float>> core_temperatures(const vector<topology_entry>& topology) {
             map<pair<uint32_t, uint32_t>, float> temperatures;
             for (uint32_t index = 0; index < 64; ++index) {
@@ -275,8 +172,8 @@ namespace neforce::neflux {
                     continue;
                 }
                 optional<uint32_t> package;
-                map<string, uint32_t> core_labels;
-                map<string, string> inputs;
+                flat_unordered_map<string, uint32_t> core_labels;
+                flat_unordered_map<string, string> inputs;
                 for (uint32_t sensor = 1; sensor < 64; ++sensor) {
                     const string label_name = format("temp{}_label", sensor);
                     const auto label = trim(read_file(base + label_name));
@@ -320,7 +217,6 @@ namespace neforce::neflux {
             }
             return out;
         }
-
         void read_load(float (&load)[3]) {
             const auto parts = split_whitespace(read_file("/proc/loadavg").view());
             for (size_t i = 0; i < 3 && i < parts.size(); ++i) {
@@ -328,7 +224,6 @@ namespace neforce::neflux {
                 load[i] = value.has_value() ? static_cast<float>(*value) : 0.0F;
             }
         }
-
         struct proc_meminfo {
             optional<uint64_t> total;
             optional<uint64_t> available;
@@ -373,218 +268,6 @@ namespace neforce::neflux {
             }
             return info;
         }
-
-        map<uint32_t, string> read_users() {
-            map<uint32_t, string> users;
-            const auto text = read_file("/etc/passwd");
-            for (const auto& line: split_lines(text)) {
-                const auto fields = split(line.view(), ':', true);
-                if (fields.size() < 3) {
-                    continue;
-                }
-                const auto uid = parse_u64(fields[2].view());
-                if (uid.has_value()) {
-                    users[static_cast<uint32_t>(*uid)] = fields[0];
-                }
-            }
-            return users;
-        }
-
-        struct stat_fields {
-            string name;
-            vector<string> fields;
-
-            NEFORCE_NODISCARD bool valid() const { return fields.size() >= 22; }
-
-            NEFORCE_NODISCARD uint64_t number(size_t index) const {
-                if (index >= fields.size()) {
-                    return 0;
-                }
-                const auto value = parse_u64(fields[index].view());
-                return value.has_value() ? *value : 0;
-            }
-        };
-
-        stat_fields parse_stat(const string& text) {
-            stat_fields result;
-            const auto begin = text.find('(');
-            const auto end = text.rfind(')');
-            if (begin == string::npos || end == string::npos || end <= begin) {
-                return result;
-            }
-            result.name = text.substr(begin + 1, end - begin - 1);
-            result.fields = split_whitespace(text.view().substr(end + 1));
-            return result;
-        }
-
-        pair<uint64_t, uint64_t> parse_io(const string& text) {
-            uint64_t read_bytes = 0;
-            uint64_t write_bytes = 0;
-            for (const auto& line: split_lines(text)) {
-                if (starts_with(line.view(), "read_bytes:")) {
-                    const auto value = parse_u64(trim(line.view().substr(11)).view());
-                    read_bytes = value.has_value() ? *value : 0;
-                } else if (starts_with(line.view(), "write_bytes:")) {
-                    const auto value = parse_u64(trim(line.view().substr(12)).view());
-                    write_bytes = value.has_value() ? *value : 0;
-                }
-            }
-            return {read_bytes, write_bytes};
-        }
-
-        optional<uint32_t> parse_uid(const string& status) {
-            for (const auto& line: split_lines(status)) {
-                if (!starts_with(line.view(), "Uid:")) {
-                    continue;
-                }
-                const auto parts = split_whitespace(line.view().substr(4));
-                if (!parts.empty()) {
-                    const auto value = parse_u64(parts[0].view());
-                    if (value.has_value()) {
-                        return static_cast<uint32_t>(*value);
-                    }
-                }
-            }
-            return none;
-        }
-
-        string process_state(const string& code) {
-            if (code == "R") {
-                return "Runnable";
-            }
-            if (code == "S") {
-                return "Sleeping";
-            }
-            if (code == "D") {
-                return "UninterruptibleDiskSleep";
-            }
-            if (code == "Z") {
-                return "Zombie";
-            }
-            if (code == "T") {
-                return "Stopped";
-            }
-            if (code == "t") {
-                return "Tracing";
-            }
-            if (code == "X" || code == "x") {
-                return "Dead";
-            }
-            if (code == "I") {
-                return "Idle";
-            }
-            if (code == "P") {
-                return "Parked";
-            }
-            return "Unknown";
-        }
-
-        struct cached_process {
-            uint64_t start = 0;
-            uint64_t cpu = 0;
-            uint64_t read = 0;
-            uint64_t written = 0;
-            string name;
-            string command;
-            optional<uint32_t> uid;
-            bool valid = false;
-        };
-
-        string command_line(const string& directory) {
-            const auto text = read_file(directory + "/cmdline", 8 * 1024 * 1024);
-            string out;
-            out.reserve(text.size());
-            for (size_t i = 0; i < text.size(); ++i) {
-                const auto c = static_cast<unsigned char>(text[i]);
-                if (c == 0) {
-                    if (i + 1 < text.size() && !out.empty() && out[out.size() - 1] != ' ') {
-                        out.push_back(' ');
-                    }
-                    continue;
-                }
-                if (c < 0x20 || c == 0x7F) {
-                    continue;
-                }
-                out.push_back(static_cast<char>(c));
-            }
-            while (!out.empty() && out[out.size() - 1] == ' ') {
-                out.resize(out.size() - 1);
-            }
-            return out;
-        }
-
-        uint64_t boot_time() {
-            const auto text = read_file("/proc/stat");
-            for (const auto& line: split_lines(text)) {
-                if (starts_with(line.view(), "btime ")) {
-                    const auto value = parse_u64(trim(line.view().substr(6)).view());
-                    if (value.has_value()) {
-                        return *value;
-                    }
-                }
-            }
-            return 0;
-        }
-
-        string interface_address(const string& name) {
-            string out;
-            ::ifaddrs* list = nullptr;
-            if (::getifaddrs(&list) != 0 || list == nullptr) {
-                return out;
-            }
-            for (const ifaddrs* item = list; item != nullptr; item = item->ifa_next) {
-                if (item->ifa_addr == nullptr || name != item->ifa_name) {
-                    continue;
-                }
-                char buffer[INET6_ADDRSTRLEN] = {};
-                const int family = item->ifa_addr->sa_family;
-                if (family == AF_INET) {
-                    const auto* address = reinterpret_cast<::sockaddr_in*>(item->ifa_addr);
-                    if (::inet_ntop(AF_INET, &address->sin_addr, buffer, sizeof(buffer)) != nullptr) {
-                        if (!out.empty()) {
-                            out.append(", ");
-                        }
-                        out.append(buffer);
-                    }
-                } else if (family == AF_INET6) {
-                    const auto* address = reinterpret_cast<::sockaddr_in6*>(item->ifa_addr);
-                    if (::inet_ntop(AF_INET6, &address->sin6_addr, buffer, sizeof(buffer)) != nullptr) {
-                        if (!out.empty()) {
-                            out.append(", ");
-                        }
-                        out.append(buffer);
-                    }
-                }
-            }
-            ::freeifaddrs(list);
-            return out;
-        }
-
-        struct net_counters {
-            uint64_t rx = 0;
-            uint64_t tx = 0;
-            uint64_t rx_packets = 0;
-            uint64_t tx_packets = 0;
-        };
-
-        net_counters read_net_counters(const string& name) {
-            net_counters counters;
-            const string base = "/sys/class/net/" + name + "/statistics/";
-            if (const auto value = parse_u64(trim(read_file(base + "rx_bytes")).view()); value.has_value()) {
-                counters.rx = *value;
-            }
-            if (const auto value = parse_u64(trim(read_file(base + "tx_bytes")).view()); value.has_value()) {
-                counters.tx = *value;
-            }
-            if (const auto value = parse_u64(trim(read_file(base + "rx_packets")).view()); value.has_value()) {
-                counters.rx_packets = *value;
-            }
-            if (const auto value = parse_u64(trim(read_file(base + "tx_packets")).view()); value.has_value()) {
-                counters.tx_packets = *value;
-            }
-            return counters;
-        }
-
         vector<string> list_directory(const string& directory) {
             vector<string> out;
             const auto entries = path(directory).children();
@@ -593,12 +276,10 @@ namespace neforce::neflux {
             }
             return out;
         }
-
         string device_name(const string& source) {
             const auto slash = source.rfind('/');
             return slash == string::npos ? source : source.substr(slash + 1);
         }
-
         string block_parent(const string& device) {
             string parent = device;
             while (!parent.empty() && parent[parent.size() - 1] >= '0' && parent[parent.size() - 1] <= '9') {
@@ -609,7 +290,6 @@ namespace neforce::neflux {
             }
             return parent.empty() ? device : parent;
         }
-
         string block_kind(const string& device) {
             const string parent = block_parent(device);
             const auto rotational = trim(read_file("/sys/class/block/" + parent + "/queue/rotational"));
@@ -621,12 +301,10 @@ namespace neforce::neflux {
             }
             return "Unknown";
         }
-
         bool block_removable(const string& device) {
             const string parent = block_parent(device);
             return trim(read_file("/sys/class/block/" + parent + "/removable")) == "1";
         }
-
         json statvfs_fields(const string& mount) {
             json fields = json::object();
             struct ::statvfs info{};
@@ -638,11 +316,10 @@ namespace neforce::neflux {
             }
             return fields;
         }
-
         vector<disk> read_disks() {
             vector<disk> out;
             set<string> seen;
-            for (const auto& mount_point: ::neforce::mount_points()) {
+            for (const auto& mount_point: sysinfo::mount_points()) {
                 if (!seen.insert(mount_point.target).second) {
                     continue;
                 }
@@ -672,7 +349,6 @@ namespace neforce::neflux {
             stable_sort_by_index(out, [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
             return out;
         }
-
         vector<sensor> read_sensors() {
             vector<sensor> out;
             for (uint32_t index = 0; index < 64; ++index) {
@@ -699,7 +375,6 @@ namespace neforce::neflux {
             }
             return out;
         }
-
         vector<battery> read_batteries() {
             vector<battery> out;
             uint32_t index = 0;
@@ -787,7 +462,6 @@ namespace neforce::neflux {
             }
             return out;
         }
-
         vector<pressure> read_pressure() {
             vector<pressure> out;
             for (const char* name: {"cpu", "memory", "io"}) {
@@ -827,17 +501,107 @@ namespace neforce::neflux {
             return out;
         }
 
-        string container_name_from_cgroup(const string& text) {
-            for (const auto& line: split_lines(text)) {
-                if (line.contains("docker") || line.contains("podman")) {
-                    return line;
+#endif
+
+        struct process_sample {
+            uint64_t cpu_ms = 0;
+            uint64_t read_bytes = 0;
+            uint64_t write_bytes = 0;
+            uint64_t start_ms = 0;
+            bool valid = false;
+        };
+
+        string process_state_text(const ::neforce::process::snapshot_entry& entry) {
+#if NEFLUX_PLATFORM_LINUX
+            if (entry.state_code != 0) {
+                switch (entry.state_code) {
+                    case 'R':
+                        return "Runnable";
+                    case 'S':
+                        return "Sleeping";
+                    case 'D':
+                        return "UninterruptibleDiskSleep";
+                    case 'Z':
+                        return "Zombie";
+                    case 'T':
+                        return "Stopped";
+                    case 't':
+                        return "Tracing";
+                    case 'X':
+                    case 'x':
+                        return "Dead";
+                    case 'I':
+                        return "Idle";
+                    case 'P':
+                        return "Parked";
+                    default:
+                        break;
                 }
             }
-            return {};
+#endif
+            switch (entry.status) {
+                case ::neforce::process::state::running:
+                    return "Running";
+                case ::neforce::process::state::suspended:
+                    return "Suspended";
+                case ::neforce::process::state::stopped:
+                    return "Stopped";
+                case ::neforce::process::state::exited:
+                    return "Exited";
+                default:
+                    return "Unknown";
+            }
+        }
+
+        string system_host_name() {
+#if NEFLUX_PLATFORM_LINUX
+            return host_name();
+#else
+            return sysinfo::instance().get_hostname();
+#endif
+        }
+
+        string system_os_name() {
+#if NEFLUX_PLATFORM_LINUX
+            return os_name();
+#else
+            return sysinfo::instance().get_os_version_info().product_name;
+#endif
+        }
+
+        string system_kernel_version() {
+#if NEFLUX_PLATFORM_LINUX
+            return kernel_version();
+#else
+            return sysinfo::instance().get_os_version_info().version();
+#endif
+        }
+
+        uint64_t system_uptime_seconds() {
+#if NEFLUX_PLATFORM_LINUX
+            return uptime_seconds();
+#else
+            return sysinfo::uptime_seconds();
+#endif
+        }
+
+        string system_cpu_brand() {
+#if NEFLUX_PLATFORM_LINUX
+            return cpu_brand();
+#else
+            return sysinfo::instance().get_cpu_info().brand;
+#endif
+        }
+
+        uint64_t system_physical_cores() {
+#if NEFLUX_PLATFORM_LINUX
+            return physical_core_count();
+#else
+            return sysinfo::instance().get_cpu_info().cores;
+#endif
         }
 
     } // namespace
-
 
     double rate(optional<uint64_t> previous, uint64_t current, double seconds) {
         if (!previous.has_value() || current < *previous || seconds <= 0.0) {
@@ -909,67 +673,37 @@ namespace neforce::neflux {
 
     struct collector::impl {
         bool gpu_enabled = true;
-        vector<cpu_line> previous_cpu;
-        vector<uint64_t> previous_aggregate;
-        map<string, net_counters> previous_networks;
-        map<string, tuple<uint64_t, uint64_t, uint64_t>> previous_disks;
-        map<uint32_t, cached_process> processes;
-        map<uint32_t, string> users;
+        flat_unordered_map<uint32_t, process_sample> previous_processes;
+        flat_unordered_map<string, tuple<uint64_t, uint64_t, uint64_t, uint64_t>> previous_networks;
+        connection_collector connections;
+        advanced advanced_telemetry;
+        int64_t process_at = 0;
+        double started_ms = static_cast<double>(monotonic_ms());
+        double previous_at = static_cast<double>(monotonic_ms());
+        gpu_result cached_gpu;
+#if NEFLUX_PLATFORM_LINUX
         vector<topology_entry> topology;
         vector<sensor> sensors;
         vector<battery> batteries;
         vector<disk> disks;
         double sensors_at = -1.0;
         double disks_at = -1.0;
-        uint64_t boot = 0;
-        uint64_t ticks_per_second = 100;
-        uint64_t page_size = 4096;
-        uint64_t started_ms = 0;
-        double previous_at = 0.0;
-        uint64_t uptime = 0;
-        string hostname;
-        string os;
-        string kernel;
-        string cpu_name;
-        uint64_t physical_cores = 0;
-        gpu_result cached_gpu;
-        connection_collector connections;
-        advanced advanced_telemetry;
+#endif
 
-        impl() :
-        boot(boot_time()),
-        started_ms(static_cast<uint64_t>(monotonic_ms())),
-        previous_at(static_cast<double>(monotonic_ms())) {
-            ticks_per_second = static_cast<uint64_t>(::sysconf(_SC_CLK_TCK));
-            if (ticks_per_second == 0) {
-                ticks_per_second = 100;
-            }
-            page_size = static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
-            if (page_size == 0) {
-                page_size = 4096;
-            }
-            hostname = host_name();
-            os = os_name();
-            kernel = kernel_version();
-            const auto& sys_cpu = sysinfo::instance().get_CPU_info();
-            cpu_name = sys_cpu.brand.empty() ? cpu_brand() : sys_cpu.brand;
-            physical_cores = sys_cpu.cores != 0 ? sys_cpu.cores : physical_core_count();
-            users = read_users();
-            topology = read_topology(read_cpu_lines().size() > 1 ? read_cpu_lines().size() - 1 : 0);
-            previous_cpu = read_cpu_lines();
-            previous_aggregate = aggregate_counters(previous_cpu);
-            previous_networks.clear();
-            for (const auto& full: list_directory("/sys/class/net")) {
-                const auto slash = full.rfind('/');
-                const string name = slash == string::npos ? full : full.substr(slash + 1);
-                previous_networks[name] = read_net_counters(name);
-            }
-            previous_disks = parse_diskstats(read_file("/proc/diskstats").view());
-            disks = read_disks();
+        impl() {
+#if NEFLUX_PLATFORM_LINUX
+            topology = read_topology(sysinfo::instance().get_cpu_info().logical_processors);
             sensors = read_sensors();
             batteries = read_batteries();
-            disks_at = static_cast<double>(monotonic_ms());
-            sensors_at = disks_at;
+            disks = read_disks();
+            const double now = static_cast<double>(monotonic_ms());
+            sensors_at = now;
+            disks_at = now;
+#endif
+            static_cast<void>(sysinfo::cpu_usage());
+            static_cast<void>(sysinfo::cpu_usage_per_core());
+            static_cast<void>(sysinfo::cpu_usage_breakdown());
+            static_cast<void>(sysinfo::disk_io_rates());
         }
 
         snapshot sample_exact(const config& cfg, bool processes_enabled, bool live_gpu_processes,
@@ -979,31 +713,71 @@ namespace neforce::neflux {
             previous_at = began;
             const double collection_started = began;
 
-            vector<cpu_line> current_cpu = read_cpu_lines();
-            const auto current_aggregate = aggregate_counters(current_cpu);
-            vector<float> cores = core_percentages(previous_cpu, current_cpu);
-            const float cpu_percent = global_cpu_percent(previous_cpu, current_cpu);
-            json breakdown = cpu_breakdown(previous_aggregate, current_aggregate);
-            previous_cpu = current_cpu;
-            previous_aggregate = current_aggregate;
-
-            if (topology.size() != (current_cpu.empty() ? 0 : current_cpu.size() - 1)) {
-                topology = read_topology(current_cpu.empty() ? 0 : current_cpu.size() - 1);
+            auto& info = sysinfo::instance();
+            const auto& cpu = info.get_cpu_info();
+            const float cpu_percent = static_cast<float>(sysinfo::cpu_usage());
+            vector<float> cores;
+            const auto core_usage = sysinfo::cpu_usage_per_core();
+            cores.reserve(core_usage.size());
+            for (const auto value: core_usage) {
+                cores.push_back(static_cast<float>(value));
+            }
+            if (cores.empty()) {
+                cores.assign(cpu.logical_processors, cpu_percent);
             }
 
-            uptime = uptime_seconds();
-            float load[3] = {0.0F, 0.0F, 0.0F};
-            read_load(load);
+            const auto breakdown_value = sysinfo::cpu_usage_breakdown();
+            json breakdown = json::object();
+            breakdown.set("user", json(breakdown_value.user));
+            breakdown.set("nice", json(breakdown_value.nice));
+            breakdown.set("system", json(breakdown_value.system));
+            breakdown.set("idle", json(breakdown_value.idle));
+            breakdown.set("iowait", json(breakdown_value.iowait));
+            breakdown.set("irq", json(breakdown_value.irq));
+            breakdown.set("softirq", json(breakdown_value.softirq));
+            breakdown.set("steal", json(breakdown_value.steal));
+            breakdown.set("guest", json(breakdown_value.guest));
+            breakdown.set("guest_nice", json(breakdown_value.guest_nice));
 
-            const auto meminfo = read_meminfo();
+            uint64_t cpu_mhz = cpu.current_mhz;
+#if NEFLUX_PLATFORM_LINUX
+            cpu_mhz = cpu_frequency_mhz();
+#endif
+
+            float load[3] = {0.0F, 0.0F, 0.0F};
+#if NEFLUX_PLATFORM_LINUX
+            read_load(load);
+#endif
+
+            const auto memory_status_value = sysinfo::memory_status();
             memory memory_value;
-            memory_value.total_ = meminfo.total.has_value() ? *meminfo.total : 0;
-            memory_value.available_ = meminfo.available.has_value() ? *meminfo.available : 0;
-            memory_value.free_ = meminfo.free;
-            memory_value.cached_ = meminfo.cached;
-            memory_value.swap_total_ = meminfo.swap_total.has_value() ? *meminfo.swap_total : 0;
-            const uint64_t swap_free = meminfo.swap_free.has_value() ? *meminfo.swap_free : 0;
+            memory_value.total_ = memory_status_value.total_physical;
+            memory_value.available_ = memory_status_value.available_physical;
+            memory_value.free_ = memory_status_value.available_physical;
+            const uint64_t swap_free = memory_status_value.available_page_file;
+            memory_value.swap_total_ = memory_status_value.total_page_file;
             memory_value.swap_used_ = memory_value.swap_total_ > swap_free ? memory_value.swap_total_ - swap_free : 0;
+#if NEFLUX_PLATFORM_LINUX
+            const auto meminfo = read_meminfo();
+            if (meminfo.total.has_value()) {
+                memory_value.total_ = *meminfo.total;
+            }
+            if (meminfo.available.has_value()) {
+                memory_value.available_ = *meminfo.available;
+            }
+            if (meminfo.free.has_value()) {
+                memory_value.free_ = *meminfo.free;
+            }
+            if (meminfo.cached.has_value()) {
+                memory_value.cached_ = *meminfo.cached;
+            }
+            if (meminfo.swap_total.has_value()) {
+                memory_value.swap_total_ = *meminfo.swap_total;
+            }
+            const uint64_t swap_free_value = meminfo.swap_free.value_or(0);
+            memory_value.swap_used_ =
+                    memory_value.swap_total_ > swap_free_value ? memory_value.swap_total_ - swap_free_value : 0;
+#endif
             memory_value.used_ =
                     memory_value.total_ > memory_value.available_ ? memory_value.total_ - memory_value.available_ : 0;
 
@@ -1013,24 +787,52 @@ namespace neforce::neflux {
             }
 
             vector<network> networks = collect_networks(elapsed);
-            vector<disk> current_disks = disks;
+
+            vector<disk> current_disks = collect_disks();
+#if NEFLUX_PLATFORM_LINUX
+            current_disks = disks;
             if (began - disks_at >= storage_refresh_seconds * 1000.0) {
                 current_disks = read_disks();
                 disks = current_disks;
                 disks_at = began;
             }
+#else
+            current_disks = collect_disks();
+#endif
+
+            vector<sensor> sensors_value;
+            vector<battery> batteries_value = collect_batteries();
+#if NEFLUX_PLATFORM_LINUX
             if (began - sensors_at >= sensor_refresh_seconds * 1000.0) {
                 sensors = read_sensors();
                 batteries = read_batteries();
                 sensors_at = began;
             }
-            vector<disk_io> disk_io_values = collect_disk_io(elapsed);
-            const auto core_temperatures_value = core_temperatures(topology);
-            const auto pressure_values = read_pressure();
+            sensors_value = sensors;
+            batteries_value = batteries;
+#endif
+
+            vector<disk_io> disk_io_values;
+            for (const auto& item: sysinfo::disk_io_rates()) {
+                disk_io value;
+                value.name_ = item.name;
+                value.read_per_sec_ = item.read_bytes_per_second;
+                value.write_per_sec_ = item.write_bytes_per_second;
+                value.busy_percent_ = item.busy_percent;
+                value.aggregate_ = item.aggregate;
+                disk_io_values.push_back(move(value));
+            }
+            vector<optional<float>> core_temperatures_value;
+            vector<pressure> pressure_values;
+#if NEFLUX_PLATFORM_LINUX
+            core_temperatures_value = core_temperatures(topology);
+            pressure_values = read_pressure();
+#endif
+
             const auto gpu_values = collect_gpus(gpu_enabled, live_gpu_processes);
             cached_gpu = gpu_values;
 
-            map<uint32_t, tuple<optional<uint64_t>, optional<uint32_t>, vector<uint32_t>>> gpu_processes;
+            flat_unordered_map<uint32_t, tuple<optional<uint64_t>, optional<uint32_t>, vector<uint32_t>>> gpu_processes;
             for (const auto& device: gpu_values.devices_) {
                 if (const json* mig = device.extra_.get("mig_children");
                     mig != nullptr && mig->is_integer() && mig->as_integer() > 0) {
@@ -1064,22 +866,20 @@ namespace neforce::neflux {
                 return a.pid_ < b.pid_;
             });
 
-            uint64_t cpu_mhz = cpu_frequency_mhz();
-
             snapshot result;
             result.timestamp_ = unix_time();
-            result.elapsed_ = (static_cast<double>(monotonic_ms()) - static_cast<double>(started_ms)) / 1000.0;
+            result.elapsed_ = (static_cast<double>(monotonic_ms()) - started_ms) / 1000.0;
             result.collection_ms_ = 0.0;
-            result.hostname_ = hostname;
-            result.os_ = os;
-            result.kernel_ = kernel;
-            result.uptime_ = uptime;
-            result.cpu_name_ = cpu_name;
+            result.hostname_ = system_host_name();
+            result.os_ = system_os_name();
+            result.kernel_ = system_kernel_version();
+            result.uptime_ = system_uptime_seconds();
+            result.cpu_name_ = system_cpu_brand();
             result.cpu_percent_ = cpu_percent;
             result.cpu_mhz_ = cpu_mhz;
             result.cpu_breakdown_ = move(breakdown);
             result.cores_ = move(cores);
-            result.core_temperatures_ = core_temperatures_value;
+            result.core_temperatures_ = move(core_temperatures_value);
             for (size_t i = 0; i < 3; ++i) {
                 result.load_[i] = load[i];
             }
@@ -1088,11 +888,11 @@ namespace neforce::neflux {
             result.networks_ = move(networks);
             result.disks_ = move(current_disks);
             result.disk_io_ = move(disk_io_values);
-            result.sensors_ = sensors;
-            result.batteries_ = batteries;
+            result.sensors_ = move(sensors_value);
+            result.batteries_ = move(batteries_value);
             result.gpus_ = gpu_values.devices_;
             result.gpu_status_ = gpu_values.status_;
-            result.pressure_ = pressure_values;
+            result.pressure_ = move(pressure_values);
             if (connections_enabled) {
                 result.connections_ = connections.collect(true);
             }
@@ -1141,9 +941,10 @@ namespace neforce::neflux {
             result.extra_.set("Collection state", move(collection_state));
 
             json topology_json = json::object();
-            topology_json.set("architecture", json("x86_64"));
             topology_json.set("logical_cores", json(result.cores_.size()));
-            topology_json.set("physical_cores", json(physical_cores));
+            topology_json.set("physical_cores", json(system_physical_cores()));
+#if NEFLUX_PLATFORM_LINUX
+            topology_json.set("architecture", json("x86_64"));
             json frequencies = json::array();
             for (uint32_t index = 0; index < result.cores_.size(); ++index) {
                 const auto value = parse_u64(
@@ -1152,6 +953,7 @@ namespace neforce::neflux {
                 frequencies.push(json(value.has_value() ? *value / 1000 : 0));
             }
             topology_json.set("per_core_frequency_mhz", move(frequencies));
+#endif
             result.extra_.set("CPU topology", move(topology_json));
 
             map<string, uint64_t> states;
@@ -1161,13 +963,9 @@ namespace neforce::neflux {
                     continue;
                 }
                 states[item.state_] += 1;
-                const json* stat = item.extra_.get("stat");
-                if (stat != nullptr && stat->is_object()) {
-                    const json* value = stat->get("threads");
-                    if (value != nullptr && (value->is_integer() || value->is_number())) {
-                        const uint64_t count = static_cast<uint64_t>(value->as_integer());
-                        threads = (threads.has_value() ? *threads : 0) + count;
-                    }
+                const json* value = item.extra_.get("threads");
+                if (value != nullptr && (value->is_integer() || value->is_number())) {
+                    threads = (threads.has_value() ? *threads : 0) + static_cast<uint64_t>(value->as_integer());
                 }
             }
             json counts = json::object();
@@ -1180,259 +978,216 @@ namespace neforce::neflux {
             counts.set("sampled_rows", json(result.processes_.size()));
             result.extra_.set("Process counts", move(counts));
 
-            result.collection_ms_ = (static_cast<double>(monotonic_ms()) - collection_started);
+            result.collection_ms_ = static_cast<double>(monotonic_ms()) - collection_started;
             return result;
         }
 
-        vector<process> collect_processes(double seconds, bool include_threads);
+        vector<process> collect_processes(double seconds, bool include_threads) {
+            vector<process> out;
+            set<uint32_t> seen;
+            for (const auto& entry: ::neforce::process::snapshot()) {
+                process item;
+                item.pid_ = entry.pid;
+                if (entry.parent_pid != 0) {
+                    item.parent_ = entry.parent_pid;
+                }
+                item.start_time_ = entry.start_time_ms / 1000;
+                item.name_ = entry.name;
+                item.command_ = entry.command.empty() ? entry.name : entry.command;
+                item.user_ = entry.user.empty() ? string("—") : entry.user;
+                item.state_ = process_state_text(entry);
+                item.memory_ = entry.rss_bytes;
+                item.virtual_memory_ = entry.virtual_bytes;
+                item.cpu_time_ms_ = entry.user_time_ms + entry.system_time_ms;
+                item.read_total_ = entry.io.read_bytes;
+                item.write_total_ = entry.io.write_bytes;
+                item.kernel_thread_ = entry.kernel_thread;
+#if NEFLUX_PLATFORM_LINUX
+                item.nice_ = entry.nice;
+#endif
+                item.runtime_ = unix_time() > item.start_time_ ? unix_time() - item.start_time_ : 0;
+                item.extra_ = json::object();
+                item.extra_.set("threads", json(static_cast<uint64_t>(entry.threads)));
 
-        vector<network> collect_networks(double seconds);
+                auto& previous = previous_processes[entry.pid];
+                if (previous.valid && previous.start_ms == entry.start_time_ms && seconds > 0.0) {
+                    item.cpu_ = static_cast<float>(static_cast<double>(item.cpu_time_ms_ - previous.cpu_ms) * 100.0 /
+                                                   (seconds * 1000.0));
+                    item.read_per_sec_ =
+                            static_cast<double>(item.read_total_ - previous.read_bytes) / max(0.001, seconds);
+                    item.write_per_sec_ =
+                            static_cast<double>(item.write_total_ - previous.write_bytes) / max(0.001, seconds);
+                }
+                previous.cpu_ms = item.cpu_time_ms_;
+                previous.read_bytes = item.read_total_;
+                previous.write_bytes = item.write_total_;
+                previous.start_ms = entry.start_time_ms;
+                previous.valid = true;
 
-        vector<disk_io> collect_disk_io(double seconds);
-    };
+                seen.insert(entry.pid);
+                out.push_back(move(item));
 
-    vector<process> collector::impl::collect_processes(double seconds, bool include_threads) {
-        vector<process> out;
-        set<uint32_t> seen;
-        for (const auto& full: list_directory("/proc")) {
-            const auto slash = full.rfind('/');
-            const string name = slash == string::npos ? full : full.substr(slash + 1);
-            const auto pid_value = parse_u64(name.view());
-            if (!pid_value.has_value()) {
-                continue;
-            }
-            const auto pid = static_cast<uint32_t>(*pid_value);
-            const string directory = "/proc/" + name;
-            const auto stat_text = read_file(directory + "/stat", 8192);
-            if (stat_text.empty()) {
-                continue;
-            }
-            const auto stat = parse_stat(stat_text);
-            if (!stat.valid()) {
-                continue;
-            }
-            const uint64_t start = stat.number(19);
-            auto& cached = processes[pid];
-            const bool fresh = !cached.valid || cached.start != start;
-            if (fresh) {
-                cached.start = start;
-                cached.name = stat.name;
-                cached.command = command_line(directory);
-                cached.uid = parse_uid(read_file(directory + "/status"));
-                cached.cpu = 0;
-                cached.read = 0;
-                cached.written = 0;
-                cached.valid = true;
-            }
-            const uint64_t total_cpu = stat.number(11) + stat.number(12);
-            process item;
-            item.pid_ = pid;
-            item.parent_ = stat.fields.size() > 1 && !stat.fields[1].empty()
-                                   ? optional<uint32_t>(static_cast<uint32_t>(stat.number(1)))
-                                   : none;
-            item.start_time_ = boot + start / ticks_per_second;
-            item.name_ = cached.name;
-            item.command_ = cached.command;
-            item.user_ = cached.uid.has_value()
-                                 ? (users.count(*cached.uid) != 0 ? users[*cached.uid] : format("{}", *cached.uid))
-                                 : string("—");
-            item.state_ = process_state(stat.fields[0]);
-            item.cpu_ = fresh ? 0.0F
-                              : static_cast<float>(static_cast<double>(total_cpu - cached.cpu) * 100.0 /
-                                                   static_cast<double>(ticks_per_second) / max(0.001, seconds));
-            const auto statm = split_whitespace(read_file(directory + "/statm").view());
-            if (statm.size() >= 2) {
-                const auto virtual_pages = parse_u64(statm[0].view());
-                const auto resident_pages = parse_u64(statm[1].view());
-                item.virtual_memory_ = virtual_pages.has_value() ? *virtual_pages * page_size : stat.number(20);
-                item.memory_ = resident_pages.has_value() ? *resident_pages * page_size : stat.number(21) * page_size;
-            } else {
-                item.virtual_memory_ = stat.number(20);
-                item.memory_ = stat.number(21) * page_size;
-            }
-            const auto io = parse_io(read_file(directory + "/io"));
-            item.read_total_ = io.first;
-            item.write_total_ = io.second;
-            item.read_per_sec_ = fresh ? 0.0 : static_cast<double>(io.first - cached.read) / max(0.001, seconds);
-            item.write_per_sec_ = fresh ? 0.0 : static_cast<double>(io.second - cached.written) / max(0.001, seconds);
-            item.cpu_time_ms_ = total_cpu * 1000 / ticks_per_second;
-            if (stat.fields.size() > 16) {
-                const auto nice = parse_i64(stat.fields[16].view());
-                if (nice.has_value()) {
-                    item.nice_ = static_cast<int32_t>(*nice);
+                if (include_threads) {
+                    for (const auto& thread: ::neforce::process::threads(entry.pid)) {
+                        if (thread.tid == entry.pid) {
+                            continue;
+                        }
+                        process thread_item = out.back();
+                        thread_item.pid_ = thread.tid;
+                        thread_item.thread_ = true;
+                        thread_item.name_ = thread.name.empty() ? thread_item.name_ : thread.name;
+                        thread_item.start_time_ = thread.start_time_ms / 1000;
+                        thread_item.cpu_time_ms_ = thread.user_time_ms + thread.system_time_ms;
+                        thread_item.cpu_ = 0.0F;
+                        thread_item.read_per_sec_ = 0.0;
+                        thread_item.write_per_sec_ = 0.0;
+                        thread_item.memory_ = 0;
+                        thread_item.virtual_memory_ = 0;
+                        out.push_back(move(thread_item));
+                    }
                 }
             }
-            item.kernel_thread_ = (stat.number(6) & 0x200000ULL) != 0;
-            item.runtime_ = unix_time() > item.start_time_ ? unix_time() - item.start_time_ : 0;
+            vector<uint32_t> stale;
+            for (const auto& entry: previous_processes) {
+                if (seen.count(entry.first) == 0) {
+                    stale.push_back(entry.first);
+                }
+            }
+            for (const uint32_t pid: stale) {
+                previous_processes.erase(pid);
+            }
+            return out;
+        }
+
+        vector<network> collect_networks(double seconds) {
+            vector<network> out;
+            flat_unordered_map<string, tuple<uint64_t, uint64_t, uint64_t, uint64_t>> current;
+            for (const auto& item: sysinfo::network_interfaces()) {
+                network value;
+                value.name_ = item.name;
+                value.mac_ = item.mac;
+                value.address_ = item.address;
+                value.mtu_ = item.mtu;
+                value.state_ = item.operstate.empty() ? (item.is_up ? "up" : "down") : item.operstate;
+                if (item.speed_bps > 0) {
+                    value.speed_mbps_ = item.speed_bps / 1000000ULL;
+                }
+                value.rx_packets_ = item.rx_packets;
+                value.tx_packets_ = item.tx_packets;
+                value.rx_errors_ = item.rx_errors;
+                value.tx_errors_ = item.tx_errors;
+                value.errors_ = item.rx_errors + item.tx_errors;
+                value.drops_ = item.rx_dropped + item.tx_dropped;
+                value.rx_total_ = item.rx_bytes;
+                value.tx_total_ = item.tx_bytes;
+                const auto previous = previous_networks.find(item.name);
+                if (previous != previous_networks.end() && seconds > 0.0) {
+                    if (item.rx_bytes >= get<0>(previous->second)) {
+                        value.rx_per_sec_ = static_cast<double>(item.rx_bytes - get<0>(previous->second)) / seconds;
+                    }
+                    if (item.tx_bytes >= get<1>(previous->second)) {
+                        value.tx_per_sec_ = static_cast<double>(item.tx_bytes - get<1>(previous->second)) / seconds;
+                    }
+                    if (item.rx_packets >= get<2>(previous->second)) {
+                        value.rx_packets_per_sec_ =
+                                static_cast<double>(item.rx_packets - get<2>(previous->second)) / seconds;
+                    }
+                    if (item.tx_packets >= get<3>(previous->second)) {
+                        value.tx_packets_per_sec_ =
+                                static_cast<double>(item.tx_packets - get<3>(previous->second)) / seconds;
+                    }
+                }
+                current[item.name] = {item.rx_bytes, item.tx_bytes, item.rx_packets, item.tx_packets};
+                out.push_back(move(value));
+            }
+            previous_networks = move(current);
+            stable_sort_by_index(out, [](const network& a, const network& b) {
+                if (a.rx_per_sec_ != b.rx_per_sec_) {
+                    return a.rx_per_sec_ > b.rx_per_sec_;
+                }
+                return a.name_ < b.name_;
+            });
+            return out;
+        }
+
+        static vector<disk> collect_disks() {
+#if NEFLUX_PLATFORM_LINUX
+            return read_disks();
+#else
+            vector<disk> out;
+            for (const auto& mount: sysinfo::mount_points()) {
+                disk item;
+                item.name_ = mount.source.empty() ? mount.target : mount.source;
+                item.mount_ = mount.target;
+                item.filesystem_ = mount.filesystem;
+                item.available_ = mount.available_bytes;
+                item.total_ = mount.total_bytes;
+                item.used_ = item.total_ > item.available_ ? item.total_ - item.available_ : 0;
+                item.extra_ = json::object();
+                out.push_back(move(item));
+            }
+            stable_sort_by_index(out, [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
+            return out;
+#endif
+        }
+
+        static vector<battery> collect_batteries() {
+#if NEFLUX_PLATFORM_LINUX
+            return read_batteries();
+#else
+            vector<battery> out;
+            const auto info = sysinfo::battery_status();
+            if (!info.present) {
+                return out;
+            }
+            battery item;
+            item.name_ = "Battery";
+            item.status_ = info.status;
+            if (info.charge_percent >= 0.0) {
+                item.percent_ = static_cast<float>(info.charge_percent);
+            }
+            if (info.rate_mw >= 0.0) {
+                item.watts_ = static_cast<float>(info.rate_mw / 1000.0);
+            }
             item.extra_ = json::object();
-            cached.cpu = total_cpu;
-            cached.read = io.first;
-            cached.written = io.second;
-            seen.insert(pid);
+            if (info.capacity_mwh >= 0.0) {
+                item.extra_.set("energy_wh", json(info.capacity_mwh / 1000.0));
+            }
+            if (info.full_capacity_mwh >= 0.0) {
+                item.extra_.set("full_capacity_wh", json(info.full_capacity_mwh / 1000.0));
+            }
+            if (info.remaining_seconds >= 0) {
+                if (info.charging) {
+                    item.extra_.set("time_to_full_seconds", json(static_cast<uint64_t>(info.remaining_seconds)));
+                } else {
+                    item.extra_.set("time_to_empty_seconds", json(static_cast<uint64_t>(info.remaining_seconds)));
+                }
+            }
             out.push_back(move(item));
-
-            if (include_threads) {
-                for (const auto& task_full: list_directory(directory + "/task")) {
-                    const auto task_slash = task_full.rfind('/');
-                    const string task_name = task_slash == string::npos ? task_full : task_full.substr(task_slash + 1);
-                    const auto tid_value = parse_u64(task_name.view());
-                    if (!tid_value.has_value() || static_cast<uint32_t>(*tid_value) == pid) {
-                        continue;
-                    }
-                    const auto task_stat_text = read_file(task_full + "/stat", 8192);
-                    const auto task_stat = parse_stat(task_stat_text);
-                    if (!task_stat.valid()) {
-                        continue;
-                    }
-                    process thread_item = item;
-                    thread_item.pid_ = static_cast<uint32_t>(*tid_value);
-                    thread_item.thread_ = true;
-                    thread_item.name_ = task_stat.name;
-                    thread_item.start_time_ = boot + task_stat.number(19) / ticks_per_second;
-                    thread_item.cpu_time_ms_ = (task_stat.number(11) + task_stat.number(12)) * 1000 / ticks_per_second;
-                    thread_item.cpu_ = 0.0F;
-                    thread_item.read_per_sec_ = 0.0;
-                    thread_item.write_per_sec_ = 0.0;
-                    thread_item.command_ = item.command_;
-                    out.push_back(move(thread_item));
-                }
-            }
+            return out;
+#endif
         }
-        vector<uint32_t> stale;
-        for (const auto& entry: processes) {
-            if (seen.count(entry.first) == 0) {
-                stale.push_back(entry.first);
-            }
-        }
-        for (const uint32_t pid: stale) {
-            processes.erase(pid);
-        }
-        return out;
-    }
-
-    vector<network> collector::impl::collect_networks(double seconds) {
-        vector<network> out;
-        map<string, net_counters> current;
-        map<string, sysinfo::network_interface> sysinfo_interfaces;
-        for (const auto& item: sysinfo::network_interfaces()) {
-            if (sysinfo_interfaces.find(item.name) == sysinfo_interfaces.end()) {
-                sysinfo_interfaces[item.name] = item;
-            }
-        }
-        for (const auto& full: list_directory("/sys/class/net")) {
-            const auto slash = full.rfind('/');
-            const string name = slash == string::npos ? full : full.substr(slash + 1);
-            const auto counters = read_net_counters(name);
-            const string base = "/sys/class/net/" + name + "/";
-            network item;
-            item.name_ = name;
-            item.mac_ = trim(read_file(base + "address"));
-            if (const auto mtu = parse_u64(trim(read_file(base + "mtu")).view()); mtu.has_value()) {
-                item.mtu_ = *mtu;
-            }
-            if (const auto speed = parse_u64(trim(read_file(base + "speed")).view()); speed.has_value() && *speed > 0) {
-                item.speed_mbps_ = *speed;
-            }
-            item.rx_packets_ = counters.rx_packets;
-            item.tx_packets_ = counters.tx_packets;
-            const auto previous = previous_networks.find(name);
-            if (previous != previous_networks.end()) {
-                if (counters.rx_packets >= previous->second.rx_packets) {
-                    item.rx_packets_per_sec_ =
-                            static_cast<double>(counters.rx_packets - previous->second.rx_packets) / seconds;
-                }
-                if (counters.tx_packets >= previous->second.tx_packets) {
-                    item.tx_packets_per_sec_ =
-                            static_cast<double>(counters.tx_packets - previous->second.tx_packets) / seconds;
-                }
-                item.rx_per_sec_ = rate(previous->second.rx, counters.rx, seconds);
-                item.tx_per_sec_ = rate(previous->second.tx, counters.tx, seconds);
-            }
-            const auto rx_errors = parse_u64(trim(read_file(base + "statistics/rx_errors")).view());
-            const auto tx_errors = parse_u64(trim(read_file(base + "statistics/tx_errors")).view());
-            item.rx_errors_ = rx_errors.has_value() ? *rx_errors : 0;
-            item.tx_errors_ = tx_errors.has_value() ? *tx_errors : 0;
-            item.errors_ = item.rx_errors_ + item.tx_errors_;
-            const auto rx_dropped = parse_u64(trim(read_file(base + "statistics/rx_dropped")).view());
-            const auto tx_dropped = parse_u64(trim(read_file(base + "statistics/tx_dropped")).view());
-            item.drops_ = (rx_dropped.has_value() ? *rx_dropped : 0) + (tx_dropped.has_value() ? *tx_dropped : 0);
-            item.rx_total_ = counters.rx;
-            item.tx_total_ = counters.tx;
-            const auto state = trim(read_file(base + "operstate"));
-            item.state_ = state.empty() ? "unknown" : state;
-            item.address_ = interface_address(name);
-            if (const auto known = sysinfo_interfaces.find(name); known != sysinfo_interfaces.end()) {
-                if (item.mac_.empty()) {
-                    item.mac_ = known->second.mac;
-                }
-                if (item.address_.empty()) {
-                    item.address_ = known->second.address;
-                }
-                if (state.empty()) {
-                    item.state_ = known->second.is_up ? "up" : "down";
-                }
-            }
-            current[name] = counters;
-            out.push_back(move(item));
-        }
-        previous_networks = move(current);
-        stable_sort_by_index(out, [](const network& a, const network& b) {
-            if (a.rx_per_sec_ != b.rx_per_sec_) {
-                return a.rx_per_sec_ > b.rx_per_sec_;
-            }
-            return a.name_ < b.name_;
-        });
-        return out;
-    }
-
-    vector<disk_io> collector::impl::collect_disk_io(double seconds) {
-        const auto counters = parse_diskstats(read_file("/proc/diskstats").view());
-        vector<disk_io> out;
-        for (const auto& entry: counters) {
-            disk_io item;
-            item.name_ = entry.first;
-            const auto previous = previous_disks.find(entry.first);
-            if (previous != previous_disks.end()) {
-                item.read_per_sec_ = rate(get<0>(previous->second), get<0>(entry.second), seconds);
-                item.write_per_sec_ = rate(get<1>(previous->second), get<1>(entry.second), seconds);
-                const double busy = rate(get<2>(previous->second), get<2>(entry.second), seconds) / 10.0;
-                item.busy_percent_ = busy < 0.0 ? 0.0 : (busy > 100.0 ? 100.0 : busy);
-            } else {
-                item.busy_percent_ = 0.0;
-            }
-            const string device = "/sys/class/block/" + entry.first;
-            item.aggregate_ = path(device + "/device").exists() && !path(device + "/partition").exists();
-            out.push_back(move(item));
-        }
-        previous_disks = counters;
-        stable_sort_by_index(out, [](const disk_io& a, const disk_io& b) { return a.name_ < b.name_; });
-        return out;
-    }
+    };
 
     snapshot initial_snapshot() {
         snapshot result;
-        result.hostname_ = host_name();
-        result.os_ = os_name();
-        result.kernel_ = kernel_version();
-        result.uptime_ = uptime_seconds();
-        const auto& sys_cpu = sysinfo::instance().get_CPU_info();
-        result.cpu_name_ = sys_cpu.brand.empty() ? cpu_brand() : sys_cpu.brand;
-        const auto cpu_lines = read_cpu_lines();
-        result.cores_.assign(cpu_lines.size() > 1 ? cpu_lines.size() - 1 : 0, 0.0F);
-        read_load(result.load_);
-        const auto meminfo = read_meminfo();
-        result.memory_.total_ = meminfo.total.has_value() ? *meminfo.total : 0;
-        result.memory_.available_ = meminfo.available.has_value() ? *meminfo.available : 0;
-        result.memory_.free_ = meminfo.free;
-        result.memory_.cached_ = meminfo.cached;
-        result.memory_.swap_total_ = meminfo.swap_total.has_value() ? *meminfo.swap_total : 0;
-        result.memory_.swap_used_ =
-                result.memory_.swap_total_ > (meminfo.swap_free.has_value() ? *meminfo.swap_free : 0)
-                        ? result.memory_.swap_total_ - (meminfo.swap_free.has_value() ? *meminfo.swap_free : 0)
-                        : 0;
-        result.memory_.used_ = result.memory_.total_ > result.memory_.available_
-                                       ? result.memory_.total_ - result.memory_.available_
+        const auto memory = sysinfo::memory_status();
+        result.hostname_ = system_host_name();
+        result.os_ = system_os_name();
+        result.kernel_ = system_kernel_version();
+        result.uptime_ = system_uptime_seconds();
+        result.cpu_name_ = system_cpu_brand();
+        result.memory_.total_ = memory.total_physical;
+        result.memory_.available_ = memory.available_physical;
+        result.memory_.free_ = memory.available_physical;
+        result.memory_.used_ = memory.total_physical > memory.available_physical
+                                       ? memory.total_physical - memory.available_physical
                                        : 0;
+        result.memory_.swap_total_ = memory.total_page_file;
+        result.memory_.swap_used_ = memory.total_page_file > memory.available_page_file
+                                            ? memory.total_page_file - memory.available_page_file
+                                            : 0;
+        result.cores_.assign(sysinfo::instance().get_cpu_info().logical_processors, 0.0F);
         return result;
     }
 

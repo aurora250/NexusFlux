@@ -210,13 +210,20 @@ namespace neforce::neflux::ui {
     }
 
     painter::painter(tui::canvas_painter& target, const palette& colors, bool ascii, bool transparent,
-                     string graph_symbol) :
+                     string graph_symbol, bool rounded) :
     target_(target),
     palette_(colors),
     area_{0, 0, target.width(), target.height()},
     ascii_(ascii),
     transparent_(transparent),
-    graph_symbol_(move(graph_symbol)) {}
+    graph_symbol_(move(graph_symbol)),
+    rounded_(rounded) {}
+
+    painter painter::with_graph_symbol(string symbol) const {
+        painter copy = *this;
+        copy.graph_symbol_ = move(symbol);
+        return copy;
+    }
 
     painter painter::opaque() const {
         painter copy = *this;
@@ -246,18 +253,18 @@ namespace neforce::neflux::ui {
         if (clipped.empty()) {
             return;
         }
-        const auto base = [this](const color& value) {
+        const auto base = [this](color value) {
             const bool background =
                     transparent_ && ((value.R() == palette_.bg_.R() && value.G() == palette_.bg_.G() &&
                                       value.B() == palette_.bg_.B()) ||
                                      (value.R() == palette_.panel_.R() && value.G() == palette_.panel_.G() &&
                                       value.B() == palette_.panel_.B()));
-            return background ? color{0, 0, 0, 0} : value;
+            return background ? color{0, 0, 0, 0} : move(value);
         };
-        target_.fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(fg, base(bg)));
+        target_.fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(move(fg), base(move(bg))));
     }
 
-    void painter::clear(const rect& area, color bg) { fill(area, " ", palette_.text_, bg); }
+    void painter::clear(const rect& area, color bg) { fill(area, " ", palette_.text_, move(bg)); }
 
     void painter::text(int x, int y, string_view content, color fg, optional<color> bg, bool bold) {
         if (y < area_.y_ || y >= area_.bottom()) {
@@ -268,7 +275,7 @@ namespace neforce::neflux::ui {
              (bg->R() == palette_.panel_.R() && bg->G() == palette_.panel_.G() && bg->B() == palette_.panel_.B()))) {
             bg = color{0, 0, 0, 0};
         }
-        const tui::style value = make_style(fg, bg, bold);
+        const tui::style value = make_style(move(fg), move(bg), bold);
         int column = x;
         size_t index = 0;
         while (index < content.size() && column < area_.right()) {
@@ -284,12 +291,12 @@ namespace neforce::neflux::ui {
 
     void painter::text_right(int x, int y, int width, string_view content, color fg, optional<color> bg, bool bold) {
         const int used = display_width(content);
-        text(x + neforce::max(0, width - used), y, content, fg, bg, bold);
+        text(x + neforce::max(0, width - used), y, content, move(fg), move(bg), bold);
     }
 
     void painter::text_center(int x, int y, int width, string_view content, color fg) {
         const int used = display_width(content);
-        text(x + neforce::max(0, (width - used) / 2), y, content, fg);
+        text(x + neforce::max(0, (width - used) / 2), y, content, move(fg));
     }
 
     void painter::box(const rect& area, string_view title, color accent, optional<color> panel_color) {
@@ -310,10 +317,11 @@ namespace neforce::neflux::ui {
         target_.fill(area.x_, area.y_, area.w_, area.h_, " ", make_style(palette_.text_, background));
         const tui::style border = make_style(palette_.border_, background);
         const bool ascii = ascii_;
-        put(area.x_, area.y_, codepoint(ascii ? U'+' : U'╭'), border);
-        put(area.right() - 1, area.y_, codepoint(ascii ? U'+' : U'╮'), border);
-        put(area.x_, area.bottom() - 1, codepoint(ascii ? U'+' : U'╰'), border);
-        put(area.right() - 1, area.bottom() - 1, codepoint(ascii ? U'+' : U'╯'), border);
+        const bool rounded = rounded_ && !ascii;
+        put(area.x_, area.y_, codepoint(ascii ? U'+' : (rounded ? U'╭' : U'┌')), border);
+        put(area.right() - 1, area.y_, codepoint(ascii ? U'+' : (rounded ? U'╮' : U'┐')), border);
+        put(area.x_, area.bottom() - 1, codepoint(ascii ? U'+' : (rounded ? U'╰' : U'└')), border);
+        put(area.right() - 1, area.bottom() - 1, codepoint(ascii ? U'+' : (rounded ? U'╯' : U'┘')), border);
         hline(area.x_ + 1, area.y_, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
         hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
         vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
@@ -323,7 +331,7 @@ namespace neforce::neflux::ui {
             const string clipped_title = truncate_display(title, maximum);
             const int width = display_width(clipped_title.view());
             fill(rect{area.x_ + 2, area.y_, width + 2, 1}, " ", palette_.text_, background);
-            text(area.x_ + 3, area.y_, clipped_title.view(), accent, background, true);
+            text(area.x_ + 3, area.y_, clipped_title.view(), move(accent), background, true);
         }
     }
 
@@ -331,7 +339,7 @@ namespace neforce::neflux::ui {
         if (y < area_.y_ || y >= area_.bottom()) {
             return;
         }
-        const tui::style value = make_style(fg, bg);
+        const tui::style value = make_style(move(fg), move(bg));
         for (int index = 0; index < width; ++index) {
             const int column = x + index;
             if (column < area_.x_ || column >= area_.right()) {
@@ -345,7 +353,7 @@ namespace neforce::neflux::ui {
         if (x < area_.x_ || x >= area_.right()) {
             return;
         }
-        const tui::style value = make_style(fg, bg);
+        const tui::style value = make_style(move(fg), move(bg));
         for (int index = 0; index < height; ++index) {
             const int row = y + index;
             if (row < area_.y_ || row >= area_.bottom()) {
@@ -355,7 +363,7 @@ namespace neforce::neflux::ui {
         }
     }
 
-    void painter::track(int x, int y, int width, optional<double> value, double maximum, color accent) {
+    void painter::track(int x, int y, int width, optional<double> value, double maximum, const color& accent) {
         if (y < area_.y_ || y >= area_.bottom() || width <= 0) {
             return;
         }
@@ -385,6 +393,51 @@ namespace neforce::neflux::ui {
         }
     }
 
+    namespace {
+
+        constexpr string_view braille_up[25] = {
+                " ", "⢀", "⢠", "⢰", "⢸", "⡀", "⣀", "⣠", "⣰", "⣸", "⡄", "⣄", "⣤",
+                "⣴", "⣼", "⡆", "⣆", "⣦", "⣶", "⣾", "⡇", "⣇", "⣧", "⣷", "⣿",
+        };
+
+        constexpr string_view braille_down[25] = {
+                " ", "⠈", "⠘", "⠸", "⢸", "⠁", "⠉", "⠙", "⠹", "⢹", "⠃", "⠋", "⠛",
+                "⠻", "⢻", "⠇", "⠏", "⠟", "⠿", "⢿", "⡇", "⡏", "⡟", "⡿", "⣿",
+        };
+
+        constexpr string_view block_up[25] = {
+                " ", "▗", "▗", "▐", "▐", "▖", "▄", "▄", "▟", "▟", "▖", "▄", "▄",
+                "▟", "▟", "▌", "▙", "▙", "█", "█", "▌", "▙", "▙", "█", "█",
+        };
+
+        constexpr string_view block_down[25] = {
+                " ", "▝", "▝", "▐", "▐", "▘", "▀", "▀", "▜", "▜", "▘", "▀", "▀",
+                "▜", "▜", "▌", "▛", "▛", "█", "█", "▌", "▛", "▛", "█", "█",
+        };
+
+        constexpr string_view tty_up[25] = {
+                " ", "░", "░", "▒", "▒", "░", "░", "▒", "▒", "█", "░", "▒", "▒",
+                "▒", "█", "▒", "▒", "▒", "█", "█", "▒", "█", "█", "█", "█",
+        };
+
+        constexpr string_view tty_down[25] = {
+                " ", "░", "░", "▒", "▒", "░", "░", "▒", "▒", "█", "░", "▒", "▒",
+                "▒", "█", "▒", "▒", "▒", "█", "█", "▒", "█", "█", "█", "█",
+        };
+
+        string_view graph_glyph(const string& symbol, const int left, const int right, const bool mirrored) {
+            const int index = neforce::clamp(left, 0, 4) * 5 + neforce::clamp(right, 0, 4);
+            if (symbol == "block") {
+                return mirrored ? block_down[index] : block_up[index];
+            }
+            if (symbol == "tty") {
+                return mirrored ? tty_down[index] : tty_up[index];
+            }
+            return mirrored ? braille_down[index] : braille_up[index];
+        }
+
+    } // namespace
+
     void painter::raster(const rect& area, const vector<chart_series>& series, double maximum,
                          const plot_window& window, bool logarithmic, int direction) {
         if (area.empty()) {
@@ -394,13 +447,13 @@ namespace neforce::neflux::ui {
         const int height = area.h_ * 4;
         vector<uint8_t> bits(static_cast<size_t>(area.w_ * area.h_), 0);
         vector<color> colors(static_cast<size_t>(area.w_ * area.h_), palette_.panel_);
-        const bool inverted = direction > 0;
+        const bool mirrored = direction > 0;
         const bool cpu_mode = direction != 0;
         vector<color> row_colors;
         if (cpu_mode) {
             row_colors.reserve(static_cast<size_t>(area.h_));
             for (int row = 0; row < area.h_; ++row) {
-                const int distance = inverted ? row : area.h_ - 1 - row;
+                const int distance = mirrored ? row : area.h_ - 1 - row;
                 row_colors.push_back(cpu_color(
                         static_cast<double>(distance) / static_cast<double>(neforce::max(1, area.h_ - 1)), palette_));
             }
@@ -410,20 +463,20 @@ namespace neforce::neflux::ui {
             value = neforce::clamp(value, 0.0, max_value);
             const double fraction =
                     logarithmic ? neforce::logarithm_1p(value) / neforce::logarithm_1p(max_value) : value / max_value;
-            return static_cast<int>(neforce::round((1.0 - fraction) * (height - 1)));
+            const double position = mirrored ? fraction : 1.0 - fraction;
+            return static_cast<int>(neforce::round(position * (height - 1)));
         };
         const auto dot = [&](int x, int y, const color& tint) {
             if (x < 0 || y < 0 || x >= width || y >= height) {
                 return;
             }
-            const int flipped = inverted ? height - 1 - y : y;
-            const auto index = static_cast<size_t>(flipped / 4 * area.w_ + x / 2);
+            const auto index = static_cast<size_t>(y / 4 * area.w_ + x / 2);
             if (index >= bits.size()) {
                 return;
             }
             static constexpr int dots[2][4] = {{0, 1, 2, 6}, {3, 4, 5, 7}};
-            bits[index] |= static_cast<uint8_t>(1U << dots[x % 2][flipped % 4]);
-            colors[index] = cpu_mode ? row_colors[static_cast<size_t>(flipped / 4)] : tint;
+            bits[index] |= static_cast<uint8_t>(1U << dots[x % 2][y % 4]);
+            colors[index] = cpu_mode ? row_colors[static_cast<size_t>(y / 4)] : tint;
         };
         vector<plot_range> columns;
         for (const auto& item: series) {
@@ -443,8 +496,14 @@ namespace neforce::neflux::ui {
                 const int end = y_of(range.last);
                 if (series.size() == 1) {
                     const int top = cpu_mode ? y_of(range.high) : end;
-                    for (int row = top; row < height; ++row) {
-                        dot(static_cast<int>(x), row, item.color_);
+                    if (mirrored) {
+                        for (int row = 0; row <= top; ++row) {
+                            dot(static_cast<int>(x), row, item.color_);
+                        }
+                    } else {
+                        for (int row = top; row < height; ++row) {
+                            dot(static_cast<int>(x), row, item.color_);
+                        }
                     }
                 }
                 const int high = y_of(range.high);
@@ -476,14 +535,18 @@ namespace neforce::neflux::ui {
                     const char glyph = count >= 5 ? '#' : (count >= 3 ? '+' : (count >= 2 ? '-' : '.'));
                     put(area.x_ + col, area.y_ + row, codepoint(static_cast<uint32_t>(glyph)),
                         make_style(colors[index]));
-                } else if (graph_symbol_ == "block") {
-                    static constexpr uint32_t blocks[] = {0x2581, 0x2582, 0x2583, 0x2584,
-                                                          0x2585, 0x2586, 0x2587, 0x2588};
-                    const uint32_t glyph = blocks[neforce::min(8, neforce::max(1, count)) - 1];
-                    put(area.x_ + col, area.y_ + row, codepoint(glyph), make_style(colors[index]));
                 } else {
-                    const auto value = codepoint(0x2800U + bits[index]);
-                    put(area.x_ + col, area.y_ + row, value, make_style(colors[index]));
+                    int left = 0;
+                    int right = 0;
+                    const uint8_t value = bits[index];
+                    for (const int bit: {0, 1, 2, 6}) {
+                        left += (value & static_cast<uint8_t>(1U << bit)) != 0 ? 1 : 0;
+                    }
+                    for (const int bit: {3, 4, 5, 7}) {
+                        right += (value & static_cast<uint8_t>(1U << bit)) != 0 ? 1 : 0;
+                    }
+                    const string_view glyph = graph_glyph(graph_symbol_, left, right, mirrored);
+                    put(area.x_ + col, area.y_ + row, first_codepoint(glyph), make_style(colors[index]));
                 }
             }
         }
@@ -582,6 +645,7 @@ namespace neforce::neflux::ui {
             text(body.x_, body.y_, format("{} · unavailable", upper_name).view(), palette_.muted_);
         }
         if (lower != nullptr) {
+            // The lower plot is mirrored: 0% is at the center line and 100% at the bottom.
             raster(rect{body.x_, body.y_ + upper_height, body.w_, body.h_ - upper_height},
                    {chart_series{lower_name, lower, palette_.mint_}}, 100.0, window, false, 1);
         }

@@ -13,9 +13,9 @@
 #include <NeFlux/recording.hpp>
 #include <NeFlux/ros.hpp>
 #include <NeFlux/ui/testing.hpp>
-#include <NeForce/core/system/mount.hpp>
-#include <NeForce/core/system/process_snapshot.hpp>
-#include <NeForce/network/util/socket_state.hpp>
+#include <NeForce/core/system/process.hpp>
+#include <NeForce/core/system/sysinfo.hpp>
+#include <NeForce/network/socket_base.hpp>
 #include <NeFlux/platform.hpp>
 #if NEFLUX_PLATFORM_LINUX
 #    include <sys/wait.h>
@@ -86,6 +86,11 @@ namespace {
         cfg.display_.transparent_background_ = false;
         cfg.display_.graph_symbol_ = "block";
         cfg.display_.cpu_lazy_sort_ = false;
+        cfg.display_.rounded_corners_ = false;
+        cfg.display_.process_colors_ = false;
+        cfg.display_.process_gradient_ = false;
+        cfg.display_.graph_symbol_cpu_ = "block";
+        cfg.display_.graph_symbol_net_ = "tty";
         const string text = cfg.to_toml();
         const config parsed = config::from_toml(text);
         CHECK(parsed.theme_ == "nord");
@@ -99,12 +104,14 @@ namespace {
         CHECK(!parsed.display_.transparent_background_);
         CHECK(parsed.display_.graph_symbol_ == "block");
         CHECK(!parsed.display_.cpu_lazy_sort_);
-        const string config_path = config::path();
-        CHECK(config_path.find("neflux") != string::npos);
-        CHECK(config_path.find("rstop") == string::npos);
+        CHECK(!parsed.display_.rounded_corners_);
+        CHECK(!parsed.display_.process_colors_);
+        CHECK(!parsed.display_.process_gradient_);
+        CHECK(parsed.display_.graph_symbol_cpu_ == "block");
+        CHECK(parsed.display_.graph_symbol_net_ == "tty");
         bool rejected = false;
         try {
-            config::from_toml("unknown_key = 1");
+            ignore = config::from_toml("unknown_key = 1");
         } catch (const exception&) {
             rejected = true;
         }
@@ -153,6 +160,9 @@ namespace {
         CHECK(frames.find("Settings") != string::npos);
         CHECK(ui::headless_probe_background("#esc", 40, 22) ==
               ui::headless_probe_background("#esc|\x1b[<0;40;16M|#wait|#esc", 40, 22));
+        const string choice = ui::headless_probe("#esc|\x1b[<0;40;18M|\x1b[<0;40;14M");
+        CHECK(choice.find("Setting · Theme") != string::npos);
+        CHECK(choice.find("midnight") != string::npos);
         const string reopened = ui::headless_probe("#esc|\x1b[<0;40;16M|#wait|#esc");
         const auto reopened_marker = string("<<<FRAME>>>");
         const auto reopened_end = reopened.rfind(reopened_marker);
@@ -220,7 +230,7 @@ namespace {
     }
 
     void test_filter() {
-        process value;
+        neforce::neflux::process value;
         value.pid_ = 42;
         value.name_ = "python";
         value.user_ = "alice";
@@ -236,22 +246,22 @@ namespace {
 
     void test_tags() {
         snapshot value;
-        process item;
+        neforce::neflux::process item;
         item.pid_ = 7;
         item.name_ = "postgres";
         item.command_ = "postgres -D /var/lib/postgresql/data";
         item.memory_ = 2ULL * 1024ULL * 1024ULL * 1024ULL;
         item.cpu_ = 120.0F;
         value.processes_.push_back(item);
-        process resolver;
+        neforce::neflux::process resolver;
         resolver.pid_ = 8;
         resolver.name_ = "systemd-resolve";
         value.processes_.push_back(resolver);
-        process shell;
+        neforce::neflux::process shell;
         shell.pid_ = 9;
         shell.name_ = "zsh";
         value.processes_.push_back(shell);
-        process kernel;
+        neforce::neflux::process kernel;
         kernel.pid_ = 10;
         kernel.name_ = "kworker/0:1";
         kernel.kernel_thread_ = true;
@@ -330,15 +340,15 @@ namespace {
 
     void test_neforce_system_components() {
 #if NEFLUX_PLATFORM_LINUX
-        const auto processes = process_snapshot();
+        const auto processes = neforce::process::snapshot();
         CHECK(!processes.empty());
         CHECK(processes.front().pid > 0);
-        const auto mounts = mount_points();
+        const auto mounts = neforce::sysinfo::mount_points();
         CHECK(!mounts.empty());
         CHECK(!mounts.front().target.empty());
 #endif
-        CHECK(socket_state_name(10) == "LISTEN");
-        CHECK(socket_state_name(1) == "ESTABLISHED");
+        CHECK(neforce::socket_base::state_name(static_cast<uint8_t>(10), false) == "LISTEN");
+        CHECK(neforce::socket_base::state_name(static_cast<uint8_t>(1), false) == "ESTABLISHED");
     }
 
     void test_battery_and_gpu() {
@@ -383,7 +393,7 @@ namespace {
         value.memory_.cached_ = 2ULL * 1024 * 1024 * 1024;
         value.memory_.swap_total_ = 2ULL * 1024 * 1024 * 1024;
         value.memory_.swap_used_ = 0;
-        process item;
+        neforce::neflux::process item;
         item.pid_ = 42;
         item.name_ = "python3";
         item.command_ = "python3 train.py";
@@ -489,7 +499,7 @@ namespace {
         cfg.columns_ = {"priority", "threads", "fd_count", "comm"};
         snapshot value = sample_snapshot();
         value.processes_.clear();
-        process item;
+        neforce::neflux::process item;
         item.pid_ = 1;
         item.name_ = "test";
         item.command_ = "test";
@@ -518,7 +528,7 @@ namespace {
     void test_ros_session() {
 #if NEFLUX_PLATFORM_LINUX
         environment::set("ROS_VERSION", "2");
-        process item;
+        neforce::neflux::process item;
         item.pid_ = static_cast<uint32_t>(::getpid());
         item.name_ = "ros-test";
         item.command_ = "ros-test --ros-args";

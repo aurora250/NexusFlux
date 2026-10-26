@@ -1,60 +1,44 @@
+#include <NeForce/core/container/flat_unordered_map.hpp>
 #include <NeFlux/common.hpp>
 #include <NeFlux/connections.hpp>
 #include <NeFlux/discovery.hpp>
+#include <NeFlux/platform.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/string/format.hpp>
-#include <NeForce/network/util/socket_state.hpp>
-#include <NeForce/network/util/inet_diag.hpp>
-#include <arpa/inet.h>
-#include <dirent.h>
-#include <linux/inet_diag.h>
-#include <linux/netlink.h>
-#include <linux/sock_diag.h>
-#include <linux/tcp.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <NeForce/core/system/process.hpp>
+#include <NeForce/network/socket_base.hpp>
+#if NEFLUX_PLATFORM_LINUX
+#    include <arpa/inet.h>
+#    include <dirent.h>
+#    include <unistd.h>
+#elif NEFLUX_PLATFORM_WINDOWS
+#    include <winsock2.h>
+#    include <ws2tcpip.h>
+#endif
 namespace neforce::neflux {
 
     namespace {
 
-        uint32_t read_u32(const void* data, size_t offset, size_t size) {
-            if (offset + 4 > size) {
-                return 0;
-            }
-            uint32_t value = 0;
-            memory_copy(&value, static_cast<const char*>(data) + offset, 4);
-            return value;
-        }
-
-        uint64_t read_u64(const void* data, size_t offset, size_t size) {
-            if (offset + 8 > size) {
-                return 0;
-            }
-            uint64_t value = 0;
-            memory_copy(&value, static_cast<const char*>(data) + offset, 8);
-            return value;
-        }
-
         string state_name(uint8_t state, const string& protocol) {
-            return string(socket_state_name(state, protocol == "UDP"));
+            return string(socket_base::state_name(state, protocol == "UDP"));
         }
 
+#if NEFLUX_PLATFORM_LINUX
         struct owners {
-            map<uint64_t, vector<uint32_t>> pids;
-            map<uint32_t, string> names;
+            flat_unordered_map<uint64_t, vector<uint32_t>> pids;
             bool complete = true;
             uint64_t unreadable = 0;
         };
 
         owners scan_owners() {
             owners result;
-            DIR* proc = opendir("/proc");
+            ::DIR* proc = ::opendir("/proc");
             if (proc == nullptr) {
                 result.complete = false;
                 return result;
             }
             const int64_t deadline = monotonic_ms() + 700;
-            while (dirent* entry = readdir(proc)) {
+            while (::dirent* entry = ::readdir(proc)) {
                 uint32_t pid = 0;
                 bool numeric = true;
                 for (const char* cursor = entry->d_name; *cursor != '\0'; ++cursor) {
@@ -67,17 +51,13 @@ namespace neforce::neflux {
                 if (!numeric || entry->d_name[0] == '\0' || pid == 0) {
                     continue;
                 }
-                const string base = format("/proc/{}", pid);
-                const string fd_directory = base + "/fd";
-                DIR* descriptors = opendir(fd_directory.data());
+                const string fd_directory = format("/proc/{}/fd", pid);
+                ::DIR* descriptors = ::opendir(fd_directory.data());
                 if (descriptors == nullptr) {
                     ++result.unreadable;
                     continue;
                 }
-                if (const auto comm = read_text_file(base + "/comm"); comm.has_value()) {
-                    result.names[pid] = trim(comm->view());
-                }
-                while (dirent* descriptor = readdir(descriptors)) {
+                while (::dirent* descriptor = ::readdir(descriptors)) {
                     if (monotonic_ms() > deadline) {
                         result.complete = false;
                         break;
@@ -87,11 +67,10 @@ namespace neforce::neflux {
                     }
                     const string link_path = fd_directory + "/" + descriptor->d_name;
                     char target[512] = {};
-                    const ssize_t length = readlink(link_path.data(), target, sizeof(target) - 1);
+                    const ::ssize_t length = ::readlink(link_path.data(), target, sizeof(target) - 1);
                     if (length <= 0) {
                         continue;
                     }
-                    target[length] = '\0';
                     const string_view text(target, static_cast<size_t>(length));
                     if (!starts_with(text, "socket:[")) {
                         continue;
@@ -100,11 +79,11 @@ namespace neforce::neflux {
                     if (close == string_view::npos) {
                         continue;
                     }
-                    const auto inode_value = parse_u64(text.substr(8, close - 8));
-                    if (!inode_value.has_value()) {
+                    const auto inode = parse_u64(text.substr(8, close - 8));
+                    if (!inode.has_value()) {
                         continue;
                     }
-                    auto& list = result.pids[*inode_value];
+                    auto& list = result.pids[*inode];
                     bool present = false;
                     for (const uint32_t existing: list) {
                         if (existing == pid) {
@@ -116,144 +95,54 @@ namespace neforce::neflux {
                         list.push_back(pid);
                     }
                 }
-                closedir(descriptors);
+                ::closedir(descriptors);
                 if (!result.complete) {
                     break;
                 }
             }
-            closedir(proc);
+            ::closedir(proc);
             return result;
         }
+#endif
 
         vector<connection> collect_netlink() {
             vector<connection> rows;
-            const int descriptor = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
-            if (descriptor < 0) {
-                throw value_exception("socket: SOCK_DIAG unavailable");
-            }
-            timeval timeout{};
-            timeout.tv_sec = 0;
-            timeout.tv_usec = 250000;
-            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            sockaddr_nl address{};
-            address.nl_family = AF_NETLINK;
-            if (bind(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
-                close(descriptor);
-                throw value_exception("bind: netlink unavailable");
-            }
-            const int64_t started = monotonic_ms();
-            struct request_packet {
-                nlmsghdr header;
-                inet_diag_req_v2 request;
-            };
-            vector<uint8_t> buffer(65536);
-            uint32_t sequence = 1;
-            try {
-                for (const auto& item: vector<tuple<int, int, const char*>>{{AF_INET, IPPROTO_TCP, "tcp"},
-                                                                            {AF_INET6, IPPROTO_TCP, "tcp6"},
-                                                                            {AF_INET, IPPROTO_UDP, "udp"},
-                                                                            {AF_INET6, IPPROTO_UDP, "udp6"}}) {
-                    request_packet packet{};
-                    packet.header.nlmsg_len = sizeof(packet);
-                    packet.header.nlmsg_type = SOCK_DIAG_BY_FAMILY;
-                    packet.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-                    packet.header.nlmsg_seq = sequence++;
-                    packet.request.sdiag_family = static_cast<uint8_t>(get<0>(item));
-                    packet.request.sdiag_protocol = static_cast<uint8_t>(get<1>(item));
-                    packet.request.idiag_ext = 2;
-                    packet.request.idiag_states = 0xFFFFFFFFU;
-                    packet.request.id.idiag_cookie[0] = 0xFFFFFFFFU;
-                    packet.request.id.idiag_cookie[1] = 0xFFFFFFFFU;
-                    if (sendto(descriptor, &packet, sizeof(packet), 0, reinterpret_cast<sockaddr*>(&address),
-                               sizeof(address)) < 0) {
-                        throw value_exception("sendto: socket dump unavailable");
+            const int64_t deadline = monotonic_ms() + 1000;
+            for (const auto& item: vector<tuple<ip_family, socket_base::protocol, string_view>>{
+                         {ip_family::INET4, socket_base::protocol::TCP, "tcp"},
+                         {ip_family::INET6, socket_base::protocol::TCP, "tcp6"},
+                         {ip_family::INET4, socket_base::protocol::UDP, "udp"},
+                         {ip_family::INET6, socket_base::protocol::UDP, "udp6"}}) {
+                if (monotonic_ms() > deadline) {
+                    throw value_exception("socket dump deadline");
+                }
+                const auto entries = socket_base::enumerate_sockets(get<0>(item), get<1>(item));
+                if (!entries.has_value()) {
+#if NEFLUX_PLATFORM_LINUX
+                    throw value_exception(format("inet_diag unavailable for {}", get<2>(item)).data());
+#else
+                    continue;
+#endif
+                }
+                for (const auto& entry: *entries) {
+                    connection row;
+                    row.protocol_ = get<2>(item);
+                    row.local_ = entry.local;
+                    row.remote_ = entry.remote;
+                    row.state_ = string(socket_base::state_name(entry.status));
+                    row.inode_ = entry.inode;
+                    row.receive_queue_ = entry.receive_queue;
+                    row.send_queue_ = entry.send_queue;
+                    if (entry.pid != 0) {
+                        row.pids_.push_back(entry.pid);
                     }
-                    bool done = false;
-                    while (!done) {
-                        if (monotonic_ms() - started > 1000) {
-                            throw value_exception("socket dump deadline");
-                        }
-                        const ssize_t received = recv(descriptor, buffer.data(), buffer.size(), MSG_TRUNC);
-                        if (received < 0) {
-                            throw value_exception("recv: socket dump failed");
-                        }
-                        if (received == 0 || static_cast<size_t>(received) > buffer.size()) {
-                            throw value_exception("truncated socket dump");
-                        }
-                        size_t offset = 0;
-                        while (offset + sizeof(nlmsghdr) <= static_cast<size_t>(received)) {
-                            const auto* header = reinterpret_cast<const nlmsghdr*>(buffer.data() + offset);
-                            const size_t length = header->nlmsg_len;
-                            if (length < sizeof(nlmsghdr) || length > static_cast<size_t>(received) - offset) {
-                                throw value_exception("invalid netlink message");
-                            }
-                            if (header->nlmsg_type == NLMSG_DONE) {
-                                done = true;
-                                break;
-                            }
-                            if (header->nlmsg_type == NLMSG_ERROR) {
-                                throw value_exception("netlink error");
-                            }
-                            const uint8_t* payload = buffer.data() + offset + sizeof(nlmsghdr);
-                            const size_t payload_size = length - sizeof(nlmsghdr);
-                            if (payload_size >= 72) {
-                                const auto entry = decode_inet_diag(payload, payload_size);
-                                if (entry.has_value()) {
-                                    connection row;
-                                    row.protocol_ = get<2>(item);
-                                    row.local_ = entry->local;
-                                    row.remote_ = entry->remote;
-                                    row.state_ = string(socket_state_name(entry->state, row.protocol_ == "UDP"));
-                                    row.inode_ = entry->inode;
-                                    const uint64_t cookie = entry->cookie;
-                                    row.receive_queue_ = entry->receive_queue;
-                                    row.send_queue_ = entry->send_queue;
-                                    row.id_ = format("{}:{}:{}:{}:{:x}", row.protocol_, row.inode_, row.local_,
-                                                     row.remote_, cookie);
-                                    size_t attribute = 72;
-                                    while (attribute + 4 <= payload_size) {
-                                        uint16_t raw_length = 0;
-                                        uint16_t raw_type = 0;
-                                        memory_copy(&raw_length, payload + attribute, 2);
-                                        memory_copy(&raw_type, payload + attribute + 2, 2);
-                                        const size_t attribute_size = raw_length;
-                                        const size_t kind = raw_type & 0x3FFFU;
-                                        if (attribute_size < 4 || attribute_size > payload_size - attribute) {
-                                            break;
-                                        }
-                                        if (kind == INET_DIAG_INFO && starts_with(row.protocol_.view(), "tcp")) {
-                                            const uint8_t* info = payload + attribute + 4;
-                                            const size_t info_size = attribute_size - 4;
-                                            if (info_size > 68) {
-                                                row.rtt_ms_ =
-                                                        static_cast<double>(read_u32(info, 68, info_size)) / 1000.0;
-                                            }
-                                            if (info_size > 100) {
-                                                row.retransmits_ = read_u32(info, 100, info_size);
-                                            }
-                                            if (info_size >= 136) {
-                                                row.received_ = read_u64(info, 128, info_size);
-                                            }
-                                            if (info_size >= 208) {
-                                                row.sent_ = read_u64(info, 200, info_size);
-                                            }
-                                        }
-                                        attribute += (attribute_size + 3) & ~static_cast<size_t>(3);
-                                    }
-                                    if (!row.local_.empty() && !row.remote_.empty()) {
-                                        rows.push_back(move(row));
-                                    }
-                                }
-                            }
-                            offset += (length + 3) & ~static_cast<size_t>(3);
-                        }
+                    row.id_ = format("{}:{}:{}:{}:{:x}", row.protocol_, row.inode_, row.local_, row.remote_,
+                                     entry.cookie);
+                    if (!row.local_.empty() && !row.remote_.empty()) {
+                        rows.push_back(move(row));
                     }
                 }
-            } catch (...) {
-                close(descriptor);
-                throw;
             }
-            close(descriptor);
             return rows;
         }
 
@@ -395,9 +284,9 @@ namespace neforce::neflux {
     }
 
     void apply_tcp_info(vector<connection>& rows, const string& text) {
-        map<uint64_t, map<string, string>> data;
+        flat_unordered_map<uint64_t, flat_unordered_map<string, string>> data;
         for (const auto& line: split_lines(text)) {
-            map<string, string> fields;
+            flat_unordered_map<string, string> fields;
             for (const auto& token: split_whitespace(line.view())) {
                 const auto colon = token.find(':');
                 if (colon != string::npos) {
@@ -465,12 +354,14 @@ namespace neforce::neflux {
     }
 
     struct connection_collector::impl {
-        map<string, pair<optional<uint64_t>, optional<uint64_t>>> previous;
+        flat_unordered_map<string, pair<optional<uint64_t>, optional<uint64_t>>> previous;
         double previous_at = 0.0;
+        string status;
+#if NEFLUX_PLATFORM_LINUX
         int64_t owners_at = -1;
         owners owner_data;
         uint64_t owners_sampled_at = 0;
-        string status;
+#endif
     };
 
     connection_collector::connection_collector() :
@@ -481,6 +372,7 @@ namespace neforce::neflux {
     connection_sample connection_collector::collect(bool sockets) {
         connection_sample sample;
         sample.sampled_at_ = unix_time();
+#if NEFLUX_PLATFORM_LINUX
         if (impl_->owners_at < 0 || monotonic_ms() - impl_->owners_at >= 5000) {
             impl_->owner_data = scan_owners();
             impl_->owners_at = monotonic_ms();
@@ -489,6 +381,10 @@ namespace neforce::neflux {
         sample.owners_sampled_at_ = impl_->owners_sampled_at;
         sample.owner_scan_complete_ = impl_->owner_data.complete;
         sample.unreadable_processes_ = impl_->owner_data.unreadable;
+#else
+        sample.owner_scan_complete_ = true;
+        sample.owners_sampled_at_ = sample.sampled_at_;
+#endif
         if (!sockets) {
             sample.status_ = "Loading connection details…";
             return sample;
@@ -500,6 +396,7 @@ namespace neforce::neflux {
             native = false;
             sample.notes_.push_back(format("inet_diag unavailable; using procfs/ss: {}", error.what()));
         }
+#if NEFLUX_PLATFORM_LINUX
         if (!native) {
             for (const auto& item: vector<pair<const char*, const char*>>{
                          {"tcp", "tcp"}, {"tcp6", "tcp6"}, {"udp", "udp"}, {"udp6", "udp6"}}) {
@@ -527,21 +424,18 @@ namespace neforce::neflux {
             const auto found = impl_->owner_data.pids.find(row.inode_);
             if (found != impl_->owner_data.pids.end()) {
                 row.pids_ = found->second;
-                for (const uint32_t pid: row.pids_) {
-                    const auto name = impl_->owner_data.names.find(pid);
-                    if (name != impl_->owner_data.names.end()) {
-                        row.process_names_.push_back(name->second);
-                    }
-                }
             }
         }
+#else
+        sample.status_ = native ? "Current network namespace" : "Socket table unavailable";
+#endif
         if (sample.connections_.size() > 20000) {
             sample.connections_.resize(20000);
             sample.truncated_ = true;
         }
         const double now = static_cast<double>(monotonic_ms()) / 1000.0;
         const double seconds = impl_->previous_at > 0.0 ? now - impl_->previous_at : 0.0;
-        map<string, pair<optional<uint64_t>, optional<uint64_t>>> next;
+        flat_unordered_map<string, pair<optional<uint64_t>, optional<uint64_t>>> next;
         for (auto& row: sample.connections_) {
             const auto found = impl_->previous.find(row.id_);
             if (found != impl_->previous.end() && seconds > 0.0) {
@@ -555,7 +449,7 @@ namespace neforce::neflux {
             }
             next[row.id_] = {row.received_, row.sent_};
         }
-        impl_->previous = next;
+        impl_->previous = move(next);
         impl_->previous_at = now;
         impl_->status = sample.status_;
         return sample;

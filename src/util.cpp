@@ -262,11 +262,7 @@ namespace neforce::neflux {
         string out;
         out.reserve(text.size());
         for (const unsigned char c: text) {
-            if (c < 0x20 || c == 0x7F) {
-                out.push_back(' ');
-            } else {
-                out.push_back(static_cast<char>(c));
-            }
+            out.push_back(c < 0x20 || c == 0x7F ? ' ' : static_cast<char>(c));
         }
         return out;
     }

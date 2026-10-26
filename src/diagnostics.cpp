@@ -2,7 +2,7 @@
 #include <NeFlux/diagnostics.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/string/format.hpp>
-#include <NeForce/core/system/process_snapshot.hpp>
+#include <NeForce/core/system/process.hpp>
 namespace neforce::neflux {
 
     namespace {
@@ -50,7 +50,7 @@ namespace neforce::neflux {
             return out;
         }
         if (value.processes_.empty()) {
-            const auto fallback = process_snapshot();
+            const auto fallback = neforce::process::snapshot();
             if (!fallback.empty()) {
                 out.push_back(make_finding(
                         "process", "CHECK", "Process inventory is empty",

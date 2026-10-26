@@ -20,27 +20,35 @@ namespace neforce::neflux {
      * @brief 显示选项
      */
     struct display_config {
-        string cpu_graph_ = "total";          ///< 上方 CPU 图表指标
-        string cpu_graph_lower_ = "total";    ///< 下方 CPU 图表指标
-        string temperature_unit_ = "celsius"; ///< 温度单位
-        string cpu_sensor_ = {};              ///< CPU 温度传感器
-        string network_interface_ = {};       ///< 网络接口过滤
-        bool network_bits_ = false;           ///< 使用 bit/s
-        bool network_binary_ = true;          ///< 使用二进制单位
-        bool network_logarithmic_ = false;    ///< 网络图表对数刻度
-        bool network_start_zero_ = false;     ///< 网络累计从零开始
-        bool network_sync_scale_ = false;     ///< 上下行共享刻度
-        uint64_t network_scale_ = 0;          ///< 固定网络图表上限
-        bool network_swap_ = false;           ///< 上传显示在上方
-        bool memory_graphs_ = true;           ///< 启用内存图表
-        bool show_swap_ = true;               ///< 显示交换区
-        bool show_battery_ = true;            ///< 显示电池
-        bool process_basename_ = false;       ///< 进程仅显示程序名
-        bool group_processes_ = false;        ///< 按程序聚合进程
-        string overview_panel_ = "all";       ///< 概览展开面板
-        bool transparent_background_ = true;  ///< 终端背景透明
-        string graph_symbol_ = "braille";     ///< 图表符号：braille、block 或 ascii
-        bool cpu_lazy_sort_ = true;           ///< CPU 排序使用平滑值
+        string cpu_graph_ = "total";           ///< 上方 CPU 图表指标
+        string cpu_graph_lower_ = "total";     ///< 下方 CPU 图表指标
+        string temperature_unit_ = "celsius";  ///< 温度单位
+        string cpu_sensor_ = {};               ///< CPU 温度传感器
+        string network_interface_ = {};        ///< 网络接口过滤
+        bool network_bits_ = false;            ///< 使用 bit/s
+        bool network_binary_ = true;           ///< 使用二进制单位
+        bool network_logarithmic_ = false;     ///< 网络图表对数刻度
+        bool network_start_zero_ = false;      ///< 网络累计从零开始
+        bool network_sync_scale_ = false;      ///< 上下行共享刻度
+        uint64_t network_scale_ = 0;           ///< 固定网络图表上限
+        bool network_swap_ = false;            ///< 上传显示在上方
+        bool memory_graphs_ = true;            ///< 启用内存图表
+        bool show_swap_ = true;                ///< 显示交换区
+        bool show_battery_ = true;             ///< 显示电池
+        bool process_basename_ = false;        ///< 进程仅显示程序名
+        bool group_processes_ = false;         ///< 按程序聚合进程
+        string overview_panel_ = "all";        ///< 概览展开面板
+        bool transparent_background_ = true;   ///< 终端背景透明
+        string graph_symbol_ = "braille";      ///< 图表符号：braille、block 或 ascii
+        bool cpu_lazy_sort_ = true;            ///< CPU 排序使用平滑值
+        bool rounded_corners_ = true;          ///< 圆角边框
+        bool process_colors_ = true;           ///< 进程行按 CPU 着色
+        bool process_gradient_ = true;         ///< 进程 CPU 颜色渐变
+        string graph_symbol_cpu_ = "default";  ///< CPU 图表符号
+        string graph_symbol_mem_ = "default";  ///< 内存图表符号
+        string graph_symbol_net_ = "default";  ///< 网络图表符号
+        string graph_symbol_proc_ = "default"; ///< 进程图表符号
+        string graph_symbol_gpu_ = "default";  ///< GPU 图表符号
 
         /**
          * @brief 获取温度显示值

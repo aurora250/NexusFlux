@@ -309,6 +309,7 @@ namespace neforce::neflux::ui {
             tab,
             process_sort,
             gpu_device,
+            gpu_process_row,
             interface_sort,
             connection_sort,
             process_row,
@@ -322,12 +323,14 @@ namespace neforce::neflux::ui {
             event_row,
             footer_action,
             process_scrollbar,
+            process_tree_toggle,
             view_overflow,
             history_scroll,
             events_scroll,
             explorer_scroll,
             connections_scroll,
             workload_scroll,
+            settings_scroll,
         };
 
         struct hit_target {
@@ -621,7 +624,8 @@ namespace neforce::neflux::ui {
             tui::element render() override {
                 return tui::element::canvas(
                         [this](tui::canvas_painter& canvas) {
-                            painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_);
+                            painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
+                                          cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_);
                             draw(brush);
                         },
                         make_canvas_style());
@@ -691,6 +695,7 @@ namespace neforce::neflux::ui {
             bool tree_ = false;
             bool process_paused_ = false;
             bool follow_process_ = false;
+            bool process_side_panel_ = false;
             bool dragging_process_scrollbar_ = false;
             hit_action dragging_scroll_action_ = hit_action::none;
             rect dragging_scroll_rect_{};
@@ -730,6 +735,7 @@ namespace neforce::neflux::ui {
             vector<string> detail_lines_;
             size_t detail_scroll_ = 0;
             size_t settings_index_ = 0;
+            size_t setting_choice_row_ = 0;
             size_t commands_index_ = 0;
             string command_text_;
             bool command_editing_ = false;
@@ -1503,6 +1509,11 @@ namespace neforce::neflux::ui {
                 return best;
             }
 
+            NEFORCE_NODISCARD painter graph_painter(painter& brush, const string& setting) const {
+                const string& symbol = setting == "default" ? cfg_.display_.graph_symbol_ : setting;
+                return brush.with_graph_symbol(symbol);
+            }
+
             void draw_cpu_panel(painter& brush, const rect& area) {
                 if (area.h_ < 3 || area.w_ < 10) {
                     return;
@@ -1553,7 +1564,8 @@ namespace neforce::neflux::ui {
                         lower_values = found == history_.series_.end() ? nullptr : &found->second;
                     }
                 }
-                brush.cpu_chart(chart_area, upper, upper_values, lower, lower_values, chart_window());
+                graph_painter(brush, cfg_.display_.graph_symbol_cpu_)
+                        .cpu_chart(chart_area, upper, upper_values, lower, lower_values, chart_window());
                 if (!wide) {
                     const int grid_top = chart_area.bottom();
                     const int rows =
@@ -1642,9 +1654,10 @@ namespace neforce::neflux::ui {
                     if (per_row > 1 && y < inner.bottom()) {
                         const auto found = history_.series_.find(item.series);
                         if (found != history_.series_.end()) {
-                            brush.trend(rect{inner.x_, y, inner.w_, per_row - 1},
-                                        {chart_series{item.name, &found->second, item.tint}}, 100.0, chart_window(),
-                                        "%", false);
+                            graph_painter(brush, cfg_.display_.graph_symbol_mem_)
+                                    .trend(rect{inner.x_, y, inner.w_, per_row - 1},
+                                           {chart_series{item.name, &found->second, item.tint}}, 100.0, chart_window(),
+                                           "%", false);
                         }
                         y += per_row - 1;
                     }
@@ -1658,9 +1671,10 @@ namespace neforce::neflux::ui {
                                colors_.muted_);
                     const auto found = history_.series_.find("Swap (%)");
                     if (found != history_.series_.end()) {
-                        brush.trend(rect{inner.x_, swap_y + 1, inner.w_ - 8, 1},
-                                    {chart_series{"Swap", &found->second, colors_.blue_}}, 100.0, chart_window(), "%",
-                                    false);
+                        graph_painter(brush, cfg_.display_.graph_symbol_mem_)
+                                .trend(rect{inner.x_, swap_y + 1, inner.w_ - 8, 1},
+                                       {chart_series{"Swap", &found->second, colors_.blue_}}, 100.0, chart_window(),
+                                       "%", false);
                     }
                     brush.text_right(inner.x_, swap_y + 1, inner.w_,
                                      format("{:5.1}%", percent(memory.swap_used_, memory.swap_total_)).view(),
@@ -1735,10 +1749,11 @@ namespace neforce::neflux::ui {
                 if (y + 2 < inner.bottom()) {
                     const auto found = history_.gpu_details_.find(device.uuid_);
                     if (found != history_.gpu_details_.end()) {
-                        brush.trend(rect{inner.x_, y, inner.w_, inner.bottom() - y},
-                                    {chart_series{"GPU", &found->second.utilization_, colors_.blue_},
-                                     chart_series{device.memory_label(), &found->second.vram_, colors_.purple_}},
-                                    100.0, chart_window(), "%", false);
+                        graph_painter(brush, cfg_.display_.graph_symbol_gpu_)
+                                .trend(rect{inner.x_, y, inner.w_, inner.bottom() - y},
+                                       {chart_series{"GPU", &found->second.utilization_, colors_.blue_},
+                                        chart_series{device.memory_label(), &found->second.vram_, colors_.purple_}},
+                                       100.0, chart_window(), "%", false);
                     }
                 }
                 if (snap_.gpus_.size() > 1) {
@@ -1779,25 +1794,26 @@ namespace neforce::neflux::ui {
                     brush.text(inner.x_, y, format("R {}/s  W {}/s", bytes(read), bytes(write)).view(), colors_.muted_);
                 }
                 if (y + 2 < inner.bottom()) {
-                    brush.trend(
-                            rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1},
-                            {chart_series{"Read", &history_.disk_read_, colors_.mint_},
-                             chart_series{"Write", &history_.disk_write_, colors_.amber_}},
-                            [&] {
-                                double maximum = 1.0;
-                                for (const double value: history_.disk_read_) {
-                                    if (neforce::is_finite(value)) {
-                                        maximum = neforce::max(maximum, value);
-                                    }
-                                }
-                                for (const double value: history_.disk_write_) {
-                                    if (neforce::is_finite(value)) {
-                                        maximum = neforce::max(maximum, value);
-                                    }
-                                }
-                                return nice_max(maximum);
-                            }(),
-                            chart_window(), "B/s", false);
+                    graph_painter(brush, cfg_.display_.graph_symbol_proc_)
+                            .trend(
+                                    rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1},
+                                    {chart_series{"Read", &history_.disk_read_, colors_.mint_},
+                                     chart_series{"Write", &history_.disk_write_, colors_.amber_}},
+                                    [&] {
+                                        double maximum = 1.0;
+                                        for (const double value: history_.disk_read_) {
+                                            if (neforce::is_finite(value)) {
+                                                maximum = neforce::max(maximum, value);
+                                            }
+                                        }
+                                        for (const double value: history_.disk_write_) {
+                                            if (neforce::is_finite(value)) {
+                                                maximum = neforce::max(maximum, value);
+                                            }
+                                        }
+                                        return nice_max(maximum);
+                                    }(),
+                                    chart_window(), "B/s", false);
                 }
             }
 
@@ -1867,24 +1883,79 @@ namespace neforce::neflux::ui {
                     const int chart_top = inner.y_ + (show_total ? 3 : 2);
                     const int half = neforce::max(1, (inner.bottom() - chart_top) / 2);
                     if (!swap) {
-                        brush.trend(rect{inner.x_, chart_top, inner.w_, half},
-                                    {chart_series{"RX", &net->rx_, colors_.mint_}},
-                                    nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
-                                    cfg_.display_.network_logarithmic_);
-                        brush.trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
-                                    {chart_series{"TX", &net->tx_, colors_.blue_}},
-                                    nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
-                                    cfg_.display_.network_logarithmic_);
+                        graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                                .trend(rect{inner.x_, chart_top, inner.w_, half},
+                                       {chart_series{"RX", &net->rx_, colors_.mint_}},
+                                       nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
+                                       cfg_.display_.network_logarithmic_);
+                        graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                                .trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
+                                       {chart_series{"TX", &net->tx_, colors_.blue_}},
+                                       nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
+                                       cfg_.display_.network_logarithmic_);
                     } else {
-                        brush.trend(rect{inner.x_, chart_top, inner.w_, half},
-                                    {chart_series{"TX", &net->tx_, colors_.blue_}},
-                                    nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
-                                    cfg_.display_.network_logarithmic_);
-                        brush.trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
-                                    {chart_series{"RX", &net->rx_, colors_.mint_}},
-                                    nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
-                                    cfg_.display_.network_logarithmic_);
+                        graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                                .trend(rect{inner.x_, chart_top, inner.w_, half},
+                                       {chart_series{"TX", &net->tx_, colors_.blue_}},
+                                       nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
+                                       cfg_.display_.network_logarithmic_);
+                        graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                                .trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
+                                       {chart_series{"RX", &net->rx_, colors_.mint_}},
+                                       nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
+                                       cfg_.display_.network_logarithmic_);
                     }
+                }
+            }
+
+            void draw_process_side_panel(painter& brush, const rect& area) {
+                if (area.h_ < 5 || area.w_ < 24) {
+                    return;
+                }
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    brush.box(area, " PROCESS ", colors_.mint_);
+                    brush.empty(area.inset(1), "No process selected", "Use ↑/↓ or click a process row.");
+                    return;
+                }
+                const auto& item = *value;
+                brush.box(area, format(" PROCESS · {} ", item.name_).view(), colors_.mint_);
+                int y = area.y_ + 1;
+                const int bottom = area.bottom() - 1;
+                const auto line = [&](const string& text, color tint) {
+                    if (y < bottom) {
+                        brush.text(area.x_ + 2, y, truncate_display(text.view(), area.w_ - 4).view(), move(tint));
+                        ++y;
+                    }
+                };
+                line(format("PID {} · {} · {}", static_cast<uint64_t>(item.pid_), item.user_, item.state_),
+                     colors_.text_);
+                line(format("CPU {:.1f}% · RAM {} · I/O {}/s", item.cpu_, bytes(static_cast<double>(item.memory_)),
+                            bytes(item.read_per_sec_ + item.write_per_sec_)),
+                     colors_.muted_);
+                line(format("Start {} · runtime {}", format("{}", static_cast<uint64_t>(item.start_time_)),
+                            duration(item.runtime_)),
+                     colors_.muted_);
+                line(format("Command {}", item.command_), colors_.text_);
+                if (y < bottom - 2 && !process_history_.cpu_.empty()) {
+                    ++y;
+                    const int chart_height = neforce::min(6, bottom - y);
+                    graph_painter(brush, cfg_.display_.graph_symbol_proc_)
+                            .trend(rect{area.x_ + 2, y, area.w_ - 4, chart_height},
+                                   {chart_series{"process CPU %", &process_history_.cpu_, colors_.mint_}}, 100.0,
+                                   chart_window(), "%", false);
+                    y += chart_height + 1;
+                }
+                const auto detail = build_detail();
+                for (const auto& text: detail) {
+                    if (y >= bottom) {
+                        break;
+                    }
+                    if (text.empty()) {
+                        ++y;
+                        continue;
+                    }
+                    line(text, starts_with(text.view(), "#") ? colors_.mint_ : colors_.muted_);
                 }
             }
 
@@ -1912,7 +1983,13 @@ namespace neforce::neflux::ui {
                 if (table.h_ < 4) {
                     return;
                 }
-                draw_process_table(brush, table, rows);
+                if (process_side_panel_ && area.w_ >= 80 && selected_process_.has_value()) {
+                    const int left = neforce::max(40, area.w_ * 68 / 100);
+                    draw_process_table(brush, rect{table.x_, table.y_, left - 1, table.h_}, rows);
+                    draw_process_side_panel(brush, rect{table.x_ + left, table.y_, table.w_ - left, table.h_});
+                } else {
+                    draw_process_table(brush, table, rows);
+                }
             }
 
             struct column_def {
@@ -2013,6 +2090,20 @@ namespace neforce::neflux::ui {
                     return value->as_string();
                 }
                 return value->dump();
+            }
+
+            NEFORCE_NODISCARD color process_tint(const process& item) const {
+                const double cpu = neforce::clamp(static_cast<double>(item.cpu_), 0.0, 100.0);
+                const color accent = cpu >= 50.0 ? colors_.red_ : (cpu >= 20.0 ? colors_.amber_ : colors_.mint_);
+                if (!cfg_.display_.process_gradient_) {
+                    return accent;
+                }
+                const auto mix = [](const color& base, const color& tint, int weight) {
+                    return color{(base.R() * (10 - weight) + tint.R() * weight) / 10,
+                                 (base.G() * (10 - weight) + tint.G() * weight) / 10,
+                                 (base.B() * (10 - weight) + tint.B() * weight) / 10};
+                };
+                return mix(colors_.text_, accent, static_cast<int>(neforce::round(3.0 + cpu * 0.07)));
             }
 
             NEFORCE_NODISCARD pair<string, color> column_value(const process& item, const string& key,
@@ -2232,6 +2323,11 @@ namespace neforce::neflux::ui {
                     brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", colors_.text_, bg);
                     hits_.push_back({{inner.x_, y, inner.w_, 1}, hit_action::process_row, index});
                     const int indent = neforce::min(rows[index].depth_, 4);
+                    if (tree_ && indent > 0) {
+                        hits_.push_back({{inner.x_, y, neforce::min(inner.w_, indent * 2), 1},
+                                         hit_action::process_tree_toggle,
+                                         index});
+                    }
                     int cx = inner.x_;
                     for (const auto& column: columns) {
                         const int width = column.width_ == 0 ? fill_width : column.width_;
@@ -2239,6 +2335,10 @@ namespace neforce::neflux::ui {
                             break;
                         }
                         auto cell = column_value(item, column.key_, &rows[index]);
+                        if (cfg_.display_.process_colors_ && !active &&
+                            (column.key_ == "command" || column.key_ == "name" || column.key_ == "user")) {
+                            cell.second = process_tint(item);
+                        }
                         if ((column.key_ == "command" || column.key_ == "name") && tree_ && indent > 0) {
                             string prefix;
                             for (int level = 1; level < indent; ++level) {
@@ -2597,6 +2697,8 @@ namespace neforce::neflux::ui {
                                                                     : string("—"),
                                            10, true) +
                                 item.kind_;
+                        hits_.push_back(
+                                {{processes.x_ + 1, y, processes.w_ - 2, 1}, hit_action::gpu_process_row, item.pid_});
                         brush.text(processes.x_ + 2, y, truncate_display(line.view(), processes.w_ - 4).view(),
                                    colors_.text_);
                         ++process_row;
@@ -2612,13 +2714,15 @@ namespace neforce::neflux::ui {
                 const rect charts{area.x_, area.y_ + cards_height, area.w_, neforce::min(10, area.h_ / 3)};
                 const auto found = history_.gpu_details_.find(device.uuid_);
                 if (found != history_.gpu_details_.end()) {
-                    brush.chart(rect{charts.x_, charts.y_, charts.w_ / 2 - 1, charts.h_}, "GPU utilization",
-                                {chart_series{"GPU", &found->second.utilization_, colors_.blue_}}, 100.0, "%",
-                                chart_window());
-                    brush.chart(rect{charts.x_ + charts.w_ / 2, charts.y_, charts.w_ / 2, charts.h_},
-                                format("VRAM ({})", device.memory_label()).view(),
-                                {chart_series{"VRAM", &found->second.vram_, colors_.purple_}}, 100.0, "%",
-                                chart_window());
+                    graph_painter(brush, cfg_.display_.graph_symbol_gpu_)
+                            .chart(rect{charts.x_, charts.y_, charts.w_ / 2 - 1, charts.h_}, "GPU utilization",
+                                   {chart_series{"GPU", &found->second.utilization_, colors_.blue_}}, 100.0, "%",
+                                   chart_window());
+                    graph_painter(brush, cfg_.display_.graph_symbol_gpu_)
+                            .chart(rect{charts.x_ + charts.w_ / 2, charts.y_, charts.w_ / 2, charts.h_},
+                                   format("VRAM ({})", device.memory_label()).view(),
+                                   {chart_series{"VRAM", &found->second.vram_, colors_.purple_}}, 100.0, "%",
+                                   chart_window());
                 }
                 const rect table{area.x_, area.y_ + cards_height + charts.h_, area.w_,
                                  area.h_ - cards_height - charts.h_};
@@ -2698,10 +2802,11 @@ namespace neforce::neflux::ui {
                         peak = neforce::max(peak, value);
                     }
                     brush.box(chart_area, " DISK THROUGHPUT · physical devices ", colors_.amber_);
-                    brush.chart(chart_area.inset(1), "read / write",
-                                {chart_series{"Read", &history_.disk_read_, colors_.mint_},
-                                 chart_series{"Write", &history_.disk_write_, colors_.blue_}},
-                                nice_max(peak * 1.1), "B/s", chart_window());
+                    graph_painter(brush, cfg_.display_.graph_symbol_proc_)
+                            .chart(chart_area.inset(1), "read / write",
+                                   {chart_series{"Read", &history_.disk_read_, colors_.mint_},
+                                    chart_series{"Write", &history_.disk_write_, colors_.blue_}},
+                                   nice_max(peak * 1.1), "B/s", chart_window());
                     cursor += chart_height;
                 }
                 const int remaining = area.h_ - (cursor - area.y_);
@@ -3044,12 +3149,14 @@ namespace neforce::neflux::ui {
                     const double shared = neforce::max(net->rx_peak_, net->tx_peak_);
                     const double rx_max = fixed > 0.0 ? fixed : (sync_scale ? shared : net->rx_peak_);
                     const double tx_max = fixed > 0.0 ? fixed : (sync_scale ? shared : net->tx_peak_);
-                    brush.chart(rect{area.x_, area.y_, area.w_ / 2 - 1, top}, "Download",
-                                {chart_series{"RX", &net->rx_, colors_.mint_}}, nice_max(neforce::max(1.0, rx_max)),
-                                "B/s", chart_window(), cfg_.display_.network_logarithmic_);
-                    brush.chart(rect{area.x_ + area.w_ / 2, area.y_, area.w_ / 2, top}, "Upload",
-                                {chart_series{"TX", &net->tx_, colors_.blue_}}, nice_max(neforce::max(1.0, tx_max)),
-                                "B/s", chart_window(), cfg_.display_.network_logarithmic_);
+                    graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                            .chart(rect{area.x_, area.y_, area.w_ / 2 - 1, top}, "Download",
+                                   {chart_series{"RX", &net->rx_, colors_.mint_}}, nice_max(neforce::max(1.0, rx_max)),
+                                   "B/s", chart_window(), cfg_.display_.network_logarithmic_);
+                    graph_painter(brush, cfg_.display_.graph_symbol_net_)
+                            .chart(rect{area.x_ + area.w_ / 2, area.y_, area.w_ / 2, top}, "Upload",
+                                   {chart_series{"TX", &net->tx_, colors_.blue_}}, nice_max(neforce::max(1.0, tx_max)),
+                                   "B/s", chart_window(), cfg_.display_.network_logarithmic_);
                 }
                 const rect interfaces{area.x_, area.y_ + top, area.w_, neforce::max(7, (area.h_ - top) / 2)};
                 network_interfaces_rect_ = interfaces;
@@ -3769,28 +3876,10 @@ namespace neforce::neflux::ui {
             }
 
             NEFORCE_NODISCARD int send_signal(uint32_t pid, int signal_value) const {
-#if NEFLUX_PLATFORM_WINDOWS
-                HANDLE handle = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
-                if (handle == nullptr) {
-                    return -1;
-                }
-                const BOOL result = TerminateProcess(handle, static_cast<UINT>(signal_value));
-                CloseHandle(handle);
-                return result != 0 ? 0 : -1;
-#else
-#    ifdef SYS_pidfd_open
-                const int descriptor = static_cast<int>(syscall(SYS_pidfd_open, pid, 0));
-                if (descriptor >= 0) {
-                    const int result =
-                            static_cast<int>(syscall(SYS_pidfd_send_signal, descriptor, signal_value, nullptr, 0));
-                    close(descriptor);
-                    if (result == 0) {
-                        return 0;
-                    }
-                }
-#    endif
-                return ::kill(static_cast<pid_t>(pid), signal_value);
-#endif
+                return ::neforce::process::send_signal(static_cast<::neforce::process::native_id_type>(pid),
+                                                       signal_value)
+                               ? 0
+                               : -1;
             }
 
             void execute_pending_signal() {
@@ -3823,15 +3912,18 @@ namespace neforce::neflux::ui {
                 popup_ = popup_kind::none;
             }
 
-            NEFORCE_NODISCARD vector<pair<int, string>> signal_entries() const {
+            NEFORCE_NODISCARD static vector<pair<int, string>> signal_entries() {
                 vector<pair<int, string>> items;
+#if NEFLUX_PLATFORM_WINDOWS
+                items.push_back({15, "SIGTERM Terminate"});
+                items.push_back({9, "SIGKILL Kill"});
+#else
                 items.push_back({SIGINT, "SIGINT Interrupt"});
                 items.push_back({SIGABRT, "SIGABRT Abort"});
                 items.push_back({SIGFPE, "SIGFPE Floating point"});
                 items.push_back({SIGILL, "SIGILL Illegal instruction"});
                 items.push_back({SIGSEGV, "SIGSEGV Segmentation fault"});
                 items.push_back({SIGTERM, "SIGTERM Terminate"});
-#if !NEFLUX_PLATFORM_WINDOWS
                 items.push_back({SIGHUP, "SIGHUP Hangup"});
                 items.push_back({SIGQUIT, "SIGQUIT Quit"});
                 items.push_back({SIGTRAP, "SIGTRAP Trace trap"});
@@ -3897,30 +3989,10 @@ namespace neforce::neflux::ui {
                 }
                 size_t failed = 0;
                 for (const auto& identity: targets) {
-#if NEFLUX_PLATFORM_WINDOWS
-                    HANDLE handle = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(identity.first));
-                    DWORD priority = NORMAL_PRIORITY_CLASS;
-                    if (*value <= -15) {
-                        priority = IDLE_PRIORITY_CLASS;
-                    } else if (*value < 0) {
-                        priority = BELOW_NORMAL_PRIORITY_CLASS;
-                    } else if (*value > 10) {
-                        priority = HIGH_PRIORITY_CLASS;
-                    } else if (*value > 0) {
-                        priority = ABOVE_NORMAL_PRIORITY_CLASS;
-                    }
-                    const bool ok = handle != nullptr && SetPriorityClass(handle, priority) != 0;
-                    if (handle != nullptr) {
-                        CloseHandle(handle);
-                    }
-                    if (!ok) {
+                    if (!::neforce::process::set_nice(static_cast<::neforce::process::native_id_type>(identity.first),
+                                                      static_cast<int32_t>(*value))) {
                         ++failed;
                     }
-#else
-                    if (setpriority(PRIO_PROCESS, static_cast<id_t>(identity.first), static_cast<int>(*value)) != 0) {
-                        ++failed;
-                    }
-#endif
                 }
                 status_ = failed == 0 ? format("Nice set to {}", *value)
                                       : format("Nice applied to {} process{}; {} failed",
@@ -3967,28 +4039,10 @@ namespace neforce::neflux::ui {
                 }
                 size_t failed = 0;
                 for (const auto& identity: targets) {
-#if NEFLUX_PLATFORM_WINDOWS
-                    HANDLE handle = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(identity.first));
-                    const bool ok =
-                            handle != nullptr && SetProcessAffinityMask(handle, static_cast<DWORD_PTR>(mask)) != 0;
-                    if (handle != nullptr) {
-                        CloseHandle(handle);
-                    }
-                    if (!ok) {
+                    if (!::neforce::process::set_affinity(
+                                static_cast<::neforce::process::native_id_type>(identity.first), mask)) {
                         ++failed;
                     }
-#else
-                    cpu_set_t set;
-                    CPU_ZERO(&set);
-                    for (int cpu = 0; cpu < maximum_cpus; ++cpu) {
-                        if ((mask & (1ULL << cpu)) != 0) {
-                            CPU_SET(cpu, &set);
-                        }
-                    }
-                    if (sched_setaffinity(static_cast<pid_t>(identity.first), sizeof(set), &set) != 0) {
-                        ++failed;
-                    }
-#endif
                 }
                 status_ = failed == 0 ? format("Affinity set: {}", prompt_text_)
                                       : format("Affinity applied; {} failed", static_cast<uint64_t>(failed));
@@ -4282,8 +4336,11 @@ namespace neforce::neflux::ui {
                     brush.text_right(area.x_, y, area.w_ - 2, rows[index].second.view(), colors_.muted_,
                                      active ? colors_.selection_ : colors_.panel_);
                 }
-                brush.text(area.x_ + 2, area.bottom() - 2, "←/→ adjust · w save · Esc close", colors_.border_,
-                           colors_.panel_);
+                const rect settings_scrollbar{area.right() - 2, area.y_ + 1, 2, neforce::max(0, height - 3)};
+                hits_.push_back({settings_scrollbar, hit_action::settings_scroll, 0});
+                brush.scrollbar(settings_scrollbar, rows.size(), static_cast<size_t>(visible), popup_scroll_);
+                brush.text(area.x_ + 2, area.bottom() - 2, "Enter choose · ←/→ adjust · w save · Esc close",
+                           colors_.border_, colors_.panel_);
             }
 
             NEFORCE_NODISCARD vector<string> help_lines() const {
@@ -4307,7 +4364,7 @@ namespace neforce::neflux::ui {
                         "i                           Show or hide loopback interfaces",
                         "C                           Process columns",
                         "X, 0, E                     Explorer extras; history; events",
-                        "G, D                        GPU device details; toggle details",
+                        "D                           Process side panel; GPU device details",
                         "R                           ROS graph for the selected process",
                         "Space/v                     Mark process",
                         "k/K, t, s                   Kill, terminate, or choose a signal",
@@ -4349,6 +4406,8 @@ namespace neforce::neflux::ui {
                 rows.push_back({"CPU warning", format("{:.0f}%", cfg_.cpu_warning_)});
                 rows.push_back({"Memory warning", format("{:.0f}%", cfg_.memory_warning_)});
                 rows.push_back({"GPU temperature warning", format("{}°C", cfg_.gpu_temperature_warning_)});
+                rows.push_back(
+                        {"Sort by", sorts[neforce::min(sort_index_, sizeof(sorts) / sizeof(sorts[0]) - 1)].name});
                 for (auto item: cfg_.display_.settings()) {
                     if (item.second == "true") {
                         item.second = "On";
@@ -4358,6 +4417,202 @@ namespace neforce::neflux::ui {
                     rows.push_back(move(item));
                 }
                 return rows;
+            }
+
+            NEFORCE_NODISCARD vector<menu_entry> setting_choices(size_t row) const {
+                vector<menu_entry> out;
+                const auto add = [&out, row](const string& label, const string& code, const string& current) {
+                    out.push_back({label, code == current ? "●" : "", format("setting_pick:{}:{}", row, code)});
+                };
+                if (row == 0) {
+                    add("Read-only path", "path", "path");
+                    return out;
+                }
+                if (row == 1) {
+                    for (const auto& value: {250U, 500U, 1000U, 2000U, 5000U, 10000U}) {
+                        add(format("{:.2f} s", static_cast<double>(value) / 1000.0), format("{}", value),
+                            format("{}", cfg_.interval_ms_));
+                    }
+                } else if (row == 2) {
+                    for (const auto value: {60U, 120U, 300U, 600U, 1800U, 3600U}) {
+                        add(format("{} samples", value), format("{}", value), format("{}", cfg_.history_));
+                    }
+                } else if (row == 3) {
+                    static constexpr uint64_t values[] = {15, 30, 60, 180, 300, 900, 1800, 3600, 0};
+                    size_t current = 0;
+                    for (size_t i = 0; i < 9; ++i) {
+                        if (values[i] == cfg_.time_window_seconds_) {
+                            current = i;
+                            break;
+                        }
+                    }
+                    for (size_t i = 0; i < 9; ++i) {
+                        add(values[i] == 0 ? "All retained" : time_label(values[i]), format("{}", i),
+                            format("{}", current));
+                    }
+                } else if (row == 4) {
+                    for (const auto& name: config::themes()) {
+                        add(name, name, cfg_.theme_);
+                    }
+                } else if (row == 5) {
+                    for (const auto& name: {"balanced", "compute", "storage", "minimal"}) {
+                        add(name, name, cfg_.layout_);
+                    }
+                } else if (row >= 6 && row <= 11) {
+                    const auto rows = settings_rows();
+                    const string current = row < rows.size() && rows[row].second == "On" ? "on" : "off";
+                    add("On", "on", current);
+                    add("Off", "off", current);
+                } else if (row == 12) {
+                    for (const auto value: {0U, 1U, 2U, 3U, 5U, 10U}) {
+                        add(format("{} s", value), format("{}", value), format("{}", cfg_.alert_hold_seconds_));
+                    }
+                } else if (row == 13) {
+                    for (const auto value: {100U, 250U, 500U, 1000U, 2000U, 5000U}) {
+                        add(format("{} lines", value), format("{}", value), format("{}", cfg_.log_lines_));
+                    }
+                } else if (row == 14 || row == 15) {
+                    for (const auto value: {50U, 60U, 70U, 80U, 90U, 95U}) {
+                        add(format("{}%", value), format("{}", value),
+                            format("{:.0f}", row == 14 ? cfg_.cpu_warning_ : cfg_.memory_warning_));
+                    }
+                } else if (row == 16) {
+                    for (const auto value: {60U, 70U, 75U, 80U, 85U, 90U, 95U}) {
+                        add(format("{}°C", value), format("{}", value), format("{}", cfg_.gpu_temperature_warning_));
+                    }
+                } else if (row == 17) {
+                    for (size_t i = 0; i < sizeof(sorts) / sizeof(sorts[0]); ++i) {
+                        add(sorts[i].name, format("{}", i), format("{}", sort_index_));
+                    }
+                } else {
+                    const auto rows = settings_rows();
+                    const string label = row < rows.size() ? rows[row].first : string();
+                    const string current = row < rows.size() ? rows[row].second : string();
+                    if (label.contains("graph symbol")) {
+                        for (const auto& value: {"default", "braille", "block", "tty", "ascii"}) {
+                            if (value == "default" && label == "Graph symbols") {
+                                continue;
+                            }
+                            add(value, value, current);
+                        }
+                    } else if (label == "Temperature unit") {
+                        add("celsius", "celsius", current);
+                        add("fahrenheit", "fahrenheit", current);
+                        add("kelvin", "kelvin", current);
+                    } else if (label == "Expanded overview panel") {
+                        for (const auto& value: {"all", "cpu", "memory", "gpu", "storage", "network"}) {
+                            add(value, value, current);
+                        }
+                    } else if (current == "On" || current == "Off") {
+                        add("On", "on", current == "On" ? "on" : "off");
+                        add("Off", "off", current == "On" ? "on" : "off");
+                    } else {
+                        add("Decrease", "dec", "none");
+                        add("Increase", "inc", "none");
+                    }
+                }
+                return out;
+            }
+
+            void open_setting_choice() {
+                const auto rows = settings_rows();
+                if (settings_index_ >= rows.size()) {
+                    return;
+                }
+                setting_choice_row_ = settings_index_;
+                popup_parent_ = popup_kind::settings;
+                popup_ = popup_kind::main_menu;
+                popup_title_ = format("Setting · {}", rows[settings_index_].first);
+                popup_entries_ = setting_choices(settings_index_);
+                popup_selected_ = 0;
+                for (size_t i = 0; i < popup_entries_.size(); ++i) {
+                    if (!popup_entries_[i].key_.empty()) {
+                        popup_selected_ = i;
+                        break;
+                    }
+                }
+                popup_scroll_ = 0;
+            }
+
+            void apply_setting_choice(size_t row, const string& code) {
+                const auto as_u64 = [&code]() -> uint64_t { return parse_u64(code.view()).value_or(0); };
+                const auto as_double = [&code]() -> double { return parse_f64(code.view()).value_or(0.0); };
+                if (row == 1) {
+                    cfg_.interval_ms_ = neforce::clamp<uint64_t>(as_u64(), 250, 10000);
+                } else if (row == 2) {
+                    cfg_.history_ = static_cast<size_t>(neforce::clamp<uint64_t>(as_u64(), 30, 3600));
+                } else if (row == 3) {
+                    set_time_window(static_cast<size_t>(neforce::clamp<uint64_t>(as_u64(), 0, 8)));
+                } else if (row == 4) {
+                    apply_theme(code);
+                } else if (row == 5) {
+                    cfg_.layout_ = code;
+                } else if (row >= 6 && row <= 11) {
+                    const bool value = code == "on";
+                    if (row == 6) {
+                        cfg_.show_threads_ = value;
+                    } else if (row == 7) {
+                        cfg_.show_kernel_threads_ = value;
+                    } else if (row == 8) {
+                        cfg_.show_loopback_ = value;
+                    } else if (row == 9) {
+                        cfg_.collect_gpu_ = value;
+                    } else if (row == 10) {
+                        cfg_.ascii_ = value;
+                    } else {
+                        cfg_.no_color_ = value;
+                        configure_theme();
+                    }
+                } else if (row == 12) {
+                    cfg_.alert_hold_seconds_ = as_u64();
+                } else if (row == 13) {
+                    cfg_.log_lines_ = static_cast<size_t>(neforce::clamp<uint64_t>(as_u64(), 10, 10000));
+                } else if (row == 14) {
+                    cfg_.cpu_warning_ = static_cast<float>(as_double());
+                } else if (row == 15) {
+                    cfg_.memory_warning_ = as_double();
+                } else if (row == 16) {
+                    cfg_.gpu_temperature_warning_ = static_cast<uint32_t>(as_u64());
+                } else if (row == 17) {
+                    sort_index_ = static_cast<size_t>(
+                            neforce::clamp<uint64_t>(as_u64(), 0, sizeof(sorts) / sizeof(sorts[0]) - 1));
+                    reverse_ = !sorts[sort_index_].descending;
+                    sync_sort_config();
+                } else if (row >= 18) {
+                    const auto rows = settings_rows();
+                    const string label = row < rows.size() ? rows[row].first : string();
+                    const string current = row < rows.size() ? rows[row].second : string();
+                    if (label == "Expanded overview panel") {
+                        cfg_.display_.overview_panel_ = code;
+                    } else if (label == "Temperature unit") {
+                        cfg_.display_.temperature_unit_ = code;
+                    } else if (label == "Graph symbols") {
+                        cfg_.display_.graph_symbol_ = code;
+                    } else if (label.contains("graph symbol")) {
+                        if (label.starts_with("CPU")) {
+                            cfg_.display_.graph_symbol_cpu_ = code;
+                        } else if (label.starts_with("Memory")) {
+                            cfg_.display_.graph_symbol_mem_ = code;
+                        } else if (label.starts_with("Network")) {
+                            cfg_.display_.graph_symbol_net_ = code;
+                        } else if (label.starts_with("Process")) {
+                            cfg_.display_.graph_symbol_proc_ = code;
+                        } else if (label.starts_with("GPU")) {
+                            cfg_.display_.graph_symbol_gpu_ = code;
+                        }
+                    } else {
+                        const size_t saved = settings_index_;
+                        settings_index_ = row;
+                        if (code == "on" || code == "off") {
+                            if ((code == "on") != (current == "On")) {
+                                adjust_setting(1);
+                            }
+                        } else {
+                            adjust_setting(code == "inc" ? 1 : -1);
+                        }
+                        settings_index_ = saved;
+                    }
+                }
             }
 
             void open_main_menu() {
@@ -4930,6 +5185,17 @@ namespace neforce::neflux::ui {
                 const string action = popup_entries_[popup_selected_].action_;
                 if (action == "resume") {
                     popup_ = popup_kind::none;
+                } else if (starts_with(action.view(), "setting_pick:")) {
+                    const auto row_end = action.find(':', 13);
+                    const auto row_value =
+                            row_end == string::npos ? none : parse_u64(action.view().substr(13, row_end - 13));
+                    if (row_value.has_value() && row_end != string::npos) {
+                        apply_setting_choice(static_cast<size_t>(*row_value), action.substr(row_end + 1));
+                        settings_index_ = static_cast<size_t>(*row_value);
+                        popup_parent_ = popup_kind::none;
+                        popup_ = popup_kind::settings;
+                        popup_scroll_ = 0;
+                    }
                 } else if (action == "detail") {
                     popup_ = popup_kind::none;
                     open_detail();
@@ -4946,7 +5212,11 @@ namespace neforce::neflux::ui {
                     request_signal(SIGTERM, "Terminate");
                 } else if (action == "kill_process") {
                     popup_ = popup_kind::none;
+#if NEFLUX_PLATFORM_WINDOWS
+                    request_signal(SIGTERM, "Kill");
+#else
                     request_signal(SIGKILL, "Kill");
+#endif
                 } else if (action == "signal_menu") {
                     open_signal_menu();
                 } else if (action == "net_interface_detail") {
@@ -5312,6 +5582,10 @@ namespace neforce::neflux::ui {
                         settings_index_ = neforce::min(settings_index_ + 1, settings_rows().size() - 1);
                         return true;
                     }
+                    if (key == tui::key_event::type::enter) {
+                        open_setting_choice();
+                        return true;
+                    }
                     if (key == tui::key_event::type::left) {
                         adjust_setting(-1);
                         return true;
@@ -5329,6 +5603,9 @@ namespace neforce::neflux::ui {
                 if (key == tui::key_event::type::escape) {
                     if (popup_parent_ == popup_kind::main_menu) {
                         open_main_menu();
+                    } else if (popup_parent_ == popup_kind::settings) {
+                        popup_ = popup_kind::settings;
+                        popup_parent_ = popup_kind::none;
                     } else {
                         popup_ = popup_kind::none;
                         popup_parent_ = popup_kind::none;
@@ -5922,6 +6199,15 @@ namespace neforce::neflux::ui {
                     gpu_section_ = gpu_section_ == 2 ? 0 : 2;
                     return true;
                 }
+                if (cp == U'D' && (current_ == view::processes || current_ == view::overview)) {
+                    if (!selected_process_.has_value()) {
+                        const auto rows = process_rows();
+                        remember_selection(rows);
+                    }
+                    process_side_panel_ = !process_side_panel_;
+                    status_ = process_side_panel_ ? "Process side panel on · D close" : "Process side panel off";
+                    return true;
+                }
                 if (cp == U'[' || cp == U']') {
                     if (!snap_.gpus_.empty()) {
                         if (cp == U']') {
@@ -6057,6 +6343,9 @@ namespace neforce::neflux::ui {
                                 case hit_action::workload_scroll:
                                     count = workload_rows(current_ == view::containers).size();
                                     break;
+                                case hit_action::settings_scroll:
+                                    count = settings_rows().size();
+                                    break;
                                 default:
                                     break;
                             }
@@ -6065,6 +6354,8 @@ namespace neforce::neflux::ui {
                                         static_cast<size_t>(neforce::round(ratio * static_cast<double>(count - 1)));
                                 if (dragging_scroll_action_ == hit_action::connections_scroll) {
                                     selected_connection_ = target;
+                                } else if (dragging_scroll_action_ == hit_action::settings_scroll) {
+                                    settings_index_ = target;
                                 } else {
                                     selected_ = target;
                                 }
@@ -6117,11 +6408,8 @@ namespace neforce::neflux::ui {
                             } else if (popup_ == popup_kind::settings) {
                                 const size_t index = popup_scroll_ + static_cast<size_t>(row);
                                 if (index < settings_rows().size()) {
-                                    const bool was_selected = settings_index_ == index;
                                     settings_index_ = index;
-                                    if (was_selected) {
-                                        adjust_setting(1);
-                                    }
+                                    open_setting_choice();
                                 }
                             }
                             return true;
@@ -6254,7 +6542,8 @@ namespace neforce::neflux::ui {
                         if ((hit->action_ == hit_action::history_scroll || hit->action_ == hit_action::events_scroll ||
                              hit->action_ == hit_action::explorer_scroll ||
                              hit->action_ == hit_action::connections_scroll ||
-                             hit->action_ == hit_action::workload_scroll) &&
+                             hit->action_ == hit_action::workload_scroll ||
+                             hit->action_ == hit_action::settings_scroll) &&
                             hit->area_.h_ > 1) {
                             const int relative = neforce::clamp<int>(event.y - hit->area_.y_, 0, hit->area_.h_ - 1);
                             const double ratio = static_cast<double>(relative) / static_cast<double>(hit->area_.h_ - 1);
@@ -6298,6 +6587,19 @@ namespace neforce::neflux::ui {
                                         neforce::round(ratio * static_cast<double>(rows.size() - 1)));
                                 remember_selection(rows);
                                 dragging_process_scrollbar_ = true;
+                            }
+                            return true;
+                        }
+                        if (hit->action_ == hit_action::process_tree_toggle &&
+                            (current_ == view::processes || current_ == view::overview)) {
+                            const auto rows = process_rows();
+                            if (hit->index_ < rows.size()) {
+                                const auto& item = snap_.processes_[rows[hit->index_].index_];
+                                if (collapsed_.count(item.pid_) != 0) {
+                                    collapsed_.erase(item.pid_);
+                                } else {
+                                    collapsed_.insert(item.pid_);
+                                }
                             }
                             return true;
                         }
@@ -6403,6 +6705,17 @@ namespace neforce::neflux::ui {
                         if (hit->action_ == hit_action::gpu_device && current_ == view::gpu &&
                             hit->index_ < snap_.gpus_.size()) {
                             selected_gpu_ = hit->index_;
+                            return true;
+                        }
+                        if (hit->action_ == hit_action::gpu_process_row && current_ == view::gpu) {
+                            for (const auto& process: snap_.processes_) {
+                                if (process.pid_ != hit->index_) {
+                                    continue;
+                                }
+                                selected_process_ = {process.pid_, process.start_time_};
+                                open_detail();
+                                break;
+                            }
                             return true;
                         }
                         if (hit->action_ == hit_action::process_sort &&
@@ -6692,18 +7005,18 @@ namespace neforce::neflux::ui {
 
     } // namespace
 
-    string render_plaintext(const snapshot& value, const inventory& data, config cfg, const string& view_name,
+    string render_plaintext(const snapshot& value, const inventory& data, const config& cfg, const string& view_name,
                             int width, int height) {
         flux_component component(nullptr, cfg, "", cli_args{});
         component.seed(value, data, parse_view(view_name));
         tui::headless app(&component, width, height);
-        palette colors = palette_from_config(cfg);
+        const palette colors = palette_from_config(cfg);
         app.set_theme(theme_for(colors));
         app.render();
         return app.plaintext();
     }
 
-    string render_svg_history(const vector<snapshot>& values, const inventory& data, config cfg,
+    string render_svg_history(const vector<snapshot>& values, const inventory& data, const config& cfg,
                               const string& view_name, const string& gpu_panel, int width, int height) {
         cli_args args;
         args.gpu_panel_ = gpu_panel;

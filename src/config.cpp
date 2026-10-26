@@ -241,25 +241,11 @@ namespace neforce::neflux {
     }
 
     string config::path() {
-        string base;
-#if NEFLUX_PLATFORM_WINDOWS
-        base = environment::get("APPDATA");
+        const string base = environment::config_directory();
         if (base.empty()) {
-            base = environment::get("USERPROFILE");
+            return "neflux/config.toml";
         }
-        if (base.empty()) {
-            base = ".";
-        }
-        return base + "\\neflux\\config.toml";
-#else
-        if (const auto xdg = environment::get("XDG_CONFIG_HOME"); !xdg.empty()) {
-            base = xdg;
-        } else {
-            const auto home = environment::get("HOME");
-            base = home.empty() ? "." : home + "/.config";
-        }
-        return base + "/neflux/config.toml";
-#endif
+        return (::neforce::path(base) / "neflux" / "config.toml").str();
     }
 
     config config::load(const string& config_path) {
@@ -451,6 +437,14 @@ namespace neforce::neflux {
         out.append("transparent_background = ").append(toml_bool(display_.transparent_background_)).append("\n");
         out.append("graph_symbol = ").append(quote(display_.graph_symbol_)).append("\n");
         out.append("cpu_lazy_sort = ").append(toml_bool(display_.cpu_lazy_sort_)).append("\n");
+        out.append("rounded_corners = ").append(toml_bool(display_.rounded_corners_)).append("\n");
+        out.append("process_colors = ").append(toml_bool(display_.process_colors_)).append("\n");
+        out.append("process_gradient = ").append(toml_bool(display_.process_gradient_)).append("\n");
+        out.append("graph_symbol_cpu = ").append(quote(display_.graph_symbol_cpu_)).append("\n");
+        out.append("graph_symbol_mem = ").append(quote(display_.graph_symbol_mem_)).append("\n");
+        out.append("graph_symbol_net = ").append(quote(display_.graph_symbol_net_)).append("\n");
+        out.append("graph_symbol_proc = ").append(quote(display_.graph_symbol_proc_)).append("\n");
+        out.append("graph_symbol_gpu = ").append(quote(display_.graph_symbol_gpu_)).append("\n");
         return out;
     }
 
@@ -603,7 +597,9 @@ namespace neforce::neflux {
                         "network_start_zero", "network_sync_scale", "network_scale",          "network_swap",
                         "memory_graphs",      "show_swap",          "show_battery",           "process_basename",
                         "group_processes",    "overview_panel",     "transparent_background", "graph_symbol",
-                        "cpu_lazy_sort"});
+                        "cpu_lazy_sort",      "rounded_corners",    "process_colors",         "process_gradient",
+                        "graph_symbol_cpu",   "graph_symbol_mem",   "graph_symbol_net",       "graph_symbol_proc",
+                        "graph_symbol_gpu"});
             display_config& d = value.display_;
             read_string(table, "cpu_graph", d.cpu_graph_);
             read_string(table, "cpu_graph_lower", d.cpu_graph_lower_);
@@ -628,6 +624,14 @@ namespace neforce::neflux {
             read_bool(table, "transparent_background", d.transparent_background_);
             read_string(table, "graph_symbol", d.graph_symbol_);
             read_bool(table, "cpu_lazy_sort", d.cpu_lazy_sort_);
+            read_bool(table, "rounded_corners", d.rounded_corners_);
+            read_bool(table, "process_colors", d.process_colors_);
+            read_bool(table, "process_gradient", d.process_gradient_);
+            read_string(table, "graph_symbol_cpu", d.graph_symbol_cpu_);
+            read_string(table, "graph_symbol_mem", d.graph_symbol_mem_);
+            read_string(table, "graph_symbol_net", d.graph_symbol_net_);
+            read_string(table, "graph_symbol_proc", d.graph_symbol_proc_);
+            read_string(table, "graph_symbol_gpu", d.graph_symbol_gpu_);
         }
         read_bool(*root, "check_updates", value.check_updates_);
         if (const toml_value* ignored = root->get_member("ignored_update_version");
@@ -727,6 +731,14 @@ namespace neforce::neflux {
         rows.push_back({"Transparent background", transparent_background_ ? "true" : "false"});
         rows.push_back({"Graph symbols", graph_symbol_});
         rows.push_back({"Lazy CPU sort", cpu_lazy_sort_ ? "true" : "false"});
+        rows.push_back({"Rounded corners", rounded_corners_ ? "true" : "false"});
+        rows.push_back({"Process CPU colors", process_colors_ ? "true" : "false"});
+        rows.push_back({"Process color gradient", process_gradient_ ? "true" : "false"});
+        rows.push_back({"CPU graph symbol", graph_symbol_cpu_});
+        rows.push_back({"Memory graph symbol", graph_symbol_mem_});
+        rows.push_back({"Network graph symbol", graph_symbol_net_});
+        rows.push_back({"Process graph symbol", graph_symbol_proc_});
+        rows.push_back({"GPU graph symbol", graph_symbol_gpu_});
         return rows;
     }
 
@@ -822,10 +834,34 @@ namespace neforce::neflux {
                 transparent_background_ = !transparent_background_;
                 break;
             case 19:
-                cycle(graph_symbol_, {"braille", "block", "ascii"});
+                cycle(graph_symbol_, {"braille", "block", "tty", "ascii"});
                 break;
             case 20:
                 cpu_lazy_sort_ = !cpu_lazy_sort_;
+                break;
+            case 21:
+                rounded_corners_ = !rounded_corners_;
+                break;
+            case 22:
+                process_colors_ = !process_colors_;
+                break;
+            case 23:
+                process_gradient_ = !process_gradient_;
+                break;
+            case 24:
+                cycle(graph_symbol_cpu_, {"default", "braille", "block", "tty", "ascii"});
+                break;
+            case 25:
+                cycle(graph_symbol_mem_, {"default", "braille", "block", "tty", "ascii"});
+                break;
+            case 26:
+                cycle(graph_symbol_net_, {"default", "braille", "block", "tty", "ascii"});
+                break;
+            case 27:
+                cycle(graph_symbol_proc_, {"default", "braille", "block", "tty", "ascii"});
+                break;
+            case 28:
+                cycle(graph_symbol_gpu_, {"default", "braille", "block", "tty", "ascii"});
                 break;
             default:
                 break;
@@ -833,8 +869,17 @@ namespace neforce::neflux {
     }
 
     void display_config::validate() const {
-        if (!(graph_symbol_ == "braille" || graph_symbol_ == "block" || graph_symbol_ == "ascii")) {
-            fail("Invalid graph symbol; expected braille, block, or ascii");
+        const auto valid_symbol = [](const string& value) {
+            return value == "braille" || value == "block" || value == "tty" || value == "ascii";
+        };
+        if (!valid_symbol(graph_symbol_)) {
+            fail("Invalid graph symbol; expected braille, block, tty, or ascii");
+        }
+        for (const auto* value:
+             {&graph_symbol_cpu_, &graph_symbol_mem_, &graph_symbol_net_, &graph_symbol_proc_, &graph_symbol_gpu_}) {
+            if (*value != "default" && !valid_symbol(*value)) {
+                fail("Invalid per-panel graph symbol");
+            }
         }
         if (!(overview_panel_ == "all" || overview_panel_ == "cpu" || overview_panel_ == "memory" ||
               overview_panel_ == "gpu" || overview_panel_ == "storage" || overview_panel_ == "network")) {

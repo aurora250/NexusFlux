@@ -7,6 +7,7 @@
 #include <NeForce/core/file/path.hpp>
 #include <NeForce/core/system/environment.hpp>
 #include <NeForce/core/system/process.hpp>
+#include <NeForce/network/socket_base.hpp>
 #if NEFLUX_PLATFORM_WINDOWS
 #    include <winsock2.h>
 #    include <ws2tcpip.h>
@@ -692,70 +693,37 @@ namespace neforce::neflux {
 
     vector<listener> discover_listeners() {
         vector<listener> out;
-#if !NEFLUX_PLATFORM_LINUX
-#    if NEFLUX_PLATFORM_WINDOWS
-        try {
-            const string text = run_command("netstat", {"-ano"}, 3000);
-            for (const auto& line: split_lines(text)) {
-                const auto parts = split_whitespace(line.view());
-                if (parts.size() < 4 || (parts[0] != "TCP" && parts[0] != "UDP")) {
-                    continue;
-                }
-                if (parts[0] == "TCP" && parts[3] != "LISTENING") {
-                    continue;
-                }
-                const auto colon = parts[1].rfind(':');
-                if (colon == string::npos) {
-                    continue;
-                }
-                listener item;
-                item.protocol_ = parts[0];
-                item.address_ = parts[1].substr(0, colon);
-                const auto port = parse_u64(parts[1].substr(colon + 1).view());
-                if (port.has_value()) {
-                    item.port_ = static_cast<uint16_t>(*port);
-                }
-                out.push_back(move(item));
-            }
-        } catch (const exception& error) {
-            static_cast<void>(error);
-        }
-#    elif NEFLUX_PLATFORM_MACOS
-        try {
-            const string text = run_command("lsof", {"-nP", "-iTCP", "-sTCP:LISTEN"}, 3000);
-            for (const auto& line: split_lines(text)) {
-                const auto parts = split_whitespace(line.view());
-                if (parts.size() < 9 || parts[0] == "COMMAND") {
-                    continue;
-                }
-                const auto colon = parts[8].rfind(':');
-                if (colon == string::npos) {
-                    continue;
-                }
-                listener item;
-                item.protocol_ = "TCP";
-                item.address_ = parts[8].substr(0, colon);
-                const auto port = parse_u64(parts[8].substr(colon + 1).view());
-                if (port.has_value()) {
-                    item.port_ = static_cast<uint16_t>(*port);
-                }
-                out.push_back(move(item));
-            }
-        } catch (const exception& error) {
-            static_cast<void>(error);
-        }
-#    endif
-        return out;
-#endif
-        for (const auto& pair_value: vector<pair<const char*, const char*>>{
-                     {"tcp", "TCP"}, {"tcp6", "TCP6"}, {"udp", "UDP"}, {"udp6", "UDP6"}}) {
-            const auto text = read_text_file(format("/proc/net/{}", pair_value.first));
-            if (!text.has_value()) {
+        for (const auto& item: vector<tuple<ip_family, socket_base::protocol, const char*>>{
+                     {ip_family::INET4, socket_base::protocol::TCP, "TCP"},
+                     {ip_family::INET6, socket_base::protocol::TCP, "TCP6"},
+                     {ip_family::INET4, socket_base::protocol::UDP, "UDP"},
+                     {ip_family::INET6, socket_base::protocol::UDP, "UDP6"}}) {
+            const auto entries = socket_base::enumerate_sockets(get<0>(item), get<1>(item));
+            if (!entries.has_value()) {
                 continue;
             }
-            auto items = parse_listeners(*text, pair_value.second);
-            for (auto& item: items) {
-                out.push_back(move(item));
+            for (const auto& entry: *entries) {
+                if (entry.status != socket_base::state::listen && entry.status != socket_base::state::unconnected) {
+                    continue;
+                }
+                const auto delimiter = entry.local.rfind(':');
+                if (delimiter == string::npos) {
+                    continue;
+                }
+                listener value;
+                value.protocol_ = get<2>(item);
+                string address = entry.local.substr(0, delimiter);
+                if (address.size() >= 2 && address.front() == '[' && address.back() == ']') {
+                    address = address.substr(1, address.size() - 2);
+                }
+                value.address_ = move(address);
+                const auto port = parse_u64(string_view(entry.local.view()).substr(delimiter + 1));
+                if (!port.has_value()) {
+                    continue;
+                }
+                value.port_ = static_cast<uint16_t>(*port);
+                value.uid_ = entry.uid;
+                out.push_back(move(value));
             }
         }
         stable_sort_by_index(out, [](const listener& a, const listener& b) {

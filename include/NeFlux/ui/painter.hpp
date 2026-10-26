@@ -102,9 +102,10 @@ namespace neforce::neflux::ui {
          * @param ascii 是否使用纯 ASCII 符号
          * @param transparent 是否使用终端默认背景
          * @param graph_symbol
+         * @param rounded
          */
         painter(tui::canvas_painter& target, const palette& colors, bool ascii = false, bool transparent = false,
-                string graph_symbol = "braille");
+                string graph_symbol = "braille", bool rounded = true);
 
         /**
          * @brief 创建裁剪区域子绘制器
@@ -119,6 +120,13 @@ namespace neforce::neflux::ui {
          * @note 用于弹窗和浮层，避免终端透明背景透出后方动态内容
          */
         NEFORCE_NODISCARD painter opaque() const;
+
+        /**
+         * @brief 创建替换图表符号的子绘制器
+         * @param symbol 图表符号
+         * @return 子绘制器
+         */
+        NEFORCE_NODISCARD painter with_graph_symbol(string symbol) const;
 
         /// @brief 可用宽度
         NEFORCE_NODISCARD int width() const noexcept { return area_.w_; }
@@ -215,9 +223,9 @@ namespace neforce::neflux::ui {
          * @param width 宽度
          * @param value 当前值
          * @param maximum 上限
-         * @param color 强调色
+         * @param accent 强调色
          */
-        void track(int x, int y, int width, optional<double> value, double maximum, color color);
+        void track(int x, int y, int width, optional<double> value, double maximum, const color& accent);
 
         /**
          * @brief 绘制趋势图
@@ -287,6 +295,7 @@ namespace neforce::neflux::ui {
         bool ascii_ = false;
         bool transparent_ = false;
         string graph_symbol_ = "braille";
+        bool rounded_ = true;
 
         NEFORCE_NODISCARD bool visible(int x, int y) const noexcept {
             return x >= area_.x_ && y >= area_.y_ && x < area_.right() && y < area_.bottom();

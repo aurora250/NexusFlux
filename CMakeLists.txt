@@ -26,15 +26,67 @@ endif()
 
 include(cmake/NeFluxCompilerOptions.cmake)
 
-# Accept either an installed NexusForce package or an existing source build tree.
-if(NEXUSFORCE_ROOT AND EXISTS "${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release/libNexusForce.so")
+# Dependency search order: .deps install tree, source build tree, installed package.
+set(NEXUSFLUX_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps" CACHE PATH "Local dependency install root")
+
+set(NEXUSFLUX_NEXUSFORCE_DEFINITIONS
+    NEXUSFORCE_VERSION_MAJOR=1
+    NEXUSFORCE_VERSION_MINOR=0
+    NEXUSFORCE_VERSION_PATCH=1
+    "NEXUSFORCE_VERSION=\"1.0.1\""
+    NEFORCE_USING_MEMORY_POOL
+    NEFORCE_USING_SSO
+    NEFORCE_USING_AES_NI
+    NEFORCE_USING_PCLMUL
+    NEFORCE_USING_SQLCIPHER
+    NEFORCE_USING_IO_URING
+    NEFORCE_SUPPORT_POSTGRESQL
+    NEFORCE_SUPPORT_DB
+    NEFORCE_SUPPORT_MYSQL
+    NEFORCE_SUPPORT_SQLITE3
+    NEFORCE_SUPPORT_HIREDIS
+    NEFORCE_SUPPORT_ZLIB
+    NEFORCE_SUPPORT_LZ4
+    NEFORCE_SUPPORT_OPENSSL
+    NEFORCE_SUPPORT_PCRE2
+    PCRE2_CODE_UNIT_WIDTH=8
+    NEFORCE_SUPPORT_LOCALE
+    NEFORCE_SUPPORT_ICU
+    NEFORCE_USING_MEMORY_POOL_OVERRIDE
+)
+
+set(NEXUSFLUX_NEXUSFORCE_DEPS "${NEXUSFLUX_DEPS_DIR}/NexusForce")
+
+if(EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/libNexusForce.so")
+    message(STATUS "NexusFlux: NexusForce from ${NEXUSFLUX_NEXUSFORCE_DEPS}")
+    add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
+    set_target_properties(NexusForce::NexusForce PROPERTIES
+        IMPORTED_LOCATION "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/libNexusForce.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFLUX_NEXUSFORCE_DEPS}/include"
+        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
+    if(UNIX)
+        set_property(TARGET NexusForce::NexusForce APPEND PROPERTY
+            INTERFACE_LINK_OPTIONS "-Wl,-rpath,${NEXUSFLUX_NEXUSFORCE_DEPS}/lib")
+    endif()
+elseif(WIN32 AND EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/bin/NexusForce.dll"
+       AND EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/NexusForce.lib")
+    message(STATUS "NexusFlux: NexusForce from ${NEXUSFLUX_NEXUSFORCE_DEPS}")
+    add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
+    set_target_properties(NexusForce::NexusForce PROPERTIES
+        IMPORTED_LOCATION "${NEXUSFLUX_NEXUSFORCE_DEPS}/bin/NexusForce.dll"
+        IMPORTED_IMPLIB "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/NexusForce.lib"
+        INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFLUX_NEXUSFORCE_DEPS}/include"
+        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
+elseif(NEXUSFORCE_ROOT AND EXISTS "${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release/libNexusForce.so")
+    message(STATUS "NexusFlux: NexusForce from ${NEXUSFORCE_ROOT} build tree")
     add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
     set_target_properties(NexusForce::NexusForce PROPERTIES
         IMPORTED_LOCATION "${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release/libNexusForce.so"
         INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFORCE_ROOT}/include"
-        INTERFACE_COMPILE_DEFINITIONS "NEXUSFORCE_VERSION_MAJOR=1;NEXUSFORCE_VERSION_MINOR=0;NEXUSFORCE_VERSION_PATCH=1;NEXUSFORCE_VERSION=\"1.0.1\";NEFORCE_USING_MEMORY_POOL;NEFORCE_USING_SSO;NEFORCE_USING_AES_NI;NEFORCE_USING_PCLMUL;NEFORCE_USING_SQLCIPHER;NEFORCE_USING_IO_URING;NEFORCE_SUPPORT_POSTGRESQL;NEFORCE_SUPPORT_DB;NEFORCE_SUPPORT_MYSQL;NEFORCE_SUPPORT_SQLITE3;NEFORCE_SUPPORT_HIREDIS;NEFORCE_SUPPORT_ZLIB;NEFORCE_SUPPORT_LZ4;NEFORCE_SUPPORT_OPENSSL;NEFORCE_SUPPORT_PCRE2;PCRE2_CODE_UNIT_WIDTH=8;NEFORCE_SUPPORT_LOCALE;NEFORCE_SUPPORT_ICU;NEFORCE_USING_MEMORY_POOL_OVERRIDE")
+        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
     if(UNIX)
-        set_property(TARGET NexusForce::NexusForce APPEND PROPERTY INTERFACE_LINK_OPTIONS "-Wl,-rpath,${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release")
+        set_property(TARGET NexusForce::NexusForce APPEND PROPERTY
+            INTERFACE_LINK_OPTIONS "-Wl,-rpath,${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release")
     endif()
 else()
     find_package(NexusForce 1.0 REQUIRED)
@@ -57,17 +109,11 @@ set(NEFLUX_SOURCES
     src/ros.cpp
     src/taskstats.cpp
     src/advanced.cpp
+    src/collect.cpp
+    src/connections.cpp
     src/ui/painter.cpp
     src/ui/app.cpp
 )
-
-if(WIN32)
-    list(APPEND NEFLUX_SOURCES src/collect_generic.cpp src/connections_generic.cpp)
-elseif(APPLE)
-    message(FATAL_ERROR "NexusFlux supports Linux and Windows 10+; macOS is not a target")
-else()
-    list(APPEND NEFLUX_SOURCES src/collect_linux.cpp src/connections_linux.cpp)
-endif()
 
 add_library(NeFlux STATIC ${NEFLUX_SOURCES})
 add_library(NeFlux::NeFlux ALIAS NeFlux)
