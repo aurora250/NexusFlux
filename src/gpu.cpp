@@ -1,6 +1,7 @@
 #include <NeFlux/common.hpp>
 #include <NeForce/core/string/string_view.hpp>
 #include <NeFlux/gpu.hpp>
+#include <NeFlux/discovery.hpp>
 #include <NeFlux/platform.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/container/map.hpp>
@@ -557,6 +558,118 @@ namespace neforce::neflux {
             return out;
         }
 
+        struct drm_client_totals {
+            uint64_t engine_ns = 0;
+            uint64_t memory_bytes = 0;
+        };
+
+        struct drm_engine_state {
+            uint64_t engine_ns = 0;
+            uint64_t memory_bytes = 0;
+            double sampled_at = 0.0;
+            bool valid = false;
+            uint32_t utilization = 0;
+        };
+
+        map<string, drm_engine_state>& drm_states() {
+            static map<string, drm_engine_state> states;
+            return states;
+        }
+
+        optional<drm_client_totals> read_drm_clients(const string& pci_id) {
+            map<string, drm_client_totals> clients;
+            for (const auto& proc_entry: ::neforce::path("/proc").children()) {
+                const string entry = proc_entry.str();
+                const auto slash = entry.rfind('/');
+                const string name = slash == string::npos ? entry : entry.substr(slash + 1);
+                if (!parse_u64(name.view()).has_value()) {
+                    continue;
+                }
+                for (const auto& fd_entry: ::neforce::path(entry + "/fdinfo").children()) {
+                    const string fd_path = fd_entry.str();
+                    const auto text = read_text_file(fd_path);
+                    if (!text.has_value() || text->find("drm-pdev:") == string::npos) {
+                        continue;
+                    }
+                    string client;
+                    uint64_t engine_ns = 0;
+                    uint64_t memory_bytes = 0;
+                    bool matches = false;
+                    for (const auto& line: split_lines(*text)) {
+                        if (starts_with(line.view(), "drm-pdev:")) {
+                            matches = trim(line.view().substr(9)) == pci_id;
+                        } else if (starts_with(line.view(), "drm-client-id:")) {
+                            client = trim(line.view().substr(14));
+                        } else if (starts_with(line.view(), "drm-total-") && line.find(" KiB") != string::npos) {
+                            const auto colon = line.find(':');
+                            const auto value = colon == string::npos
+                                                       ? none
+                                                       : parse_u64(trim(line.view().substr(colon + 1)).view());
+                            if (value.has_value()) {
+                                memory_bytes += *value * 1024;
+                            }
+                        } else if (starts_with(line.view(), "drm-engine-") && ends_with(line.view(), " ns")) {
+                            const auto colon = line.find(':');
+                            const auto value = colon == string::npos
+                                                       ? none
+                                                       : parse_u64(trim(line.view().substr(colon + 1)).view());
+                            if (value.has_value()) {
+                                engine_ns += *value;
+                            }
+                        }
+                    }
+                    if (!matches || client.empty()) {
+                        continue;
+                    }
+                    auto& total = clients[client];
+                    total.engine_ns = neforce::max(total.engine_ns, engine_ns);
+                    total.memory_bytes = neforce::max(total.memory_bytes, memory_bytes);
+                }
+            }
+            if (clients.empty()) {
+                return none;
+            }
+            drm_client_totals total;
+            for (const auto& client: clients) {
+                total.engine_ns += client.second.engine_ns;
+                total.memory_bytes += client.second.memory_bytes;
+            }
+            return total;
+        }
+
+        void update_drm_state(gpu& item, const string& pci_id) {
+            auto& state = drm_states()[pci_id];
+            const auto current = read_drm_clients(pci_id);
+            const double now = static_cast<double>(monotonic_ms());
+            if (!current.has_value()) {
+                return;
+            }
+            if (state.valid) {
+                const double elapsed = neforce::max(1.0, now - state.sampled_at);
+                if (current->engine_ns > state.engine_ns) {
+                    const double busy =
+                            static_cast<double>(current->engine_ns - state.engine_ns) / (elapsed * 1'000'000.0) * 100.0;
+                    state.utilization = static_cast<uint32_t>(neforce::clamp(busy, 0.0, 100.0));
+                } else {
+                    state.utilization = 0;
+                }
+            }
+            state.engine_ns = current->engine_ns;
+            state.memory_bytes = current->memory_bytes;
+            state.sampled_at = now;
+            state.valid = true;
+            if (!item.utilization_.has_value() || *item.utilization_ == 0) {
+                item.utilization_ = state.utilization;
+            }
+            if (!item.memory_used_.has_value() && current->memory_bytes > 0) {
+                item.memory_used_ = current->memory_bytes;
+            }
+            item.extra_.set("drm_engine_ns", json(current->engine_ns));
+            if (current->memory_bytes > 0) {
+                item.extra_.set("drm_client_memory_bytes", json(current->memory_bytes));
+            }
+        }
+
         vector<gpu> read_sysfs(uint32_t first_id) {
 #if NEFLUX_PLATFORM_LINUX
             vector<gpu> out;
@@ -578,11 +691,25 @@ namespace neforce::neflux {
                 }
             }
             stable_sort_by_index(cards, [](const string& a, const string& b) { return a < b; });
+            set<string> known_pci;
+            for (const auto& card: cards) {
+                const auto canonical = ::neforce::path(card + "/device").canonical().str();
+                if (!canonical.empty()) {
+                    known_pci.insert(device_name_of(canonical));
+                }
+            }
             for (const auto& card: cards) {
                 const string device = card + "/device";
                 const string vendor =
                         trim(read_text_file(device + "/vendor").has_value() ? *read_text_file(device + "/vendor")
                                                                             : string());
+                if (vendor.empty()) {
+                    continue;
+                }
+                const auto driver_path = ::neforce::path(device + "/driver").canonical().str();
+                if (driver_path.find("simple-framebuffer") != string::npos) {
+                    continue;
+                }
                 if (vendor == "0x10de" && first_id > 0) {
                     continue;
                 }
@@ -607,14 +734,19 @@ namespace neforce::neflux {
                                             : string());
                 if (model.empty()) {
                     const auto id_text = read_text_file(device + "/device");
-                    model = format("{} {}", vendor_name, id_text.has_value() ? trim(id_text->view()) : string());
+                    if (vendor_name == "Intel") {
+                        model = format("Intel Graphics ({})",
+                                       id_text.has_value() ? trim(id_text->view()) : string("integrated"));
+                    } else {
+                        model = format("{} {}", vendor_name, id_text.has_value() ? trim(id_text->view()) : string());
+                    }
                 }
                 item.name_ = model;
                 item.vendor_ = vendor_name;
                 item.backend_ = "DRM sysfs";
                 const auto canonical = ::neforce::path(device).canonical().str();
                 item.uuid_ = canonical.empty() ? device : device_name_of(canonical);
-                const auto driver = ::neforce::path(device + "/driver").canonical().str();
+                const auto driver = move(driver_path);
                 if (!driver.empty()) {
                     item.driver_ = format("{} / kernel {}", device_name_of(driver), kernel_version());
                 }
@@ -674,7 +806,72 @@ namespace neforce::neflux {
                         item.extra_.set("fan_rpm", json(*fan));
                     }
                 }
-                item.process_status_ = "DRM fdinfo readable clients; engine counters require two samples";
+                update_drm_state(item, device_name_of(canonical));
+                if (vendor_name == "Intel") {
+                    item.memory_used_ = item.memory_used_.value_or(0);
+                    if (!item.memory_total_.has_value()) {
+                        const auto meminfo = read_text_file("/proc/meminfo");
+                        if (meminfo.has_value()) {
+                            for (const auto& line: split_lines(*meminfo)) {
+                                if (!starts_with(line.view(), "MemTotal:")) {
+                                    continue;
+                                }
+                                const auto colon = line.find(':');
+                                const auto parts = colon == string::npos
+                                                           ? vector<string>{}
+                                                           : split_whitespace(line.view().substr(colon + 1));
+                                const auto value = parts.empty() ? none : parse_u64(parts[0].view());
+                                if (value.has_value()) {
+                                    item.memory_total_ = *value * 1024;
+                                    item.extra_.set("memory_kind", json("shared"));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                item.process_status_ = "DRM fdinfo engine utilization · two-sample average";
+                out.push_back(move(item));
+            }
+            for (const auto& entry: ::neforce::path("/sys/bus/pci/devices").children()) {
+                const string device = entry.str();
+                const string pci = device_name_of(device);
+                if (known_pci.count(pci) != 0) {
+                    continue;
+                }
+                const auto vendor_text = read_text_file(device + "/vendor");
+                const auto class_text = read_text_file(device + "/class");
+                if (!vendor_text.has_value() || !class_text.has_value()) {
+                    continue;
+                }
+                const string vendor = trim(vendor_text->view());
+                const string device_class = trim(class_text->view());
+                if (!starts_with(device_class.view(), "0x03")) {
+                    continue;
+                }
+                string vendor_name;
+                if (vendor == "0x10de") {
+                    vendor_name = "NVIDIA";
+                } else if (vendor == "0x1002") {
+                    vendor_name = "AMD";
+                } else if (vendor == "0x8086") {
+                    vendor_name = "Intel";
+                } else {
+                    continue;
+                }
+                const auto id_text = read_text_file(device + "/device");
+                const string id = id_text.has_value() ? trim(id_text->view()) : string("unknown");
+                gpu item;
+                item.id_ = first_id + static_cast<uint32_t>(out.size());
+                item.name_ = format("{} GPU ({})", vendor_name, id);
+                item.vendor_ = vendor_name;
+                item.backend_ = "PCI sysfs";
+                item.uuid_ = pci;
+                item.driver_ = "driver not loaded";
+                item.extra_ = json::object();
+                item.extra_.set("pci_bus_id", json(pci));
+                item.extra_.set("pci_id", json(format("{}:{}", vendor, id)));
+                item.process_status_ = "Driver not loaded; telemetry unavailable";
                 out.push_back(move(item));
             }
             return out;
@@ -759,8 +956,7 @@ namespace neforce::neflux {
                 }
             }
         } else {
-            result.status_ =
-                    format("{} device(s) · unsupported metrics = —", result.devices_.size());
+            result.status_ = format("{} device(s) · DRM/PCI telemetry", result.devices_.size());
             if (!issues.empty()) {
                 result.status_.append(" · ");
                 result.status_.append(issues[0]);

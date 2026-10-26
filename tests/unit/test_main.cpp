@@ -12,6 +12,15 @@
 #include <NeFlux/plot.hpp>
 #include <NeFlux/recording.hpp>
 #include <NeFlux/ros.hpp>
+#include <NeFlux/ui/testing.hpp>
+#include <NeForce/core/system/mount.hpp>
+#include <NeForce/core/system/process_snapshot.hpp>
+#include <NeForce/network/util/socket_state.hpp>
+#include <NeFlux/platform.hpp>
+#if NEFLUX_PLATFORM_LINUX
+#    include <sys/wait.h>
+#    include <unistd.h>
+#endif
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/app.hpp>
 #include <NeFlux/util.hpp>
@@ -74,6 +83,9 @@ namespace {
         cfg.display_.network_bits_ = true;
         cfg.display_.network_logarithmic_ = true;
         cfg.display_.show_battery_ = false;
+        cfg.display_.transparent_background_ = false;
+        cfg.display_.graph_symbol_ = "block";
+        cfg.display_.cpu_lazy_sort_ = false;
         const string text = cfg.to_toml();
         const config parsed = config::from_toml(text);
         CHECK(parsed.theme_ == "nord");
@@ -84,6 +96,12 @@ namespace {
         CHECK(parsed.display_.network_bits_);
         CHECK(parsed.display_.network_logarithmic_);
         CHECK(!parsed.display_.show_battery_);
+        CHECK(!parsed.display_.transparent_background_);
+        CHECK(parsed.display_.graph_symbol_ == "block");
+        CHECK(!parsed.display_.cpu_lazy_sort_);
+        const string config_path = config::path();
+        CHECK(config_path.find("neflux") != string::npos);
+        CHECK(config_path.find("rstop") == string::npos);
         bool rejected = false;
         try {
             config::from_toml("unknown_key = 1");
@@ -91,6 +109,98 @@ namespace {
             rejected = true;
         }
         CHECK(rejected);
+    }
+
+    void test_tui_headless() {
+#if NEFLUX_PLATFORM_LINUX
+        int fds[2] = {-1, -1};
+        CHECK(::pipe(fds) == 0);
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child == 0) {
+            ::close(fds[0]);
+            const string frames = ui::headless_probe("\x1b|\x1b[<0;40;22M|\x1b|\x1b[<0;40;18M|\x1b");
+            size_t offset = 0;
+            while (offset < frames.size()) {
+                const ssize_t written = ::write(fds[1], frames.data() + offset, frames.size() - offset);
+                if (written <= 0) {
+                    break;
+                }
+                offset += static_cast<size_t>(written);
+            }
+            ::close(fds[1]);
+            ::_exit(0);
+        }
+        ::close(fds[1]);
+        string frames;
+        char buffer[4096];
+        for (;;) {
+            const ssize_t count = ::read(fds[0], buffer, sizeof(buffer));
+            if (count <= 0) {
+                break;
+            }
+            frames.append(buffer, static_cast<size_t>(count));
+        }
+        ::close(fds[0]);
+        int status = 0;
+        CHECK(::waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 0);
+        CHECK(frames.find("Quit") != string::npos);
+        CHECK(frames.find("Theme · preview") != string::npos);
+        CHECK(frames.find("black") != string::npos);
+        CHECK(frames.find("●") != string::npos);
+        CHECK(frames.find("Settings") != string::npos);
+        CHECK(ui::headless_probe_background("#esc", 40, 22) ==
+              ui::headless_probe_background("#esc|\x1b[<0;40;16M|#wait|#esc", 40, 22));
+        const string reopened = ui::headless_probe("#esc|\x1b[<0;40;16M|#wait|#esc");
+        const auto reopened_marker = string("<<<FRAME>>>");
+        const auto reopened_end = reopened.rfind(reopened_marker);
+        const auto reopened_start = reopened.rfind(reopened_marker, reopened_end - 1);
+        CHECK(reopened_start != string::npos && reopened_end != string::npos);
+        if (reopened_start != string::npos && reopened_end != string::npos) {
+            const string last = reopened.substr(reopened_start + reopened_marker.size(),
+                                                reopened_end - reopened_start - reopened_marker.size());
+            CHECK(last.find("Save config") != string::npos);
+        }
+        const uint32_t border_bg = ui::headless_probe_background("\x1b", 28, 14);
+        CHECK((border_bg >> 24) == 0xFFU);
+        CHECK(ui::headless_probe_background("\x1b", 91, 14) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 28, 25) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 91, 25) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 40, 14) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 28, 18) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 40, 16) == border_bg);
+        CHECK(ui::headless_probe_background("\x1b", 80, 22) == border_bg);
+        const auto menu_backgrounds = ui::headless_probe_backgrounds("\x1b", 28, 14, 64, 12);
+        bool opaque = true;
+        for (const uint32_t background: menu_backgrounds) {
+            opaque = opaque && (background >> 24) == 0xFFU;
+        }
+        CHECK(opaque);
+        const auto marker = string("<<<FRAME>>>");
+        const auto last_end = frames.rfind(marker);
+        const auto last_start = frames.rfind(marker, last_end - 1);
+        CHECK(last_start != string::npos && last_end != string::npos);
+        if (last_start != string::npos && last_end != string::npos) {
+            const string last = frames.substr(last_start + marker.size(), last_end - last_start - marker.size());
+            CHECK(last.find("Resume") != string::npos);
+        }
+#endif
+    }
+
+    void test_util() {
+        CHECK(fit_display("abc", 5) == "abc  ");
+        CHECK(fit_display("abc", 5, true) == "  abc");
+        CHECK(fit_display("中", 4) == "中  ");
+        CHECK(display_width("中") == 2);
+        CHECK(display_width("🚀") == 2);
+        CHECK(display_width("abc") == 3);
+        CHECK(trim_view("  value \t") == "value");
+        CHECK(parse_u64("42").value() == 42);
+        CHECK(!parse_u64("42x").has_value());
+        CHECK(parse_i64("-7").value() == -7);
+        CHECK(parse_f64("1.5%").value() == 1.5);
     }
 
     void test_plot() {
@@ -216,6 +326,19 @@ namespace {
         CHECK(value.memory_.back() == 50.0);
         const auto window = value.window(30);
         CHECK(window.end == 1);
+    }
+
+    void test_neforce_system_components() {
+#if NEFLUX_PLATFORM_LINUX
+        const auto processes = process_snapshot();
+        CHECK(!processes.empty());
+        CHECK(processes.front().pid > 0);
+        const auto mounts = mount_points();
+        CHECK(!mounts.empty());
+        CHECK(!mounts.front().target.empty());
+#endif
+        CHECK(socket_state_name(10) == "LISTEN");
+        CHECK(socket_state_name(1) == "ESTABLISHED");
     }
 
     void test_battery_and_gpu() {
@@ -529,6 +652,12 @@ namespace {
         CHECK(history.find("SERIES") != string::npos);
         const string events = ui::render_plaintext(value, data, cfg, "events", 120, 36);
         CHECK(events.find("EVENTS") != string::npos);
+        const string theme_file = "/tmp/neflux-theme-unit.theme";
+        CHECK(write_text_file(theme_file, "theme[main_bg]=\"#102030\"\ntheme[main_fg]=\"#ffffff\"\n"));
+        config theme_cfg = cfg;
+        theme_cfg.theme_file_ = theme_file;
+        const string themed_svg = ui::render_svg(value, data, theme_cfg, "processes", "summary", 100, 30);
+        CHECK(themed_svg.find("#102030") != string::npos);
         const string svg = ui::render_svg(value, data, cfg, "processes", "summary", 100, 30);
         CHECK(svg.find("<svg") != string::npos);
         CHECK(svg.find("</svg>") != string::npos);
@@ -539,12 +668,15 @@ namespace {
 int main() {
     test_json();
     test_config();
+    test_tui_headless();
+    test_util();
     test_plot();
     test_filter();
     test_tags();
     test_network_attribution();
     test_discovery();
     test_history();
+    test_neforce_system_components();
     test_battery_and_gpu();
     test_custom_layout();
     test_advanced();

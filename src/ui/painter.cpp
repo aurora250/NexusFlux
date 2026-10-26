@@ -153,6 +153,18 @@ namespace neforce::neflux::ui {
                 p.mint_ = value;
             } else if (member.first == "border") {
                 p.border_ = value;
+            } else if (member.first == "muted") {
+                p.muted_ = value;
+            } else if (member.first == "selection") {
+                p.selection_ = value;
+            } else if (member.first == "blue") {
+                p.blue_ = value;
+            } else if (member.first == "purple") {
+                p.purple_ = value;
+            } else if (member.first == "amber") {
+                p.amber_ = value;
+            } else if (member.first == "red") {
+                p.red_ = value;
             }
         }
         return p;
@@ -197,11 +209,20 @@ namespace neforce::neflux::ui {
         return p.muted_;
     }
 
-    painter::painter(tui::canvas_painter& target, const palette& colors, bool ascii) :
+    painter::painter(tui::canvas_painter& target, const palette& colors, bool ascii, bool transparent,
+                     string graph_symbol) :
     target_(target),
     palette_(colors),
     area_{0, 0, target.width(), target.height()},
-    ascii_(ascii) {}
+    ascii_(ascii),
+    transparent_(transparent),
+    graph_symbol_(move(graph_symbol)) {}
+
+    painter painter::opaque() const {
+        painter copy = *this;
+        copy.transparent_ = false;
+        return copy;
+    }
 
     painter painter::clip(const rect& area) const {
         painter copy = *this;
@@ -225,7 +246,15 @@ namespace neforce::neflux::ui {
         if (clipped.empty()) {
             return;
         }
-        target_.fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(fg, bg));
+        const auto base = [this](const color& value) {
+            const bool background =
+                    transparent_ && ((value.R() == palette_.bg_.R() && value.G() == palette_.bg_.G() &&
+                                      value.B() == palette_.bg_.B()) ||
+                                     (value.R() == palette_.panel_.R() && value.G() == palette_.panel_.G() &&
+                                      value.B() == palette_.panel_.B()));
+            return background ? color{0, 0, 0, 0} : value;
+        };
+        target_.fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(fg, base(bg)));
     }
 
     void painter::clear(const rect& area, color bg) { fill(area, " ", palette_.text_, bg); }
@@ -233,6 +262,11 @@ namespace neforce::neflux::ui {
     void painter::text(int x, int y, string_view content, color fg, optional<color> bg, bool bold) {
         if (y < area_.y_ || y >= area_.bottom()) {
             return;
+        }
+        if (transparent_ && bg.has_value() &&
+            ((bg->R() == palette_.bg_.R() && bg->G() == palette_.bg_.G() && bg->B() == palette_.bg_.B()) ||
+             (bg->R() == palette_.panel_.R() && bg->G() == palette_.panel_.G() && bg->B() == palette_.panel_.B()))) {
+            bg = color{0, 0, 0, 0};
         }
         const tui::style value = make_style(fg, bg, bold);
         int column = x;
@@ -266,32 +300,38 @@ namespace neforce::neflux::ui {
         if (clipped.empty()) {
             return;
         }
-        const color background = panel_color.has_value() ? *panel_color : palette_.panel_;
-        target_.fill(area.x_ + 1, area.y_ + 1, area.w_ - 2, area.h_ - 2, " ", make_style(palette_.text_, background));
+        color background = panel_color.has_value() ? *panel_color : palette_.panel_;
+        if (transparent_ && ((background.R() == palette_.bg_.R() && background.G() == palette_.bg_.G() &&
+                              background.B() == palette_.bg_.B()) ||
+                             (background.R() == palette_.panel_.R() && background.G() == palette_.panel_.G() &&
+                              background.B() == palette_.panel_.B()))) {
+            background = color{0, 0, 0, 0};
+        }
+        target_.fill(area.x_, area.y_, area.w_, area.h_, " ", make_style(palette_.text_, background));
         const tui::style border = make_style(palette_.border_, background);
         const bool ascii = ascii_;
         put(area.x_, area.y_, codepoint(ascii ? U'+' : U'╭'), border);
         put(area.right() - 1, area.y_, codepoint(ascii ? U'+' : U'╮'), border);
         put(area.x_, area.bottom() - 1, codepoint(ascii ? U'+' : U'╰'), border);
         put(area.right() - 1, area.bottom() - 1, codepoint(ascii ? U'+' : U'╯'), border);
-        hline(area.x_ + 1, area.y_, area.w_ - 2, ascii ? "-" : "─", palette_.border_);
-        hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", palette_.border_);
-        vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_);
-        vline(area.right() - 1, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_);
+        hline(area.x_ + 1, area.y_, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
+        hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
+        vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
+        vline(area.right() - 1, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
         if (!title.empty()) {
             const int maximum = neforce::max(0, area.w_ - 6);
             const string clipped_title = truncate_display(title, maximum);
             const int width = display_width(clipped_title.view());
-            fill(rect{area.x_ + 2, area.y_, width + 2, 1}, " ", accent, background);
+            fill(rect{area.x_ + 2, area.y_, width + 2, 1}, " ", palette_.text_, background);
             text(area.x_ + 3, area.y_, clipped_title.view(), accent, background, true);
         }
     }
 
-    void painter::hline(int x, int y, int width, string_view glyph, color fg) {
+    void painter::hline(int x, int y, int width, string_view glyph, color fg, optional<color> bg) {
         if (y < area_.y_ || y >= area_.bottom()) {
             return;
         }
-        const tui::style value = make_style(fg);
+        const tui::style value = make_style(fg, bg);
         for (int index = 0; index < width; ++index) {
             const int column = x + index;
             if (column < area_.x_ || column >= area_.right()) {
@@ -301,11 +341,11 @@ namespace neforce::neflux::ui {
         }
     }
 
-    void painter::vline(int x, int y, int height, string_view glyph, color fg) {
+    void painter::vline(int x, int y, int height, string_view glyph, color fg, optional<color> bg) {
         if (x < area_.x_ || x >= area_.right()) {
             return;
         }
-        const tui::style value = make_style(fg);
+        const tui::style value = make_style(fg, bg);
         for (int index = 0; index < height; ++index) {
             const int row = y + index;
             if (row < area_.y_ || row >= area_.bottom()) {
@@ -428,14 +468,19 @@ namespace neforce::neflux::ui {
                 if (bits[index] == 0) {
                     continue;
                 }
-                if (ascii_) {
-                    int count = 0;
-                    for (uint8_t mask = 1; mask != 0; mask = static_cast<uint8_t>(mask << 1)) {
-                        count += (bits[index] & mask) != 0 ? 1 : 0;
-                    }
+                int count = 0;
+                for (uint8_t mask = 1; mask != 0; mask = static_cast<uint8_t>(mask << 1)) {
+                    count += (bits[index] & mask) != 0 ? 1 : 0;
+                }
+                if (ascii_ || graph_symbol_ == "ascii") {
                     const char glyph = count >= 5 ? '#' : (count >= 3 ? '+' : (count >= 2 ? '-' : '.'));
                     put(area.x_ + col, area.y_ + row, codepoint(static_cast<uint32_t>(glyph)),
                         make_style(colors[index]));
+                } else if (graph_symbol_ == "block") {
+                    static constexpr uint32_t blocks[] = {0x2581, 0x2582, 0x2583, 0x2584,
+                                                          0x2585, 0x2586, 0x2587, 0x2588};
+                    const uint32_t glyph = blocks[neforce::min(8, neforce::max(1, count)) - 1];
+                    put(area.x_ + col, area.y_ + row, codepoint(glyph), make_style(colors[index]));
                 } else {
                     const auto value = codepoint(0x2800U + bits[index]);
                     put(area.x_ + col, area.y_ + row, value, make_style(colors[index]));

@@ -1,5 +1,7 @@
 # NexusFlux
 
+English | [简体中文](README.CN.md)
+
 A NexusForce-based local CPU, GPU, process, storage, network, container and service monitoring.
 
 The executable is `nexus-flux` with the short alias `neflux`.
@@ -38,6 +40,8 @@ nexus-flux doctor --json
 | `e`, `o`                        | Process environment / open files                                         |
 | `k`/`K`, `t`, `s`, `n`, `a`     | Kill, terminate, signal, nice, affinity                                  |
 | `R`                             | ROS graph browser with topic/node/service drill-down                     |
+| `P`, `F`, `L`                   | Pause process list, follow selected process, lazy/direct CPU sort        |
+| Right click                     | Process/network/storage/GPU context actions                              |
 | `Space`, `v`, `V`, `U`          | Mark process/subtree/clear                                               |
 | `W`, `-`, `+`                   | Time window and sampling interval                                        |
 | `X`                             | System Explorer (extras and capabilities)                                |
@@ -47,6 +51,11 @@ nexus-flux doctor --json
 
 Filters support `field:value`, `!` negation, numeric comparisons, `/regex/`, space-separated
 AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|torch/ pid:42 | mem:>1024`.
+
+## Configuration
+
+Configuration is read from `$XDG_CONFIG_HOME/neflux/config.toml` (falling back to `~/.config/neflux/config.toml`).
+On Windows it lives under `%APPDATA%\neflux\config.toml`.
 
 ## License
 

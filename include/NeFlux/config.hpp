@@ -38,6 +38,9 @@ namespace neforce::neflux {
         bool process_basename_ = false;       ///< 进程仅显示程序名
         bool group_processes_ = false;        ///< 按程序聚合进程
         string overview_panel_ = "all";       ///< 概览展开面板
+        bool transparent_background_ = true;  ///< 终端背景透明
+        string graph_symbol_ = "braille";     ///< 图表符号：braille、block 或 ascii
+        bool cpu_lazy_sort_ = true;           ///< CPU 排序使用平滑值
 
         /**
          * @brief 获取温度显示值
@@ -133,6 +136,7 @@ namespace neforce::neflux {
         uint64_t interval_ms_ = 1000;             ///< 采样间隔
         bool collect_gpu_ = true;                 ///< 采集 GPU
         string theme_ = "midnight";               ///< 主题
+        string theme_file_;                       ///< 外部 .theme 文件路径
         size_t view_ = 0;                         ///< 启动页面
         size_t sort_index_ = 0;                   ///< 排序索引
         bool reverse_sort_ = false;               ///< 反向排序

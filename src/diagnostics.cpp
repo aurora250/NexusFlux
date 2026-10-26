@@ -1,11 +1,8 @@
 #include <NeFlux/common.hpp>
 #include <NeFlux/diagnostics.hpp>
-
 #include <NeFlux/util.hpp>
-
 #include <NeForce/core/string/format.hpp>
-
-
+#include <NeForce/core/system/process_snapshot.hpp>
 namespace neforce::neflux {
 
     namespace {
@@ -51,6 +48,16 @@ namespace neforce::neflux {
             out.push_back(make_finding("system", "UNKNOWN", "Waiting for a sample", "No host sample has arrived",
                                        "There is no evidence to diagnose yet.", "Wait for collection to finish."));
             return out;
+        }
+        if (value.processes_.empty()) {
+            const auto fallback = process_snapshot();
+            if (!fallback.empty()) {
+                out.push_back(make_finding(
+                        "process", "CHECK", "Process inventory is empty",
+                        format("procfs exposes {} processes, but the sampler returned none", fallback.size()),
+                        "The process list may have been filtered or the sampler failed.",
+                        "Open Processes, clear the filter, and check sampling diagnostics."));
+            }
         }
         if (value.cpu_percent_ >= cfg.cpu_warning_) {
             const process* top = nullptr;
@@ -266,8 +273,8 @@ namespace neforce::neflux {
         const auto items = findings(value, cfg);
         string out = format("Diagnosis · {} · {}\n", value.hostname_, value.os_);
         out.append(format("CPU {:.1f}% · RAM {:.1f}% · {} processes · {} alerts\n\n", value.cpu_percent_,
-                          percent(value.memory_.used_, value.memory_.total_),
-                          value.processes_.size(), value.alerts_.size()));
+                          percent(value.memory_.used_, value.memory_.total_), value.processes_.size(),
+                          value.alerts_.size()));
         if (items.empty()) {
             out.append("No resource problems detected in this sample.\n");
             return out;

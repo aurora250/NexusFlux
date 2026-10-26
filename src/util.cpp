@@ -3,9 +3,9 @@
 #include <NeForce/core/file/file_info.hpp>
 #include <NeForce/core/file/filesystem.hpp>
 #include <NeForce/core/file/path.hpp>
-#include <NeForce/core/string/codepoint.hpp>
 #include <NeForce/core/string/to_numerics.hpp>
 #include <NeForce/core/string/to_string.hpp>
+#include <NeForce/core/string/width.hpp>
 #include <NeForce/core/async/this_thread.hpp>
 namespace neforce::neflux {
 
@@ -18,6 +18,8 @@ namespace neforce::neflux {
         char lower_char(const char c) noexcept { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
 
     } // namespace
+
+    string_view trim_view(string_view text) noexcept { return text.trim(); }
 
     uint64_t unix_time() noexcept {
         return static_cast<uint64_t>(system_clock::to_seconds(system_clock::now()).count());
@@ -123,14 +125,7 @@ namespace neforce::neflux {
 
     bool ends_with(const string& text, string_view suffix) noexcept { return ends_with(text.view(), suffix); }
 
-    string lower_ascii(string_view text) {
-        string out;
-        out.reserve(text.size());
-        for (const char c: text) {
-            out.push_back(lower_char(c));
-        }
-        return out;
-    }
+    string lower_ascii(string_view text) { return string(text).lowercase(); }
 
     bool contains_ignore_case(string_view haystack, string_view needle) {
         if (needle.empty()) {
@@ -159,14 +154,13 @@ namespace neforce::neflux {
         if (value.empty()) {
             return none;
         }
-        uint64_t result = 0;
-        for (const char c: value) {
-            if (c < '0' || c > '9') {
-                return none;
-            }
-            result = result * 10 + static_cast<uint64_t>(c - '0');
+        try {
+            size_t consumed = 0;
+            const uint64_t result = to_uint64(value, &consumed, 10);
+            return consumed == value.size() ? optional<uint64_t>(result) : none;
+        } catch (const exception&) {
+            return none;
         }
-        return result;
     }
 
     optional<int64_t> parse_i64(string_view text) noexcept {
@@ -174,24 +168,13 @@ namespace neforce::neflux {
         if (value.empty()) {
             return none;
         }
-        bool negative = false;
-        size_t start = 0;
-        if (value[0] == '-' || value[0] == '+') {
-            negative = value[0] == '-';
-            start = 1;
-        }
-        if (start >= value.size()) {
+        try {
+            size_t consumed = 0;
+            const int64_t result = to_int64(value, &consumed, 10);
+            return consumed == value.size() ? optional<int64_t>(result) : none;
+        } catch (const exception&) {
             return none;
         }
-        int64_t result = 0;
-        for (size_t i = start; i < value.size(); ++i) {
-            const char c = value[i];
-            if (c < '0' || c > '9') {
-                return none;
-            }
-            result = result * 10 + static_cast<int64_t>(c - '0');
-        }
-        return negative ? -result : result;
     }
 
     optional<double> parse_f64(string_view text) noexcept {
@@ -199,12 +182,13 @@ namespace neforce::neflux {
         if (value.empty()) {
             return none;
         }
-        size_t consumed = 0;
-        const double result = to_decimal(value, &consumed);
-        if (consumed == 0) {
+        try {
+            size_t consumed = 0;
+            const float64_t result = to_float64(value, &consumed);
+            return consumed == 0 ? none : optional<double>(static_cast<double>(result));
+        } catch (const exception&) {
             return none;
         }
-        return result;
     }
 
     vector<string> split_whitespace(string_view text) {
@@ -266,53 +250,12 @@ namespace neforce::neflux {
         return text.size() >= suffix.size() && text.substr(text.size() - suffix.size()) == suffix;
     }
 
-    int display_width(string_view text) noexcept {
-        int width = 0;
-        size_t i = 0;
-        while (i < text.size()) {
-            const auto cp = codepoint::decode_utf8(reinterpret_cast<const byte_t*>(text.data()), i, text.size());
-            width += cp.display_width();
-        }
-        return width;
-    }
+    int display_width(string_view text) noexcept { return text_display_width(text); }
 
-    string truncate_display(string_view text, int width) {
-        if (width <= 0) {
-            return {};
-        }
-        int used = 0;
-        size_t i = 0;
-        while (i < text.size()) {
-            const size_t begin = i;
-            const auto cp = codepoint::decode_utf8(reinterpret_cast<const byte_t*>(text.data()), i, text.size());
-            const int cell = cp.display_width();
-            if (used + cell > width) {
-                i = begin;
-                break;
-            }
-            used += cell;
-        }
-        return string(text.data(), i);
-    }
+    string truncate_display(string_view text, int width) { return neforce::display_truncate(text, width); }
 
     string fit_display(string_view text, int width, bool right_align) {
-        if (width <= 0) {
-            return {};
-        }
-        const int current = display_width(text);
-        if (current >= width) {
-            return truncate_display(text, width);
-        }
-        string out;
-        out.reserve(static_cast<size_t>(width));
-        if (right_align) {
-            out.append(static_cast<size_t>(width - current), ' ');
-            out.append(text.data(), text.size());
-        } else {
-            out.append(text.data(), text.size());
-            out.append(static_cast<size_t>(width - current), ' ');
-        }
-        return out;
+        return neforce::display_fit(text, width, right_align);
     }
 
     string sanitize_text(string_view text) {

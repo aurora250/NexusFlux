@@ -57,7 +57,7 @@ namespace neforce::neflux {
      */
     bool append_text_file(const string& file_path, const string& content);
 
-   // TODO: most of these functions down there have neforce API as its helper function or member function
+    // TODO: most of these functions down there have neforce API as its helper function or member function
 
     /**
      * @brief 去除首尾空白

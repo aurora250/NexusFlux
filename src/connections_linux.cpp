@@ -1,14 +1,14 @@
 #include <NeFlux/common.hpp>
 #include <NeFlux/connections.hpp>
-
 #include <NeFlux/discovery.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/string/format.hpp>
+#include <NeForce/network/util/socket_state.hpp>
+#include <NeForce/network/util/inet_diag.hpp>
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
-#include <linux/rtnetlink.h>
 #include <linux/sock_diag.h>
 #include <linux/tcp.h>
 #include <sys/socket.h>
@@ -16,8 +16,6 @@
 namespace neforce::neflux {
 
     namespace {
-
-        // TODO: using neforce::endian instead
 
         uint32_t read_u32(const void* data, size_t offset, size_t size) {
             if (offset + 4 > size) {
@@ -37,58 +35,8 @@ namespace neforce::neflux {
             return value;
         }
 
-        // TODO: using neforce::ip_address / ports instead
-
-        string endpoint_text(const uint8_t* data, size_t address_offset, size_t port_offset, size_t size) {
-            if (size < port_offset + 2 || size < address_offset + 4) {
-                return {};
-            }
-            uint16_t port = 0;
-            memory_copy(&port, data + port_offset, 2);
-            const uint16_t host_port = ntohs(port);
-            char buffer[INET6_ADDRSTRLEN] = {};
-            if (data[0] == AF_INET) {
-                if (inet_ntop(AF_INET, data + address_offset, buffer, sizeof(buffer)) == nullptr) {
-                    return {};
-                }
-                return format("{}:{}", buffer, host_port);
-            }
-            if (data[0] == AF_INET6) {
-                if (inet_ntop(AF_INET6, data + address_offset, buffer, sizeof(buffer)) == nullptr) {
-                    return {};
-                }
-                return format("[{}]:{}", buffer, host_port);
-            }
-            return {};
-        }
-
         string state_name(uint8_t state, const string& protocol) {
-            switch (state) {
-                case 1:
-                    return "ESTABLISHED";
-                case 2:
-                    return "SYN_SENT";
-                case 3:
-                    return "SYN_RECV";
-                case 4:
-                    return "FIN_WAIT1";
-                case 5:
-                    return "FIN_WAIT2";
-                case 6:
-                    return "TIME_WAIT";
-                case 7:
-                    return starts_with(protocol.view(), "udp") ? "BOUND" : "CLOSED";
-                case 8:
-                    return "CLOSE_WAIT";
-                case 9:
-                    return "LAST_ACK";
-                case 10:
-                    return "LISTEN";
-                case 11:
-                    return "CLOSING";
-                default:
-                    return "UNKNOWN";
-            }
+            return string(socket_state_name(state, protocol == "UDP"));
         }
 
         struct owners {
@@ -249,17 +197,17 @@ namespace neforce::neflux {
                             const uint8_t* payload = buffer.data() + offset + sizeof(nlmsghdr);
                             const size_t payload_size = length - sizeof(nlmsghdr);
                             if (payload_size >= 72) {
-                                const uint8_t family = payload[0];
-                                if (family == AF_INET || family == AF_INET6) {
+                                const auto entry = decode_inet_diag(payload, payload_size);
+                                if (entry.has_value()) {
                                     connection row;
                                     row.protocol_ = get<2>(item);
-                                    row.local_ = endpoint_text(payload, 8, 4, payload_size);
-                                    row.remote_ = endpoint_text(payload, 24, 6, payload_size);
-                                    row.state_ = state_name(payload[1], row.protocol_);
-                                    row.inode_ = read_u32(payload, 68, payload_size);
-                                    const uint64_t cookie = read_u64(payload, 44, payload_size);
-                                    row.receive_queue_ = read_u32(payload, 56, payload_size);
-                                    row.send_queue_ = read_u32(payload, 60, payload_size);
+                                    row.local_ = entry->local;
+                                    row.remote_ = entry->remote;
+                                    row.state_ = string(socket_state_name(entry->state, row.protocol_ == "UDP"));
+                                    row.inode_ = entry->inode;
+                                    const uint64_t cookie = entry->cookie;
+                                    row.receive_queue_ = entry->receive_queue;
+                                    row.send_queue_ = entry->send_queue;
                                     row.id_ = format("{}:{}:{}:{}:{:x}", row.protocol_, row.inode_, row.local_,
                                                      row.remote_, cookie);
                                     size_t attribute = 72;

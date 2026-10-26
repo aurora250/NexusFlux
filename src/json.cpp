@@ -97,9 +97,7 @@ namespace neforce::neflux {
     type_(type::boolean),
     boolean_(value) {}
 
-    json::json(nullptr_t value) {
-        static_cast<void>(value);
-    }
+    json::json(nullptr_t value) { static_cast<void>(value); }
 
     json::json(double value) :
     type_(type::number),

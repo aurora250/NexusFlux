@@ -310,7 +310,8 @@ namespace neforce::neflux {
     }
 
     bool event_matches(const event& event, const string& text) {
-        const string line = format("{} {} {}", event.timestamp_, event.active_ ? "active" : "recovered", event.condition_);
+        const string line =
+                format("{} {} {}", event.timestamp_, event.active_ ? "active" : "recovered", event.condition_);
         return contains_ignore_case(line.view(), text.view());
     }
 

@@ -5,6 +5,8 @@
 #include <NeFlux/gpu.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/file/filesystem.hpp>
+#include <NeForce/core/system/sysinfo.hpp>
+#include <NeForce/core/system/mount.hpp>
 #include <NeForce/core/container/set.hpp>
 #include <cstddef>
 #include <ifaddrs.h>
@@ -391,9 +393,9 @@ namespace neforce::neflux {
         struct stat_fields {
             string name;
             vector<string> fields;
-            
+
             NEFORCE_NODISCARD bool valid() const { return fields.size() >= 22; }
-            
+
             NEFORCE_NODISCARD uint64_t number(size_t index) const {
                 if (index >= fields.size()) {
                     return 0;
@@ -627,7 +629,7 @@ namespace neforce::neflux {
 
         json statvfs_fields(const string& mount) {
             json fields = json::object();
-            struct ::statvfs info {};
+            struct ::statvfs info{};
             if (::statvfs(mount.data(), &info) == 0) {
                 fields.set("inodes_total", json(info.f_files));
                 fields.set("inodes_free", json(info.f_ffree));
@@ -640,53 +642,31 @@ namespace neforce::neflux {
         vector<disk> read_disks() {
             vector<disk> out;
             set<string> seen;
-            const auto text = read_file("/proc/mounts");
-            for (const auto& line: split_lines(text)) {
-                const auto parts = split_whitespace(line.view());
-                if (parts.size() < 4) {
+            for (const auto& mount_point: ::neforce::mount_points()) {
+                if (!seen.insert(mount_point.target).second) {
                     continue;
                 }
-                string mount = parts[1];
-                string unescaped;
-                for (size_t i = 0; i < mount.size(); ++i) {
-                    if (mount[i] == '\\' && i + 3 < mount.size() && mount[i + 1] == '0' && mount[i + 2] == '4' &&
-                        mount[i + 3] == '0') {
-                        unescaped.push_back(' ');
-                        i += 3;
-                    } else {
-                        unescaped.push_back(mount[i]);
-                    }
-                }
-                mount = unescaped;
-                if (!seen.insert(mount).second) {
-                    continue;
-                }
-                const string& source = parts[0];
-                const string& filesystem = parts[2];
+                const string& source = mount_point.source;
+                const string& filesystem = mount_point.filesystem;
                 const string source_name = device_name(source);
                 if (!starts_with(source.view(), "/dev/") || starts_with(source_name.view(), "loop") ||
                     filesystem == "squashfs" || filesystem == "iso9660" || filesystem == "devtmpfs" ||
                     filesystem == "proc" || filesystem == "sysfs" || filesystem == "efivarfs") {
                     continue;
                 }
-                struct statvfs info {};
-                if (statvfs(mount.data(), &info) != 0 || info.f_blocks == 0) {
-                    continue;
-                }
-                const uint64_t total = info.f_blocks * info.f_frsize;
-                if (total == 0) {
+                if (mount_point.total_bytes == 0) {
                     continue;
                 }
                 disk item;
                 item.name_ = source;
-                item.mount_ = mount;
+                item.mount_ = mount_point.target;
                 item.filesystem_ = filesystem;
                 item.kind_ = block_kind(source_name);
                 item.removable_ = block_removable(source_name);
-                item.available_ = info.f_bavail * info.f_frsize;
-                item.total_ = total;
-                item.used_ = total > item.available_ ? total - item.available_ : 0;
-                item.extra_ = statvfs_fields(mount);
+                item.available_ = mount_point.available_bytes;
+                item.total_ = mount_point.total_bytes;
+                item.used_ = item.total_ > item.available_ ? item.total_ - item.available_ : 0;
+                item.extra_ = statvfs_fields(item.mount_);
                 out.push_back(move(item));
             }
             stable_sort_by_index(out, [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
@@ -941,7 +921,6 @@ namespace neforce::neflux {
         vector<disk> disks;
         double sensors_at = -1.0;
         double disks_at = -1.0;
-        uint64_t cycles = 0;
         uint64_t boot = 0;
         uint64_t ticks_per_second = 100;
         uint64_t page_size = 4096;
@@ -972,8 +951,9 @@ namespace neforce::neflux {
             hostname = host_name();
             os = os_name();
             kernel = kernel_version();
-            cpu_name = cpu_brand();
-            physical_cores = physical_core_count();
+            const auto& sys_cpu = sysinfo::instance().get_CPU_info();
+            cpu_name = sys_cpu.brand.empty() ? cpu_brand() : sys_cpu.brand;
+            physical_cores = sys_cpu.cores != 0 ? sys_cpu.cores : physical_core_count();
             users = read_users();
             topology = read_topology(read_cpu_lines().size() > 1 ? read_cpu_lines().size() - 1 : 0);
             previous_cpu = read_cpu_lines();
@@ -992,8 +972,6 @@ namespace neforce::neflux {
             sensors_at = disks_at;
         }
 
-        // TODO: neforce::sysinfo have system info collections
-
         snapshot sample_exact(const config& cfg, bool processes_enabled, bool live_gpu_processes,
                               bool connections_enabled) {
             const auto began = static_cast<double>(monotonic_ms());
@@ -1009,9 +987,6 @@ namespace neforce::neflux {
             previous_cpu = current_cpu;
             previous_aggregate = current_aggregate;
 
-            if (cycles % 5 == 0) {
-            }
-            ++cycles;
             if (topology.size() != (current_cpu.empty() ? 0 : current_cpu.size() - 1)) {
                 topology = read_topology(current_cpu.empty() ? 0 : current_cpu.size() - 1);
             }
@@ -1262,10 +1237,9 @@ namespace neforce::neflux {
                                  ? (users.count(*cached.uid) != 0 ? users[*cached.uid] : format("{}", *cached.uid))
                                  : string("—");
             item.state_ = process_state(stat.fields[0]);
-            item.cpu_ =
-                    fresh ? 0.0F
-                          : static_cast<float>(static_cast<double>(total_cpu - cached.cpu) * 100.0 /
-                                               static_cast<double>(ticks_per_second) / max(0.001, seconds));
+            item.cpu_ = fresh ? 0.0F
+                              : static_cast<float>(static_cast<double>(total_cpu - cached.cpu) * 100.0 /
+                                                   static_cast<double>(ticks_per_second) / max(0.001, seconds));
             const auto statm = split_whitespace(read_file(directory + "/statm").view());
             if (statm.size() >= 2) {
                 const auto virtual_pages = parse_u64(statm[0].view());
@@ -1279,10 +1253,8 @@ namespace neforce::neflux {
             const auto io = parse_io(read_file(directory + "/io"));
             item.read_total_ = io.first;
             item.write_total_ = io.second;
-            item.read_per_sec_ =
-                    fresh ? 0.0 : static_cast<double>(io.first - cached.read) / max(0.001, seconds);
-            item.write_per_sec_ =
-                    fresh ? 0.0 : static_cast<double>(io.second - cached.written) / max(0.001, seconds);
+            item.read_per_sec_ = fresh ? 0.0 : static_cast<double>(io.first - cached.read) / max(0.001, seconds);
+            item.write_per_sec_ = fresh ? 0.0 : static_cast<double>(io.second - cached.written) / max(0.001, seconds);
             item.cpu_time_ms_ = total_cpu * 1000 / ticks_per_second;
             if (stat.fields.size() > 16) {
                 const auto nice = parse_i64(stat.fields[16].view());
@@ -1341,6 +1313,12 @@ namespace neforce::neflux {
     vector<network> collector::impl::collect_networks(double seconds) {
         vector<network> out;
         map<string, net_counters> current;
+        map<string, sysinfo::network_interface> sysinfo_interfaces;
+        for (const auto& item: sysinfo::network_interfaces()) {
+            if (sysinfo_interfaces.find(item.name) == sysinfo_interfaces.end()) {
+                sysinfo_interfaces[item.name] = item;
+            }
+        }
         for (const auto& full: list_directory("/sys/class/net")) {
             const auto slash = full.rfind('/');
             const string name = slash == string::npos ? full : full.substr(slash + 1);
@@ -1383,6 +1361,17 @@ namespace neforce::neflux {
             const auto state = trim(read_file(base + "operstate"));
             item.state_ = state.empty() ? "unknown" : state;
             item.address_ = interface_address(name);
+            if (const auto known = sysinfo_interfaces.find(name); known != sysinfo_interfaces.end()) {
+                if (item.mac_.empty()) {
+                    item.mac_ = known->second.mac;
+                }
+                if (item.address_.empty()) {
+                    item.address_ = known->second.address;
+                }
+                if (state.empty()) {
+                    item.state_ = known->second.is_up ? "up" : "down";
+                }
+            }
             current[name] = counters;
             out.push_back(move(item));
         }
@@ -1412,8 +1401,7 @@ namespace neforce::neflux {
                 item.busy_percent_ = 0.0;
             }
             const string device = "/sys/class/block/" + entry.first;
-            item.aggregate_ =
-                    path(device + "/device").exists() && !path(device + "/partition").exists();
+            item.aggregate_ = path(device + "/device").exists() && !path(device + "/partition").exists();
             out.push_back(move(item));
         }
         previous_disks = counters;
@@ -1427,7 +1415,8 @@ namespace neforce::neflux {
         result.os_ = os_name();
         result.kernel_ = kernel_version();
         result.uptime_ = uptime_seconds();
-        result.cpu_name_ = cpu_brand();
+        const auto& sys_cpu = sysinfo::instance().get_CPU_info();
+        result.cpu_name_ = sys_cpu.brand.empty() ? cpu_brand() : sys_cpu.brand;
         const auto cpu_lines = read_cpu_lines();
         result.cores_.assign(cpu_lines.size() > 1 ? cpu_lines.size() - 1 : 0, 0.0F);
         read_load(result.load_);

@@ -6,6 +6,7 @@
 #include <NeFlux/util.hpp>
 #include <NeForce/core/file/filesystem.hpp>
 #include <NeForce/core/file/path.hpp>
+#include <NeForce/core/system/sysinfo.hpp>
 #if NEFLUX_PLATFORM_LINUX
 #    include <unistd.h>
 #endif
@@ -434,8 +435,8 @@ namespace neforce::neflux {
                     }
                     const auto id = parse_u64(entry.first.view().substr(3, space - 3));
                     if (id.has_value()) {
-                        gpu_utilization[static_cast<uint32_t>(*id)] = max(
-                                gpu_utilization[static_cast<uint32_t>(*id)], min(entry.second, 100.0));
+                        gpu_utilization[static_cast<uint32_t>(*id)] =
+                                max(gpu_utilization[static_cast<uint32_t>(*id)], min(entry.second, 100.0));
                     }
                 }
                 if (!engines.empty()) {
@@ -648,15 +649,35 @@ namespace neforce::neflux {
             extra.set("Memory details", parse_key_value(*meminfo));
         }
         json numa = json::array();
-        for (const auto& node: path("/sys/devices/system/node").children()) {
-            const auto name = node.filename();
-            if (!starts_with(name, "node")) {
-                continue;
+        for (const auto& node: sysinfo::instance().get_numa_info()) {
+            const string name = format("node{}", node.node_id);
+            string cpulist;
+            uint32_t previous_core = 0;
+            bool range = false;
+            for (size_t index = 0; index < node.core_list.size(); ++index) {
+                const uint32_t core = node.core_list[index];
+                if (index == 0) {
+                    cpulist.append(format("{}", core));
+                } else if (core == previous_core + 1) {
+                    range = true;
+                } else {
+                    if (range) {
+                        cpulist.append(format("-{}", previous_core));
+                    }
+                    cpulist.append(format(",{}", core));
+                    range = false;
+                }
+                if (index + 1 < node.core_list.size()) {
+                    previous_core = core;
+                } else if (range) {
+                    cpulist.append(format("-{}", core));
+                }
             }
             json item = json::object();
             item.set("node", json(name));
-            item.set("cpulist", json(read_field(node.str() + "/cpulist")));
-            const auto node_meminfo = read_text_file(node.str() + "/meminfo").value_or(string());
+            item.set("cpulist", json(cpulist));
+            const auto node_meminfo =
+                    read_text_file(format("/sys/devices/system/node/{}/meminfo", name)).value_or(string());
             optional<uint64_t> node_total;
             for (const auto& line: split_lines(node_meminfo)) {
                 const auto colon = line.find(':');

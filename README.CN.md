@@ -1,5 +1,7 @@
 # NexusFlux
 
+[English](README.md) | 简体中文
+
 本地 CPU、GPU、进程、存储、网络、容器与服务监控，基于 NexusForce 实现。
 
 可执行文件为 `nexus-flux`，别名 `neflux`。
@@ -38,6 +40,8 @@ nexus-flux doctor --json
 | `e`、`o`                        | 进程环境 / 打开文件                           |
 | `k`/`K`、`t`、`s`、`n`、`a`     | 强制结束、终止、信号、nice、CPU 亲和性        |
 | `R`                             | 选中进程的 ROS 图浏览与话题/节点/服务下钻     |
+| `P`、`F`、`L`                   | 暂停进程列表、跟随选中进程、CPU 平滑/直接排序 |
+| 右键                            | 进程/网络/存储/GPU 上下文操作                 |
 | `Space`、`v`、`V`、`U`          | 标记进程/子树/清除                            |
 | `W`、`-`、`+`                   | 时间窗口与采样间隔                            |
 | `X`                             | 系统扩展能力浏览（extras）                    |
@@ -47,6 +51,11 @@ nexus-flux doctor --json
 
 过滤表达式支持 `field:value`、`!` 取反、数值比较、`/正则/`、空格 AND 与 ` | ` OR，
 例如 `user:alice cpu:>10 !name:rust` 或 `name:/python|torch/ pid:42 | mem:>1024`。
+
+## 配置
+
+配置文件路径为 `$XDG_CONFIG_HOME/neflux/config.toml`（回退 `~/.config/neflux/config.toml`）；
+Windows 下为 `%APPDATA%\neflux\config.toml`。
 
 ## 许可证
 

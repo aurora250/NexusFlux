@@ -363,6 +363,9 @@ namespace neforce::neflux {
         out.append("interval_ms = ").append(format("{}", interval_ms_)).append("\n");
         out.append("collect_gpu = ").append(toml_bool(collect_gpu_)).append("\n");
         out.append("theme = ").append(quote(theme_)).append("\n");
+        if (!theme_file_.empty()) {
+            out.append("theme_file = ").append(quote(theme_file_)).append("\n");
+        }
         out.append("view = ").append(format("{}", view_)).append("\n");
         out.append("sort_index = ").append(format("{}", sort_index_)).append("\n");
         out.append("reverse_sort = ").append(toml_bool(reverse_sort_)).append("\n");
@@ -445,6 +448,9 @@ namespace neforce::neflux {
         out.append("process_basename = ").append(toml_bool(display_.process_basename_)).append("\n");
         out.append("group_processes = ").append(toml_bool(display_.group_processes_)).append("\n");
         out.append("overview_panel = ").append(quote(display_.overview_panel_)).append("\n");
+        out.append("transparent_background = ").append(toml_bool(display_.transparent_background_)).append("\n");
+        out.append("graph_symbol = ").append(quote(display_.graph_symbol_)).append("\n");
+        out.append("cpu_lazy_sort = ").append(toml_bool(display_.cpu_lazy_sort_)).append("\n");
         return out;
     }
 
@@ -460,6 +466,7 @@ namespace neforce::neflux {
                    {"interval_ms",
                     "collect_gpu",
                     "theme",
+                    "theme_file",
                     "view",
                     "sort_index",
                     "reverse_sort",
@@ -496,6 +503,7 @@ namespace neforce::neflux {
         }
         read_bool(*root, "collect_gpu", value.collect_gpu_);
         read_string(*root, "theme", value.theme_);
+        read_string(*root, "theme_file", value.theme_file_);
         if (read_integer(*root, "view", number)) {
             value.view_ = static_cast<size_t>(number);
         }
@@ -590,10 +598,12 @@ namespace neforce::neflux {
         if (const toml_value* display = root->get_member("display"); display != nullptr && display->is_table()) {
             const toml_table& table = *display->as_table();
             check_keys(table, "display",
-                       {"cpu_graph", "cpu_graph_lower", "temperature_unit", "cpu_sensor", "network_interface",
-                        "network_bits", "network_binary", "network_logarithmic", "network_start_zero",
-                        "network_sync_scale", "network_scale", "network_swap", "memory_graphs", "show_swap",
-                        "show_battery", "process_basename", "group_processes", "overview_panel"});
+                       {"cpu_graph",          "cpu_graph_lower",    "temperature_unit",       "cpu_sensor",
+                        "network_interface",  "network_bits",       "network_binary",         "network_logarithmic",
+                        "network_start_zero", "network_sync_scale", "network_scale",          "network_swap",
+                        "memory_graphs",      "show_swap",          "show_battery",           "process_basename",
+                        "group_processes",    "overview_panel",     "transparent_background", "graph_symbol",
+                        "cpu_lazy_sort"});
             display_config& d = value.display_;
             read_string(table, "cpu_graph", d.cpu_graph_);
             read_string(table, "cpu_graph_lower", d.cpu_graph_lower_);
@@ -615,6 +625,9 @@ namespace neforce::neflux {
             read_bool(table, "process_basename", d.process_basename_);
             read_bool(table, "group_processes", d.group_processes_);
             read_string(table, "overview_panel", d.overview_panel_);
+            read_bool(table, "transparent_background", d.transparent_background_);
+            read_string(table, "graph_symbol", d.graph_symbol_);
+            read_bool(table, "cpu_lazy_sort", d.cpu_lazy_sort_);
         }
         read_bool(*root, "check_updates", value.check_updates_);
         if (const toml_value* ignored = root->get_member("ignored_update_version");
@@ -711,6 +724,9 @@ namespace neforce::neflux {
         rows.push_back({"Process basename only", process_basename_ ? "true" : "false"});
         rows.push_back({"Group processes by program", group_processes_ ? "true" : "false"});
         rows.push_back({"Expanded overview panel", overview_panel_});
+        rows.push_back({"Transparent background", transparent_background_ ? "true" : "false"});
+        rows.push_back({"Graph symbols", graph_symbol_});
+        rows.push_back({"Lazy CPU sort", cpu_lazy_sort_ ? "true" : "false"});
         return rows;
     }
 
@@ -802,12 +818,24 @@ namespace neforce::neflux {
             case 17:
                 cycle(overview_panel_, {"all", "cpu", "memory", "gpu", "storage", "network"});
                 break;
+            case 18:
+                transparent_background_ = !transparent_background_;
+                break;
+            case 19:
+                cycle(graph_symbol_, {"braille", "block", "ascii"});
+                break;
+            case 20:
+                cpu_lazy_sort_ = !cpu_lazy_sort_;
+                break;
             default:
                 break;
         }
     }
 
     void display_config::validate() const {
+        if (!(graph_symbol_ == "braille" || graph_symbol_ == "block" || graph_symbol_ == "ascii")) {
+            fail("Invalid graph symbol; expected braille, block, or ascii");
+        }
         if (!(overview_panel_ == "all" || overview_panel_ == "cpu" || overview_panel_ == "memory" ||
               overview_panel_ == "gpu" || overview_panel_ == "storage" || overview_panel_ == "network")) {
             fail("Invalid overview panel");

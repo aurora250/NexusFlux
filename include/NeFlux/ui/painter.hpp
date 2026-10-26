@@ -100,8 +100,11 @@ namespace neforce::neflux::ui {
          * @param target 画布目标
          * @param colors 配色
          * @param ascii 是否使用纯 ASCII 符号
+         * @param transparent 是否使用终端默认背景
+         * @param graph_symbol
          */
-        painter(tui::canvas_painter& target, const palette& colors, bool ascii = false);
+        painter(tui::canvas_painter& target, const palette& colors, bool ascii = false, bool transparent = false,
+                string graph_symbol = "braille");
 
         /**
          * @brief 创建裁剪区域子绘制器
@@ -109,6 +112,13 @@ namespace neforce::neflux::ui {
          * @return 子绘制器
          */
         NEFORCE_NODISCARD painter clip(const rect& area) const;
+
+        /**
+         * @brief 创建不透明子绘制器
+         * @return 关闭透明背景的绘制器
+         * @note 用于弹窗和浮层，避免终端透明背景透出后方动态内容
+         */
+        NEFORCE_NODISCARD painter opaque() const;
 
         /// @brief 可用宽度
         NEFORCE_NODISCARD int width() const noexcept { return area_.w_; }
@@ -186,7 +196,7 @@ namespace neforce::neflux::ui {
          * @param glyph 字符
          * @param fg 前景
          */
-        void hline(int x, int y, int width, string_view glyph, color fg);
+        void hline(int x, int y, int width, string_view glyph, color fg, optional<color> bg = none);
 
         /**
          * @brief 绘制垂直线
@@ -196,7 +206,7 @@ namespace neforce::neflux::ui {
          * @param glyph 字符
          * @param fg 前景
          */
-        void vline(int x, int y, int height, string_view glyph, color fg);
+        void vline(int x, int y, int height, string_view glyph, color fg, optional<color> bg = none);
 
         /**
          * @brief 绘制固定刻度仪表
@@ -275,6 +285,8 @@ namespace neforce::neflux::ui {
         const palette& palette_;
         rect area_;
         bool ascii_ = false;
+        bool transparent_ = false;
+        string graph_symbol_ = "braille";
 
         NEFORCE_NODISCARD bool visible(int x, int y) const noexcept {
             return x >= area_.x_ && y >= area_.y_ && x < area_.right() && y < area_.bottom();
