@@ -5,6 +5,7 @@
 #include <NeFlux/collect.hpp>
 #include <NeFlux/config.hpp>
 #include <NeFlux/connections.hpp>
+#include <NeFlux/crash.hpp>
 #include <NeFlux/diagnostics.hpp>
 #include <NeFlux/gpu.hpp>
 #include <NeFlux/recording.hpp>
@@ -812,6 +813,7 @@ disables color when supported by the terminal.
 int main(int argc, char** argv) {
     using namespace neforce;
     using namespace neforce::neflux;
+    initialize_crash_logging(argc, argv);
     cli_args args;
     try {
         args = parse_cli(argc, argv);

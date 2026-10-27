@@ -327,7 +327,9 @@ namespace neforce::neflux {
         }
         for (const auto& member_entry: custom_colors_.as_object()) {
             const auto& key = member_entry.first;
-            if (!(key == "background" || key == "panel" || key == "text" || key == "accent" || key == "border")) {
+            if (!(key == "background" || key == "panel" || key == "text" || key == "accent" || key == "border" ||
+                  key == "muted" || key == "selection" || key == "blue" || key == "purple" || key == "amber" ||
+                  key == "red")) {
                 fail(format("Unknown color: {}", key));
             }
             const auto& value = member_entry.second.as_string();

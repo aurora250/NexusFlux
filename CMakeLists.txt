@@ -63,6 +63,7 @@ include(GNUInstallDirs)
 set(NEFLUX_SOURCES
     src/cli.cpp
     src/config.cpp
+    src/crash.cpp
     src/json.cpp
     src/model.cpp
     src/util.cpp

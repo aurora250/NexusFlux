@@ -49,6 +49,7 @@ per-process CPU/RAM/GPU/I/O columns.
 - `C` opens the column chooser.
 - `T` toggles the tree; click a tree prefix to collapse or expand a node.
 - `D` toggles the persistent process side panel.
+- Mouse wheel scrolls the table viewport; `↑/↓` moves the selected process.
 - `d` / `Enter` opens the detailed process panel.
 - `P` pauses the process list; `F` follows the selected process.
 - `L` switches lazy/direct CPU sorting.
@@ -80,7 +81,8 @@ follows the selected block device and keeps a separate read/write history per de
 
 - `4` opens Storage.
 - `N` switches between the filesystem and block-device tables.
-- `↑/↓` selects a row in the active table; clicking a row also selects it.
+- `A` returns the throughput chart to all physical devices.
+- `↑/↓` selects a row in the active table; clicking a row also selects it and switches the chart to that device.
 - `Enter` / `d` opens the selected filesystem or block-device details.
 - Right click for details and previous/next row actions.
 
@@ -129,8 +131,8 @@ network/disk activity.
 
 ![Services](docs/images/services.png)
 
-systemd services with scope, active/sub state, PID, CPU, memory, tasks and
-description.
+Services with scope, active/sub state, PID, CPU, memory, tasks and description.
+Linux uses systemd; Windows uses SCM.
 
 - `8` opens Services.
 - `F3` / `f` filters.
@@ -158,7 +160,7 @@ range.
 
 - `0` opens History.
 - `↑/↓` selects a series.
-- Mouse wheel moves one series at a time; click a row to select it.
+- Mouse wheel scrolls the series list; `↑/↓` moves the selected series; click a row to select it.
 - `W` changes the chart window.
 
 ### Events
@@ -180,6 +182,7 @@ becomes ACTIVE after `alert_hold_seconds` and is recorded as RECOVERED when it c
 - `F2` opens Settings.
 - Click a row or press `Enter` to open its choice popup.
 - `←/→` adjusts a value directly; `↑/↓` moves between rows.
+- Mouse wheel scrolls the settings list.
 - `w` saves configuration.
 - `Esc` returns to the main menu when Settings was opened from it.
 
@@ -215,8 +218,10 @@ visible next to the process table.
 
 ![Theme chooser](docs/images/theme.png)
 
-The theme chooser lists built-in and `.theme` files. The highlighted theme is applied
-immediately; `Esc` returns to the main menu.
+The theme chooser lists built-in and `.theme` files. The highlighted theme is applied immediately;
+`Esc` returns to the main menu. 
+Put `.theme` files in `~/.config/neflux/themes` (Linux), `%APPDATA%\neflux\themes` (Windows),
+set `NEFLUX_THEME_DIR`, or point `theme_file = "…"` at a specific file.
 
 ![Sort chooser](docs/images/sort.png)
 
@@ -250,6 +255,17 @@ AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|t
 
 Configuration is read from `$XDG_CONFIG_HOME/neflux/config.toml` (falling back to
 `~/.config/neflux/config.toml`). On Windows it lives under `%APPDATA%\neflux\config.toml`.
+
+## Logs
+
+At startup NexusFlux initializes `neforce::logger` with a rotating file sink:
+
+- Linux: `~/.config/neflux/logs/nexus-flux.log.<date>`
+- Windows: `%APPDATA%\neflux\logs\nexus-flux.log.<date>`
+
+Windows writes a minidump next to the log on an unhandled exception; fatal signals
+on Linux are also recorded. A small `crash-fallback.log` is written if the logger
+itself cannot flush during a crash.
 
 ## Building
 

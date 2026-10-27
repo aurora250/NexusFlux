@@ -46,6 +46,7 @@ nexus-flux doctor --json
 - `C` 打开列选择器。
 - `T` 切换树形视图；点击树前缀折叠/展开节点。
 - `D` 切换持久进程侧栏。
+- 鼠标滚轮滚动表格视口；`↑/↓` 移动选中进程。
 - `d` / `Enter` 打开详细进程面板。
 - `P` 暂停进程列表；`F` 跟随选中进程。
 - `L` 切换 CPU lazy/direct 排序。
@@ -76,7 +77,8 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 
 - `4` 打开存储页。
 - `N` 在文件系统表和块设备表之间切换。
-- `↑/↓` 在当前表中选择行；点击行也会选中。
+- `A` 让吞吐图回到所有物理设备汇总。
+- `↑/↓` 在当前表中选择行；点击行也会选中，并把图表切换到该设备。
 - `Enter` / `d` 打开当前选中的文件系统或块设备详情。
 - 右键打开详情、上一行/下一行操作。
 
@@ -101,8 +103,7 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。`HOST & POWER` 同时显示硬件档案：
 CPU 的 Family/Model/Stepping、扩展 Family/Model、封装、核心名、指令集和 SIMD 扩展、
 L1/L2/L3 缓存；BIOS 厂商/版本/日期/微码；主板厂商/型号/芯片组/南桥；以及内存类型、
-通道、容量、控制器频率、LLC 和时序。数据来自 `neforce::sysinfo`，平台不支持的字段
-显示为 `—`。
+通道、容量、控制器频率、LLC 和时序。数据来自 `neforce::sysinfo`，平台不支持的字段 显示为 `—`。
 
 - `6` 打开系统页。
 - `↑/↓` 滚动传感器和监听列表。
@@ -123,7 +124,8 @@ Docker/Podman 容器，显示 runtime、状态、CPU、内存、PID，以及每�
 
 ![服务](docs/images/services.png)
 
-systemd 服务的 scope、active/sub 状态、PID、CPU、内存、任务数和描述。
+服务的 scope、active/sub 状态、PID、CPU、内存、任务数和描述。
+Linux 使用 systemd，Windows 使用 SCM。
 
 - `8` 打开服务页。
 - `F3` / `f` 过滤。
@@ -150,7 +152,7 @@ SMART 和其他探针。
 
 - `0` 打开历史页。
 - `↑/↓` 选择序列。
-- 鼠标滚轮一次移动一项；点击行选中。
+- 鼠标滚轮滚动序列视口；`↑/↓` 移动选中序列；点击行选中。
 - `W` 调整图表窗口。
 
 ### 事件
@@ -172,6 +174,7 @@ ACTIVE，恢复后记录 RECOVERED。
 - `F2` 打开设置。
 - 点击行或按 `Enter` 打开该项的选择弹窗。
 - `←/→` 直接调整数值；`↑/↓` 移动选中行。
+- 鼠标滚轮滚动设置列表。
 - `w` 保存配置。
 - 从主菜单进入设置时，`Esc` 返回主菜单。
 
@@ -207,6 +210,8 @@ ACTIVE，恢复后记录 RECOVERED。
 ![主题选择器](docs/images/theme.png)
 
 主题选择器列出内置主题和 `.theme` 文件；高亮主题立即应用，`Esc` 返回主菜单。
+将 `.theme` 文件放到 `~/.config/neflux/themes`（Linux）或 `%APPDATA%\neflux\themes`（Windows），
+也可设置 `NEFLUX_THEME_DIR`，或用 `theme_file = "…"` 指定单个文件。
 
 ![排序选择器](docs/images/sort.png)
 
@@ -240,6 +245,16 @@ ACTIVE，恢复后记录 RECOVERED。
 
 配置文件路径为 `$XDG_CONFIG_HOME/neflux/config.toml`（回退 `~/.config/neflux/config.toml`）；
 Windows 下为 `%APPDATA%\neflux\config.toml`。
+
+## 日志
+
+启动时 NexusFlux 会初始化 `neforce::logger` 并写入轮转日志：
+
+- Linux：`~/.config/neflux/logs/nexus-flux.log.<date>`
+- Windows：`%APPDATA%\neflux\logs\nexus-flux.log.<date>`
+
+Windows 未处理异常会另存 minidump；Linux 的致命信号也会记录。如果崩溃时
+logger 本身无法刷新，还会写一个 `crash-fallback.log`。
 
 ## 构建
 

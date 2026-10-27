@@ -51,6 +51,49 @@ namespace neforce::neflux::ui {
             return fit_display(text.view(), width, right) + " ";
         }
 
+        NEFORCE_NODISCARD vector<string> wrap_display(string_view text, int width) {
+            vector<string> lines;
+            if (width <= 0 || text.empty()) {
+                return lines;
+            }
+            string remaining(text);
+            while (!remaining.empty()) {
+                size_t end = 0;
+                while (end < remaining.size()) {
+                    size_t next = end + 1;
+                    while (next < remaining.size() && (static_cast<unsigned char>(remaining[next]) & 0xC0U) == 0x80U) {
+                        ++next;
+                    }
+                    if (display_width(remaining.substr(0, next).view()) > width) {
+                        break;
+                    }
+                    end = next;
+                }
+                if (end == 0) {
+                    end = remaining.size() > 1 ? 2 : 1;
+                }
+                if (end < remaining.size()) {
+                    const size_t space = remaining.rfind(' ', end - 1);
+                    if (space != string::npos && space > 0 && space >= static_cast<size_t>(width / 2)) {
+                        end = space;
+                    }
+                }
+                string line = remaining.substr(0, end);
+                line.trim();
+                if (!line.empty()) {
+                    lines.push_back(move(line));
+                }
+                remaining = remaining.substr(end);
+                while (!remaining.empty() && remaining[0] == ' ') {
+                    remaining = remaining.substr(1);
+                }
+            }
+            if (lines.empty()) {
+                lines.push_back(string());
+            }
+            return lines;
+        }
+
         enum class view : byte_t {
             overview,
             processes,
@@ -189,6 +232,15 @@ namespace neforce::neflux::ui {
             if (const auto home = environment::get("HOME"); !home.empty()) {
                 dirs.push_back(home + "/.config/neflux/themes");
             }
+            if (const auto appdata = environment::get("APPDATA"); !appdata.empty()) {
+                dirs.push_back(appdata + "/neflux/themes");
+            }
+            if (const auto local = environment::get("LOCALAPPDATA"); !local.empty()) {
+                dirs.push_back(local + "/neflux/themes");
+            }
+            if (const auto config_dir = environment::config_directory(); !config_dir.empty()) {
+                dirs.push_back(config_dir + "/themes");
+            }
             dirs.push_back("/usr/local/share/btop/themes");
             dirs.push_back("/usr/share/btop/themes");
             if (const auto custom = environment::get("NEFLUX_THEME_DIR"); !custom.empty()) {
@@ -310,6 +362,8 @@ namespace neforce::neflux::ui {
             process_sort,
             gpu_device,
             gpu_process_row,
+            gpu_prev,
+            gpu_next,
             interface_sort,
             connection_sort,
             process_row,
@@ -337,6 +391,8 @@ namespace neforce::neflux::ui {
             rect area_;
             hit_action action_ = hit_action::none;
             size_t index_ = 0;
+            uint32_t pid_ = 0;
+            uint64_t start_time_ = 0;
         };
 
         enum class popup_kind : byte_t {
@@ -698,6 +754,8 @@ namespace neforce::neflux::ui {
             bool follow_process_ = false;
             bool process_side_panel_ = false;
             bool dragging_process_scrollbar_ = false;
+            bool free_scroll_ = false;
+            bool storage_device_auto_ = true;
             hit_action dragging_scroll_action_ = hit_action::none;
             rect dragging_scroll_rect_{};
             set<uint32_t> collapsed_;
@@ -750,6 +808,8 @@ namespace neforce::neflux::ui {
             int tab_start_ = 0;
             int64_t last_click_ms_ = 0;
             int last_click_row_ = -1;
+            uint32_t last_click_pid_ = 0;
+            uint64_t last_click_start_time_ = 0;
             bool quit_ = false;
             bool detail_open_ = false;
             bool main_quit_ = false;
@@ -1199,6 +1259,7 @@ namespace neforce::neflux::ui {
             void remember_selection(const vector<process_row>& rows) {
                 if (selected_ < rows.size()) {
                     select_process(snap_.processes_[rows[selected_].index_]);
+                    follow_process_ = true;
                 }
             }
 
@@ -1650,12 +1711,13 @@ namespace neforce::neflux::ui {
                 };
                 const int body_height = inner.h_ - 2;
                 const bool swap = cfg_.display_.show_swap_ && memory.swap_total_ > 0;
-                const int graph_height = neforce::max(0, body_height - (swap ? 2 : 0));
-                const int per_row =
-                        cfg_.display_.memory_graphs_ && body_height > 4 ? neforce::max(1, graph_height / 4) : 1;
+                const int entries = swap ? 5 : 4;
+                const int per_row = cfg_.display_.memory_graphs_ && body_height > entries
+                                            ? neforce::max(1, body_height / entries)
+                                            : 1;
                 int y = inner.y_ + 1;
                 for (const auto& item: rows) {
-                    if (y >= inner.bottom() - (swap ? 2 : 0)) {
+                    if (y >= inner.bottom()) {
                         break;
                     }
                     const auto ratio = item.value.has_value() && memory.total_ > 0
@@ -1680,23 +1742,29 @@ namespace neforce::neflux::ui {
                         y += per_row - 1;
                     }
                 }
-                if (swap) {
-                    const int swap_y = inner.bottom() - 2;
-                    brush.text(inner.x_, swap_y,
-                               format("Swap {} / {}", bytes(static_cast<double>(memory.swap_used_)),
-                                      bytes(static_cast<double>(memory.swap_total_)))
-                                       .view(),
-                               colors_.muted_);
-                    const auto found = history_.series_.find("Swap (%)");
-                    if (found != history_.series_.end()) {
-                        graph_painter(brush, cfg_.display_.graph_symbol_mem_)
-                                .trend(rect{inner.x_, swap_y + 1, inner.w_ - 8, 1},
-                                       {chart_series{"Swap", &found->second, colors_.blue_}}, 100.0, chart_window(),
-                                       "%", false);
-                    }
-                    brush.text_right(inner.x_, swap_y + 1, inner.w_,
+                if (swap && y < inner.bottom()) {
+                    const int swap_y = y;
+                    const color swap_tint = colors_.muted_;
+                    const string swap_label = format("Swap {} / {}", bytes(static_cast<double>(memory.swap_used_)),
+                                                     bytes(static_cast<double>(memory.swap_total_)));
+                    brush.text(inner.x_, swap_y, truncate_display(swap_label.view(), inner.w_ - 7).view(), swap_tint);
+                    brush.text_right(inner.x_, swap_y, inner.w_,
                                      format("{:5.1}%", percent(memory.swap_used_, memory.swap_total_)).view(),
-                                     colors_.blue_);
+                                     swap_tint);
+                    const int graph_y = swap_y + 1;
+                    const int graph_h = neforce::min(per_row - 1, inner.bottom() - graph_y);
+                    if (graph_h > 1) {
+                        const auto found = history_.series_.find("Swap (%)");
+                        if (found != history_.series_.end()) {
+                            graph_painter(brush, cfg_.display_.graph_symbol_mem_)
+                                    .trend(rect{inner.x_, graph_y, inner.w_, graph_h},
+                                           {chart_series{"Swap", &found->second, swap_tint}}, 100.0, chart_window(),
+                                           "%", false);
+                        }
+                    } else if (graph_h == 1) {
+                        brush.track(inner.x_, graph_y, inner.w_, percent(memory.swap_used_, memory.swap_total_), 100.0,
+                                    swap_tint);
+                    }
                 }
             }
 
@@ -1775,9 +1843,13 @@ namespace neforce::neflux::ui {
                     }
                 }
                 if (snap_.gpus_.size() > 1) {
-                    brush.text_right(area.x_, area.bottom() - 1, area.w_,
-                                     format("[ Prev {}/{} Next ]", index + 1, snap_.gpus_.size()).view(),
-                                     colors_.blue_);
+                    const string footer = format("[ Prev {}/{} Next ]", index + 1, snap_.gpus_.size());
+                    brush.text_right(area.x_, area.bottom() - 1, area.w_, footer.view(), colors_.blue_);
+                    const int footer_width = display_width(footer.view());
+                    const int footer_x = area.right() - footer_width;
+                    const int next_x = area.right() - display_width(" Next ]");
+                    hits_.push_back({{footer_x, area.bottom() - 1, next_x - footer_x, 1}, hit_action::gpu_prev, 0});
+                    hits_.push_back({{next_x, area.bottom() - 1, area.right() - next_x, 1}, hit_action::gpu_next, 0});
                 }
             }
 
@@ -1827,26 +1899,40 @@ namespace neforce::neflux::ui {
                     brush.text(inner.x_, y, format("R {}/s  W {}/s", bytes(read), bytes(write)).view(), colors_.muted_);
                 }
                 if (y + 2 < inner.bottom()) {
+                    deque<double> totals[3];
+                    vector<chart_series> series;
+                    const size_t count = neforce::min(static_cast<size_t>(3), snap_.disk_io_.size());
+                    for (size_t index = 0; index < count; ++index) {
+                        const auto& device = snap_.disk_io_[index];
+                        const auto* detail = history_.disk(device.name_);
+                        if (detail == nullptr) {
+                            continue;
+                        }
+                        const size_t samples = neforce::min(detail->read_.size(), detail->write_.size());
+                        for (size_t sample = 0; sample < samples; ++sample) {
+                            totals[index].push_back(detail->read_[sample] + detail->write_[sample]);
+                        }
+                        series.push_back({device.name_, &totals[index], device_tint(index)});
+                    }
+                    if (series.empty()) {
+                        series.push_back({string("Read"), &history_.disk_read_, colors_.mint_});
+                        series.push_back({string("Write"), &history_.disk_write_, colors_.blue_});
+                    }
                     graph_painter(brush, cfg_.display_.graph_symbol_proc_)
                             .trend(
-                                    rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1},
-                                    {chart_series{"Read", &history_.disk_read_, colors_.mint_},
-                                     chart_series{"Write", &history_.disk_write_, colors_.amber_}},
+                                    rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1}, series,
                                     [&] {
                                         double maximum = 1.0;
-                                        for (const double value: history_.disk_read_) {
-                                            if (neforce::is_finite(value)) {
-                                                maximum = neforce::max(maximum, value);
-                                            }
-                                        }
-                                        for (const double value: history_.disk_write_) {
-                                            if (neforce::is_finite(value)) {
-                                                maximum = neforce::max(maximum, value);
+                                        for (const auto& item: series) {
+                                            for (const double value: *item.values_) {
+                                                if (neforce::is_finite(value)) {
+                                                    maximum = neforce::max(maximum, value);
+                                                }
                                             }
                                         }
                                         return nice_max(maximum);
                                     }(),
-                                    chart_window(), "B/s", false);
+                                    storage_chart_window(), "B/s", false);
                 }
             }
 
@@ -1969,7 +2055,12 @@ namespace neforce::neflux::ui {
                 line(format("Start {} · runtime {}", format("{}", static_cast<uint64_t>(item.start_time_)),
                             duration(item.runtime_)),
                      colors_.muted_);
-                line(format("Command {}", item.command_), colors_.text_);
+                const auto command_lines = wrap_display(item.command_.view(), neforce::max(8, area.w_ - 12));
+                for (size_t index = 0; index < command_lines.size(); ++index) {
+                    line(index == 0 ? format("Command {}", command_lines[index])
+                                    : format("        {}", command_lines[index]),
+                         colors_.text_);
+                }
                 if (y < bottom - 2 && !process_history_.cpu_.empty()) {
                     ++y;
                     const int chart_height = neforce::min(6, bottom - y);
@@ -1983,6 +2074,9 @@ namespace neforce::neflux::ui {
                 for (const auto& text: detail) {
                     if (y >= bottom) {
                         break;
+                    }
+                    if (starts_with(text.view(), "Command ")) {
+                        continue;
                     }
                     if (text.empty()) {
                         ++y;
@@ -2333,12 +2427,18 @@ namespace neforce::neflux::ui {
                     x += width;
                 }
                 const int visible = neforce::max(0, inner.h_ - 2);
-                if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
-                    table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
-                }
-                table_offset_ = neforce::min(selected_, table_offset_);
                 if (!rows.empty() && selected_ >= rows.size()) {
                     selected_ = rows.size() - 1;
+                }
+                if (!free_scroll_) {
+                    if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
+                        table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                    }
+                    table_offset_ = neforce::min(selected_, table_offset_);
+                } else {
+                    table_offset_ = rows.size() > static_cast<size_t>(visible)
+                                            ? neforce::min(table_offset_, rows.size() - static_cast<size_t>(visible))
+                                            : 0;
                 }
                 for (int row = 0; row < visible; ++row) {
                     const size_t index = table_offset_ + static_cast<size_t>(row);
@@ -2354,12 +2454,12 @@ namespace neforce::neflux::ui {
                         bg = colors_.bg_;
                     }
                     brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", colors_.text_, bg);
-                    hits_.push_back({{inner.x_, y, inner.w_, 1}, hit_action::process_row, index});
+                    hits_.push_back(
+                            {{inner.x_, y, inner.w_, 1}, hit_action::process_row, index, item.pid_, item.start_time_});
                     const int indent = neforce::min(rows[index].depth_, 4);
                     if (tree_ && indent > 0) {
                         hits_.push_back({{inner.x_, y, neforce::min(inner.w_, indent * 2), 1},
-                                         hit_action::process_tree_toggle,
-                                         index});
+                                         hit_action::process_tree_toggle, index, item.pid_, item.start_time_});
                     }
                     int cx = inner.x_;
                     for (const auto& column: columns) {
@@ -2415,10 +2515,16 @@ namespace neforce::neflux::ui {
                 if (!keys.empty() && selected_ >= keys.size()) {
                     selected_ = keys.size() - 1;
                 }
-                if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
-                    table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                if (!free_scroll_) {
+                    if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
+                        table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                    }
+                    table_offset_ = neforce::min(selected_, table_offset_);
+                } else {
+                    table_offset_ = keys.size() > static_cast<size_t>(visible)
+                                            ? neforce::min(table_offset_, keys.size() - static_cast<size_t>(visible))
+                                            : 0;
                 }
-                table_offset_ = neforce::min(selected_, table_offset_);
                 for (int row = 0; row < visible && table_offset_ + static_cast<size_t>(row) < keys.size(); ++row) {
                     const size_t index = table_offset_ + static_cast<size_t>(row);
                     const bool active = index == selected_;
@@ -2808,8 +2914,9 @@ namespace neforce::neflux::ui {
                 if (!snap_.disk_io_.empty() && selected_io_ >= snap_.disk_io_.size()) {
                     selected_io_ = 0;
                 }
-                const disk_io* selected_device =
-                        selected_io_ < snap_.disk_io_.size() ? &snap_.disk_io_[selected_io_] : nullptr;
+                const disk_io* selected_device = !storage_device_auto_ && selected_io_ < snap_.disk_io_.size()
+                                                         ? &snap_.disk_io_[selected_io_]
+                                                         : nullptr;
                 const disk_history* selected_history =
                         selected_device != nullptr ? history_.disk(selected_device->name_) : nullptr;
                 const bool per_device = selected_device != nullptr && selected_history != nullptr;
@@ -2851,7 +2958,15 @@ namespace neforce::neflux::ui {
                             .chart(chart_area.inset(1), per_device ? "selected device" : "read / write",
                                    {chart_series{"Read", &chart_read, colors_.mint_},
                                     chart_series{"Write", &chart_write, colors_.blue_}},
-                                   nice_max(peak * 1.1), "B/s", chart_window());
+                                   nice_max(peak * 1.1), "B/s", storage_chart_window());
+                    bool has_data = false;
+                    const size_t samples = neforce::min(chart_read.size(), chart_write.size());
+                    for (size_t index = 0; index < samples && !has_data; ++index) {
+                        has_data = chart_read[index] > 0.0 || chart_write[index] > 0.0;
+                    }
+                    if (!has_data) {
+                        brush.text(chart_area.x_ + 2, chart_area.y_ + 2, "No disk I/O in window", colors_.muted_);
+                    }
                     cursor += chart_height;
                 }
                 const int remaining = area.h_ - (cursor - area.y_);
@@ -2945,7 +3060,8 @@ namespace neforce::neflux::ui {
                 for (size_t index = 0; index < snap_.disk_io_.size() && row < io.bottom() - 1; ++index, ++row) {
                     const auto& item = snap_.disk_io_[index];
                     hits_.push_back({{io.x_ + 1, row, io.w_ - 2, 1}, hit_action::storage_io_row, index});
-                    const bool active = storage_section_ == 1 && index == selected_io_ && current_ == view::storage;
+                    const bool active = !storage_device_auto_ && storage_section_ == 1 && index == selected_io_ &&
+                                        current_ == view::storage;
                     if (active) {
                         brush.fill(rect{io.x_ + 1, row, io.w_ - 2, 1}, " ", colors_.text_, colors_.selection_);
                     }
@@ -2995,6 +3111,7 @@ namespace neforce::neflux::ui {
                     }
                 }
                 if (storage_section_ == 1 && selected_io_ < snap_.disk_io_.size()) {
+                    storage_device_auto_ = false;
                     const auto& io = snap_.disk_io_[selected_io_];
                     if (!detail_lines_.empty()) {
                         detail_lines_.push_back("");
@@ -3374,106 +3491,70 @@ namespace neforce::neflux::ui {
                 fields.push_back({"OS", snap_.os_});
                 fields.push_back({"Kernel", snap_.kernel_});
                 fields.push_back({"CPU", snap_.cpu_name_});
+                fields.push_back({"Code name", hardware_value("CPU", "Code name")});
                 fields.push_back({"Clocks", snap_.cpu_mhz_ > 0 ? format("{} MHz", snap_.cpu_mhz_) : "—"});
                 fields.push_back(
                         {"Load", format("{:.2f} {:.2f} {:.2f}", snap_.load_[0], snap_.load_[1], snap_.load_[2])});
                 fields.push_back({"Sampling", format("{:.1f} / {} ms", snap_.collection_ms_,
                                                      static_cast<uint64_t>(cfg_.interval_ms_))});
+                fields.push_back({"Family", hardware_value("CPU", "Family")});
+                fields.push_back({"Model", hardware_value("CPU", "Model")});
+                fields.push_back({"Stepping", hardware_value("CPU", "Stepping")});
+                fields.push_back({"Ext F/M", format("{}/{}", hardware_value("CPU", "Ext family"),
+                                                    hardware_value("CPU", "Ext model"))});
+                fields.push_back({"Revision", hardware_value("CPU", "Revision")});
+                fields.push_back({"Core VID", hardware_value("CPU", "Core VID")});
+                fields.push_back({"Technology", hardware_value("CPU", "Technology")});
+                fields.push_back({"Package", hardware_value("CPU", "Package")});
+                fields.push_back({"Bus speed", hardware_value("CPU", "Bus speed")});
+                fields.push_back({"Multiplier", hardware_value("CPU", "Multiplier")});
+                fields.push_back({"Max TDP", hardware_value("CPU", "Max TDP")});
+                fields.push_back({"Cores", hardware_value("CPU", "Cores / Threads")});
+                fields.push_back({"BIOS", hardware_value("BIOS", "Brand")});
+                fields.push_back({"BIOS ver", hardware_value("BIOS", "Version")});
+                fields.push_back({"BIOS date", hardware_value("BIOS", "Date")});
+                fields.push_back({"Microcode", hardware_value("BIOS", "Microcode")});
+                fields.push_back({"Board", hardware_value("Board", "Vendor")});
+                fields.push_back({"Board model", hardware_value("Board", "Model")});
+                fields.push_back({"Bus", hardware_value("Board", "Bus")});
+                fields.push_back({"Chipset", hardware_value("Board", "Chipset")});
+                fields.push_back({"Southbridge", hardware_value("Board", "Southbridge")});
+                fields.push_back({"Mem type", hardware_value("Memory", "Type")});
+                fields.push_back({"Channel", hardware_value("Memory", "Channel")});
+                fields.push_back({"Mem size", hardware_value("Memory", "Size")});
+                fields.push_back({"Mem clock", format("{} · {} · MC {}", hardware_value("Memory", "DRAM freq"),
+                                                      hardware_value("Memory", "FSB:DRAM"),
+                                                      hardware_value("Memory", "Controller freq"))});
+                fields.push_back({"LLC / Ring", hardware_value("Memory", "LLC / Ring")});
+                fields.push_back({"Timings", hardware_value("Memory", "Timings")});
+                fields.push_back({"CACHE", format("L1D {} · L1I {} · L2 {} · L3 {}", hardware_value("CPU", "L1 data"),
+                                                  hardware_value("CPU", "L1 inst"), hardware_value("CPU", "L2"),
+                                                  hardware_value("CPU", "L3"))});
+                fields.push_back({"INSTR", hardware_value("CPU", "Instructions")});
+                fields.push_back({"SIMD", hardware_value("CPU", "SIMD")});
                 if (!inventory_.service_managers_.empty()) {
                     fields.push_back({"Services", join_strings(inventory_.service_managers_, ", ")});
                 }
                 int host_row = host.y_ + 1;
+                const int value_width = neforce::max(8, host.w_ - 17);
                 for (const auto& item: fields) {
+                    const auto lines = wrap_display(item.second.view(), value_width);
+                    for (size_t line_index = 0; line_index < lines.size() && host_row < host.bottom() - 1;
+                         ++line_index) {
+                        brush.text(host.x_ + 2, host_row,
+                                   line_index == 0 ? truncate_display(item.first.view(), 12).view() : string_view(),
+                                   colors_.muted_);
+                        brush.text(host.x_ + 14, host_row, lines[line_index].view(), colors_.text_);
+                        ++host_row;
+                    }
+                }
+                for (const auto& battery: snap_.batteries_) {
                     if (host_row >= host.bottom() - 1) {
                         break;
                     }
-                    brush.text(host.x_ + 2, host_row, truncate_display(item.first.view(), 12).view(), colors_.muted_);
-                    brush.text(host.x_ + 14, host_row, truncate_display(item.second.view(), host.w_ - 17).view(),
-                               colors_.text_);
-                    ++host_row;
-                }
-
-                vector<pair<string, string>> left_fields = {
-                        {"Family", hardware_value("CPU", "Family")},
-                        {"Model", hardware_value("CPU", "Model")},
-                        {"Stepping", hardware_value("CPU", "Stepping")},
-                        {"Ext F/M",
-                         format("{}/{}", hardware_value("CPU", "Ext family"), hardware_value("CPU", "Ext model"))},
-                        {"Revision", hardware_value("CPU", "Revision")},
-                        {"Core VID", hardware_value("CPU", "Core VID")},
-                        {"Technology", hardware_value("CPU", "Technology")},
-                        {"Package", hardware_value("CPU", "Package")},
-                        {"Max TDP", hardware_value("CPU", "Max TDP")},
-                        {"P-core", hardware_value("CPU", "Clocks (P-core)")},
-                        {"Cores", hardware_value("CPU", "Cores / Threads")},
-                };
-                vector<pair<string, string>> right_fields = {
-                        {"BIOS", hardware_value("BIOS", "Brand")},
-                        {"BIOS ver", hardware_value("BIOS", "Version")},
-                        {"BIOS date", hardware_value("BIOS", "Date")},
-                        {"Microcode", hardware_value("BIOS", "Microcode")},
-                        {"Board", hardware_value("Board", "Vendor")},
-                        {"Board model", hardware_value("Board", "Model")},
-                        {"Bus", hardware_value("Board", "Bus")},
-                        {"Chipset", hardware_value("Board", "Chipset")},
-                        {"Southbridge", hardware_value("Board", "Southbridge")},
-                        {"Mem type", hardware_value("Memory", "Type")},
-                        {"Channel", hardware_value("Memory", "Channel")},
-                        {"Mem size", hardware_value("Memory", "Size")},
-                        {"MC freq", hardware_value("Memory", "Controller freq")},
-                        {"LLC / Ring", hardware_value("Memory", "LLC / Ring")},
-                        {"Timings", hardware_value("Memory", "Timings")},
-                };
-                const int column_width = neforce::max(18, (host.w_ - 4) / 2);
-                int grid_row = host_row + 1;
-                const size_t grid_rows = neforce::max(left_fields.size(), right_fields.size());
-                for (size_t index = 0; index < grid_rows && grid_row < host.bottom() - 1; ++index) {
-                    if (index < left_fields.size()) {
-                        const auto& left_field = left_fields[index];
-                        brush.text(host.x_ + 2, grid_row, truncate_display(left_field.first.view(), 11).view(),
-                                   colors_.muted_);
-                        brush.text(host.x_ + 14, grid_row,
-                                   truncate_display(left_field.second.view(), column_width - 12).view(), colors_.text_);
-                    }
-                    if (index < right_fields.size()) {
-                        const auto& right_field = right_fields[index];
-                        brush.text(host.x_ + 2 + column_width, grid_row,
-                                   truncate_display(right_field.first.view(), 11).view(), colors_.muted_);
-                        brush.text(host.x_ + 14 + column_width, grid_row,
-                                   truncate_display(right_field.second.view(), column_width - 12).view(),
-                                   colors_.text_);
-                    }
-                    ++grid_row;
-                }
-                if (grid_row < host.bottom() - 1) {
-                    const string cache = format("L1 {} · L2 {} · L3 {}", hardware_value("CPU", "L1"),
-                                                hardware_value("CPU", "L2"), hardware_value("CPU", "L3"));
-                    brush.text(host.x_ + 2, grid_row, "CACHE", colors_.muted_);
-                    brush.text(host.x_ + 14, grid_row, truncate_display(cache.view(), host.w_ - 17).view(),
-                               colors_.text_);
-                    ++grid_row;
-                }
-                if (grid_row < host.bottom() - 1) {
-                    brush.text(host.x_ + 2, grid_row, "INSTR", colors_.muted_);
-                    brush.text(host.x_ + 14, grid_row,
-                               truncate_display(hardware_value("CPU", "Instructions").view(), host.w_ - 17).view(),
-                               colors_.text_);
-                    ++grid_row;
-                }
-                if (grid_row < host.bottom() - 1) {
-                    brush.text(host.x_ + 2, grid_row, "SIMD", colors_.muted_);
-                    brush.text(host.x_ + 14, grid_row,
-                               truncate_display(hardware_value("CPU", "SIMD").view(), host.w_ - 17).view(),
-                               colors_.text_);
-                    ++grid_row;
-                }
-                for (const auto& battery: snap_.batteries_) {
-                    if (grid_row >= host.bottom() - 1) {
-                        break;
-                    }
-                    brush.text(host.x_ + 2, grid_row, truncate_display(battery.summary().view(), host.w_ - 4).view(),
+                    brush.text(host.x_ + 2, host_row, truncate_display(battery.summary().view(), host.w_ - 4).view(),
                                colors_.mint_);
-                    ++grid_row;
+                    ++host_row;
                 }
                 const int sensors_height = neforce::max(7, right.h_ * 30 / 100);
                 const rect sensors{right.x_, right.y_, right.w_, sensors_height};
@@ -3517,6 +3598,13 @@ namespace neforce::neflux::ui {
                     brush.text(pressure.x_ + 2, pressure.y_ + 1,
                                truncate_display(pressure_header.view(), pressure.w_ - 4).view(), colors_.muted_);
                     int row = pressure.y_ + 2;
+                    if (snap_.pressure_.empty()) {
+                        brush.text(pressure.x_ + 2, row,
+                                   truncate_display("No pressure stall information on this platform.", pressure.w_ - 4)
+                                           .view(),
+                                   colors_.muted_);
+                        ++row;
+                    }
                     for (const auto& item: snap_.pressure_) {
                         if (row >= pressure.bottom() - 1) {
                             break;
@@ -3536,17 +3624,7 @@ namespace neforce::neflux::ui {
                         brush.text(pressure.x_ + 2, row, line.view(), hot ? colors_.red_ : colors_.muted_);
                         ++row;
                     }
-                    if (cfg_.display_.show_battery_) {
-                        for (const auto& battery: snap_.batteries_) {
-                            if (row >= pressure.bottom() - 1) {
-                                break;
-                            }
-                            brush.text(pressure.x_ + 2, row,
-                                       truncate_display(battery.summary().view(), pressure.w_ - 4).view(),
-                                       colors_.mint_);
-                            ++row;
-                        }
-                    }
+
                 }
                 const rect listeners{right.x_, pressure.bottom(), right.w_,
                                      right.h_ - sensors_height - pressure_height};
@@ -3826,7 +3904,8 @@ namespace neforce::neflux::ui {
                     brush.empty(table.inset(1),
                                 total == 0 ? (containers ? "No local containers" : "No local services")
                                            : "No matching workloads",
-                                total == 0 ? (containers ? "Docker and Podman are optional." : "systemd is optional.")
+                                total == 0 ? (containers ? "Docker Desktop or Podman is not detected."
+                                                         : "The service manager returned no services.")
                                            : "Clear or change the filter.");
                     return;
                 }
@@ -3834,10 +3913,16 @@ namespace neforce::neflux::ui {
                 if (selected_ >= rows.size()) {
                     selected_ = rows.size() - 1;
                 }
-                if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
-                    table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                if (!free_scroll_) {
+                    if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
+                        table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                    }
+                    table_offset_ = neforce::min(selected_, table_offset_);
+                } else {
+                    table_offset_ = rows.size() > static_cast<size_t>(visible)
+                                            ? neforce::min(table_offset_, rows.size() - static_cast<size_t>(visible))
+                                            : 0;
                 }
-                table_offset_ = neforce::min(selected_, table_offset_);
                 const bool wide = table.w_ >= 140;
                 const int name_width = wide ? neforce::max(16, table.w_ * 17 / 100) : 24;
                 constexpr int runtime_width = 8;
@@ -4404,8 +4489,19 @@ namespace neforce::neflux::ui {
 
             void draw_text_popup(painter& brush, const string& title, const vector<string>& lines) {
                 const int width = neforce::min(brush.width() - 6, 110);
+                vector<string> wrapped;
+                for (const auto& line: lines) {
+                    if (line.empty()) {
+                        wrapped.push_back(string());
+                        continue;
+                    }
+                    const auto parts = wrap_display(line.view(), width - 6);
+                    for (size_t index = 0; index < parts.size(); ++index) {
+                        wrapped.push_back(index == 0 ? parts[index] : "  " + parts[index]);
+                    }
+                }
                 const int height =
-                        neforce::min(brush.height() - 4, neforce::max(9, static_cast<int>(lines.size()) + 3));
+                        neforce::min(brush.height() - 4, neforce::max(9, static_cast<int>(wrapped.size()) + 3));
                 const rect area{(brush.width() - width) / 2, (brush.height() - height) / 2, width, height};
                 popup_rect_ = area;
                 popup_first_row_ = area.y_ + 1;
@@ -4417,11 +4513,12 @@ namespace neforce::neflux::ui {
                     popup_scroll_ = 0;
                 }
                 const int visible = height - 3;
-                const size_t maximum =
-                        lines.size() > static_cast<size_t>(visible) ? lines.size() - static_cast<size_t>(visible) : 0;
+                const size_t maximum = wrapped.size() > static_cast<size_t>(visible)
+                                               ? wrapped.size() - static_cast<size_t>(visible)
+                                               : 0;
                 popup_scroll_ = neforce::min(popup_scroll_, maximum);
-                for (int row = 0; row < visible && popup_scroll_ + static_cast<size_t>(row) < lines.size(); ++row) {
-                    const string& line = lines[popup_scroll_ + static_cast<size_t>(row)];
+                for (int row = 0; row < visible && popup_scroll_ + static_cast<size_t>(row) < wrapped.size(); ++row) {
+                    const string& line = wrapped[popup_scroll_ + static_cast<size_t>(row)];
                     color tint = colors_.text_;
                     if (!line.empty() && line[0] == '#') {
                         tint = colors_.muted_;
@@ -4448,10 +4545,16 @@ namespace neforce::neflux::ui {
                            colors_.panel_);
                 const auto rows = settings_rows();
                 const int visible = height - 3;
-                if (compare_greater_equal(settings_index_, visible)) {
-                    popup_scroll_ = settings_index_ + 1 - static_cast<size_t>(visible);
+                if (!free_scroll_) {
+                    if (compare_greater_equal(settings_index_, visible)) {
+                        popup_scroll_ = settings_index_ + 1 - static_cast<size_t>(visible);
+                    } else {
+                        popup_scroll_ = 0;
+                    }
                 } else {
-                    popup_scroll_ = 0;
+                    popup_scroll_ = rows.size() > static_cast<size_t>(visible)
+                                            ? neforce::min(popup_scroll_, rows.size() - static_cast<size_t>(visible))
+                                            : 0;
                 }
                 for (int row = 0; row < visible && popup_scroll_ + static_cast<size_t>(row) < rows.size(); ++row) {
                     const size_t index = popup_scroll_ + static_cast<size_t>(row);
@@ -5269,6 +5372,15 @@ namespace neforce::neflux::ui {
                     lines.push_back(format("UUID          {}", item.uuid_));
                     lines.push_back(format("Backend       {}", item.backend_));
                     lines.push_back(format("Driver        {}", item.driver_));
+                    if (const json* vbios = item.extra_.get("vbios_version"); vbios != nullptr && vbios->is_string()) {
+                        lines.push_back(format("BIOS          {}", vbios->as_string()));
+                    }
+                    if (const json* generation = item.extra_.get("pcie_link_generation");
+                        generation != nullptr && generation->is_integer()) {
+                        const json* width = item.extra_.get("pcie_link_width");
+                        lines.push_back(format("PCIe          Gen{} x{}", generation->as_integer(),
+                                               width != nullptr && width->is_integer() ? width->as_integer() : 0));
+                    }
                     if (item.cuda_driver_version_.has_value()) {
                         lines.push_back(format("CUDA Driver   {}", *item.cuda_driver_version_));
                     }
@@ -5291,8 +5403,14 @@ namespace neforce::neflux::ui {
                     lines.push_back(format("Power         {}", item.power_watts_.has_value()
                                                                        ? format("{:.1f} W", *item.power_watts_)
                                                                        : string("—")));
+                    lines.push_back(format("Power limit   {}", item.power_limit_watts_.has_value()
+                                                                       ? format("{:.1f} W", *item.power_limit_watts_)
+                                                                       : string("—")));
                     lines.push_back(format("Clock         {}", item.clock_mhz_.has_value()
                                                                        ? format("{} MHz", *item.clock_mhz_)
+                                                                       : string("—")));
+                    lines.push_back(format("Memory clock  {}", item.memory_clock_mhz_.has_value()
+                                                                       ? format("{} MHz", *item.memory_clock_mhz_)
                                                                        : string("—")));
                     return lines;
                 }
@@ -5321,6 +5439,7 @@ namespace neforce::neflux::ui {
                         apply_setting_choice(static_cast<size_t>(*row_value), action.substr(row_end + 1));
                         settings_index_ = static_cast<size_t>(*row_value);
                         popup_parent_ = popup_kind::none;
+                        free_scroll_ = false;
                         popup_ = popup_kind::settings;
                         popup_scroll_ = 0;
                     }
@@ -5405,6 +5524,7 @@ namespace neforce::neflux::ui {
                         if (storage_section_ == 0) {
                             selected_ = target;
                         } else {
+                            storage_device_auto_ = false;
                             selected_io_ = target;
                         }
                     }
@@ -5424,6 +5544,7 @@ namespace neforce::neflux::ui {
                     popup_scroll_ = 0;
                 } else if (action == "settings") {
                     popup_parent_ = popup_kind::main_menu;
+                    free_scroll_ = false;
                     popup_ = popup_kind::settings;
                     settings_index_ = 0;
                 } else if (action == "sort") {
@@ -5522,6 +5643,8 @@ namespace neforce::neflux::ui {
                 current_ = target;
                 selected_ = 0;
                 table_offset_ = 0;
+                free_scroll_ = false;
+                storage_device_auto_ = true;
                 detail_open_ = false;
                 selected_process_.reset();
                 status_.clear();
@@ -5701,12 +5824,14 @@ namespace neforce::neflux::ui {
                         return true;
                     }
                     if (key == tui::key_event::type::up) {
+                        free_scroll_ = false;
                         if (settings_index_ > 0) {
                             --settings_index_;
                         }
                         return true;
                     }
                     if (key == tui::key_event::type::down) {
+                        free_scroll_ = false;
                         settings_index_ = neforce::min(settings_index_ + 1, settings_rows().size() - 1);
                         return true;
                     }
@@ -5732,6 +5857,7 @@ namespace neforce::neflux::ui {
                     if (popup_parent_ == popup_kind::main_menu) {
                         open_main_menu();
                     } else if (popup_parent_ == popup_kind::settings) {
+                        free_scroll_ = false;
                         popup_ = popup_kind::settings;
                         popup_parent_ = popup_kind::none;
                     } else {
@@ -5860,6 +5986,11 @@ namespace neforce::neflux::ui {
                     return false;
                 }
                 const auto key = event.key;
+                if (key == tui::key_event::type::up || key == tui::key_event::type::down ||
+                    key == tui::key_event::type::page_up || key == tui::key_event::type::page_down ||
+                    key == tui::key_event::type::home || key == tui::key_event::type::end) {
+                    free_scroll_ = false;
+                }
                 if (key == tui::key_event::type::printable &&
                     (event.mods & tui::key_modifier::ctrl) != tui::key_modifier::none) {
                     if (event.cp == U'c') {
@@ -5894,6 +6025,7 @@ namespace neforce::neflux::ui {
                 }
                 if (key == tui::key_event::type::F2) {
                     popup_parent_ = popup_kind::none;
+                    free_scroll_ = false;
                     popup_ = popup_kind::settings;
                     settings_index_ = 0;
                     return true;
@@ -5979,8 +6111,11 @@ namespace neforce::neflux::ui {
                             if (selected_ > 0) {
                                 --selected_;
                             }
-                        } else if (selected_io_ > 0) {
-                            --selected_io_;
+                        } else {
+                            storage_device_auto_ = false;
+                            if (selected_io_ > 0) {
+                                --selected_io_;
+                            }
                         }
                     } else if (current_ == view::network) {
                         if (network_section_ == 1) {
@@ -6028,8 +6163,11 @@ namespace neforce::neflux::ui {
                             if (selected_ + 1 < count) {
                                 ++selected_;
                             }
-                        } else if (selected_io_ + 1 < snap_.disk_io_.size()) {
-                            ++selected_io_;
+                        } else {
+                            storage_device_auto_ = false;
+                            if (selected_io_ + 1 < snap_.disk_io_.size()) {
+                                ++selected_io_;
+                            }
                         }
                     } else if (current_ == view::network) {
                         if (network_section_ == 1) {
@@ -6126,6 +6264,12 @@ namespace neforce::neflux::ui {
                 if (key == tui::key_event::type::printable && event.cp == U'N' && current_ == view::storage) {
                     storage_section_ = storage_section_ == 0 ? 1 : 0;
                     status_ = storage_section_ == 0 ? "Storage: filesystems" : "Storage: block devices";
+                    return true;
+                }
+                if (key == tui::key_event::type::printable && event.cp == U'A' && current_ == view::storage) {
+                    storage_device_auto_ = true;
+                    selected_io_ = 0;
+                    status_ = "Storage chart: all physical devices";
                     return true;
                 }
                 if (key == tui::key_event::type::printable && event.cp == U'N' && current_ == view::network) {
@@ -6447,9 +6591,10 @@ namespace neforce::neflux::ui {
                         if (!rows.empty()) {
                             const int relative = neforce::clamp(event.y - process_table_rect_.y_ - 1, 0, track - 1);
                             const double ratio = static_cast<double>(relative) / static_cast<double>(track - 1);
-                            selected_ =
-                                    static_cast<size_t>(neforce::round(ratio * static_cast<double>(rows.size() - 1)));
-                            remember_selection(rows);
+                            const size_t visible = static_cast<size_t>(neforce::max(0, process_table_rect_.h_ - 4));
+                            const size_t maximum = rows.size() > visible ? rows.size() - visible : 0;
+                            table_offset_ = static_cast<size_t>(neforce::round(ratio * static_cast<double>(maximum)));
+                            free_scroll_ = true;
                         }
                     }
                     return true;
@@ -6495,8 +6640,17 @@ namespace neforce::neflux::ui {
                                         static_cast<size_t>(neforce::round(ratio * static_cast<double>(count - 1)));
                                 if (dragging_scroll_action_ == hit_action::connections_scroll) {
                                     selected_connection_ = target;
+                                } else if (dragging_scroll_action_ == hit_action::history_scroll) {
+                                    const size_t visible =
+                                            static_cast<size_t>(neforce::max(0, dragging_scroll_rect_.h_ + 1));
+                                    const size_t maximum = count > visible ? count - visible : 0;
+                                    table_offset_ = neforce::min(target, maximum);
+                                    free_scroll_ = true;
                                 } else if (dragging_scroll_action_ == hit_action::settings_scroll) {
-                                    settings_index_ = target;
+                                    const size_t maximum =
+                                            count > popup_visible_rows_ ? count - popup_visible_rows_ : 0;
+                                    popup_scroll_ = neforce::min(target, maximum);
+                                    free_scroll_ = true;
                                 } else {
                                     selected_ = target;
                                 }
@@ -6520,13 +6674,14 @@ namespace neforce::neflux::ui {
                                 ++popup_selected_;
                             }
                         } else if (popup_ == popup_kind::settings) {
-                            if (event.button == tui::mouse_button::wheelup) {
-                                if (settings_index_ > 0) {
-                                    --settings_index_;
-                                }
-                            } else {
-                                settings_index_ = neforce::min(settings_index_ + 1, settings_rows().size() - 1);
-                            }
+                            const size_t count = settings_rows().size();
+                            const size_t visible = popup_visible_rows_;
+                            const size_t maximum = count > visible ? count - visible : 0;
+                            const int delta = event.button == tui::mouse_button::wheelup ? -1 : 1;
+                            const int64_t target = static_cast<int64_t>(popup_scroll_) + delta;
+                            popup_scroll_ = static_cast<size_t>(
+                                    neforce::clamp(target, static_cast<int64_t>(0), static_cast<int64_t>(maximum)));
+                            free_scroll_ = true;
                         } else {
                             popup_scroll_ = event.button == tui::mouse_button::wheelup
                                                     ? (popup_scroll_ > 3 ? popup_scroll_ - 3 : 0)
@@ -6550,6 +6705,7 @@ namespace neforce::neflux::ui {
                                 const size_t index = popup_scroll_ + static_cast<size_t>(row);
                                 if (index < settings_rows().size()) {
                                     settings_index_ = index;
+                                    free_scroll_ = false;
                                     open_setting_choice();
                                 }
                             }
@@ -6600,6 +6756,7 @@ namespace neforce::neflux::ui {
                     if (storage_io_rect_.contains(event.x, event.y) && event.y > storage_io_rect_.y_ + 1) {
                         const int index = event.y - storage_io_rect_.y_ - 2;
                         if (index >= 0 && static_cast<size_t>(index) < snap_.disk_io_.size()) {
+                            storage_device_auto_ = false;
                             selected_io_ = static_cast<size_t>(index);
                             storage_section_ = 1;
                             open_storage_context(false);
@@ -6665,6 +6822,7 @@ namespace neforce::neflux::ui {
                                     break;
                                 case 5:
                                     popup_parent_ = popup_kind::none;
+                                    free_scroll_ = false;
                                     popup_ = popup_kind::settings;
                                     settings_index_ = 0;
                                     break;
@@ -6701,6 +6859,8 @@ namespace neforce::neflux::ui {
                                 count = extra_rows().size();
                             } else if (hit->action_ == hit_action::connections_scroll) {
                                 count = filtered_connections().size();
+                            } else if (hit->action_ == hit_action::settings_scroll) {
+                                count = settings_rows().size();
                             } else {
                                 count = workload_rows(current_ == view::containers).size();
                             }
@@ -6709,6 +6869,16 @@ namespace neforce::neflux::ui {
                                         static_cast<size_t>(neforce::round(ratio * static_cast<double>(count - 1)));
                                 if (hit->action_ == hit_action::connections_scroll) {
                                     selected_connection_ = target;
+                                } else if (hit->action_ == hit_action::history_scroll) {
+                                    const size_t visible = static_cast<size_t>(neforce::max(0, hit->area_.h_ + 1));
+                                    const size_t maximum = count > visible ? count - visible : 0;
+                                    table_offset_ = neforce::min(target, maximum);
+                                    free_scroll_ = true;
+                                } else if (hit->action_ == hit_action::settings_scroll) {
+                                    const size_t maximum =
+                                            count > popup_visible_rows_ ? count - popup_visible_rows_ : 0;
+                                    popup_scroll_ = neforce::min(target, maximum);
+                                    free_scroll_ = true;
                                 } else {
                                     selected_ = target;
                                 }
@@ -6724,9 +6894,11 @@ namespace neforce::neflux::ui {
                                 const int relative = neforce::clamp<int>(event.y - hit->area_.y_, 0, hit->area_.h_ - 1);
                                 const double ratio =
                                         static_cast<double>(relative) / static_cast<double>(hit->area_.h_ - 1);
-                                selected_ = static_cast<size_t>(
-                                        neforce::round(ratio * static_cast<double>(rows.size() - 1)));
-                                remember_selection(rows);
+                                const size_t visible = static_cast<size_t>(neforce::max(0, process_table_rect_.h_ - 4));
+                                const size_t maximum = rows.size() > visible ? rows.size() - visible : 0;
+                                table_offset_ =
+                                        static_cast<size_t>(neforce::round(ratio * static_cast<double>(maximum)));
+                                free_scroll_ = true;
                                 dragging_process_scrollbar_ = true;
                             }
                             return true;
@@ -6734,26 +6906,42 @@ namespace neforce::neflux::ui {
                         if (hit->action_ == hit_action::process_tree_toggle &&
                             (current_ == view::processes || current_ == view::overview)) {
                             const auto rows = process_rows();
-                            if (hit->index_ < rows.size()) {
-                                const auto& item = snap_.processes_[rows[hit->index_].index_];
+                            for (const auto& row: rows) {
+                                const auto& item = snap_.processes_[row.index_];
+                                if (item.pid_ != hit->pid_ || item.start_time_ != hit->start_time_) {
+                                    continue;
+                                }
                                 if (collapsed_.count(item.pid_) != 0) {
                                     collapsed_.erase(item.pid_);
                                 } else {
                                     collapsed_.insert(item.pid_);
                                 }
+                                break;
                             }
                             return true;
                         }
                         if (hit->action_ == hit_action::process_row &&
                             (current_ == view::processes || current_ == view::overview)) {
                             const auto rows = process_rows();
-                            if (hit->index_ < rows.size()) {
+                            size_t row_index = rows.size();
+                            for (size_t index = 0; index < rows.size(); ++index) {
+                                const auto& item = snap_.processes_[rows[index].index_];
+                                if (item.pid_ == hit->pid_ && item.start_time_ == hit->start_time_) {
+                                    row_index = index;
+                                    break;
+                                }
+                            }
+                            if (row_index < rows.size()) {
                                 const bool double_click = monotonic_ms() - last_click_ms_ < 400 &&
-                                                          compare_equal(last_click_row_, hit->index_);
-                                selected_ = hit->index_;
+                                                          last_click_pid_ == hit->pid_ &&
+                                                          last_click_start_time_ == hit->start_time_;
+                                selected_ = row_index;
+                                free_scroll_ = false;
                                 remember_selection(rows);
                                 last_click_ms_ = monotonic_ms();
                                 last_click_row_ = static_cast<int>(hit->index_);
+                                last_click_pid_ = hit->pid_;
+                                last_click_start_time_ = hit->start_time_;
                                 if (double_click) {
                                     open_detail();
                                 }
@@ -6767,6 +6955,7 @@ namespace neforce::neflux::ui {
                                 const bool double_click = monotonic_ms() - last_click_ms_ < 400 &&
                                                           compare_equal(last_click_row_, hit->index_);
                                 selected_ = hit->index_;
+                                free_scroll_ = false;
                                 last_click_ms_ = monotonic_ms();
                                 last_click_row_ = static_cast<int>(hit->index_);
                                 if (double_click) {
@@ -6799,11 +6988,13 @@ namespace neforce::neflux::ui {
                         }
                         if (hit->action_ == hit_action::storage_io_row && current_ == view::storage) {
                             storage_section_ = 1;
+                            storage_device_auto_ = false;
                             selected_io_ = hit->index_;
                             return true;
                         }
                         if (hit->action_ == hit_action::history_row && current_ == view::history) {
                             selected_ = hit->index_;
+                            free_scroll_ = false;
                             return true;
                         }
                         if (hit->action_ == hit_action::event_row && current_ == view::events) {
@@ -6841,6 +7032,14 @@ namespace neforce::neflux::ui {
                                 network_sort_ = hit->index_;
                                 reverse_ = false;
                             }
+                            return true;
+                        }
+                        if ((hit->action_ == hit_action::gpu_prev || hit->action_ == hit_action::gpu_next) &&
+                            (current_ == view::gpu || current_ == view::overview) && !snap_.gpus_.empty()) {
+                            const auto count = static_cast<int64_t>(snap_.gpus_.size());
+                            const int64_t delta = hit->action_ == hit_action::gpu_next ? 1 : -1;
+                            selected_gpu_ = static_cast<size_t>(neforce::clamp(
+                                    static_cast<int64_t>(selected_gpu_) + delta, static_cast<int64_t>(0), count - 1));
                             return true;
                         }
                         if (hit->action_ == hit_action::gpu_device && current_ == view::gpu &&
@@ -6917,11 +7116,12 @@ namespace neforce::neflux::ui {
                             }
                         } else if (current_ == view::containers || current_ == view::services) {
                             const size_t count = workload_rows(current_ == view::containers).size();
-                            if (count > 0) {
-                                const int64_t target = static_cast<int64_t>(selected_) + delta;
-                                selected_ = static_cast<size_t>(neforce::clamp(target, static_cast<int64_t>(0),
-                                                                               static_cast<int64_t>(count) - 1));
-                            }
+                            const size_t visible = static_cast<size_t>(neforce::max(0, workload_rect_.h_ - 3));
+                            const size_t maximum = count > visible ? count - visible : 0;
+                            const int64_t target = static_cast<int64_t>(table_offset_) + delta;
+                            table_offset_ = static_cast<size_t>(
+                                    neforce::clamp(target, static_cast<int64_t>(0), static_cast<int64_t>(maximum)));
+                            free_scroll_ = true;
                         } else if (current_ == view::storage) {
                             if (!snap_.disks_.empty()) {
                                 const int64_t target = static_cast<int64_t>(selected_) + delta;
@@ -6931,11 +7131,12 @@ namespace neforce::neflux::ui {
                             }
                         } else if (current_ == view::history) {
                             const size_t count = history_keys().size();
-                            if (count > 0) {
-                                const int64_t target = static_cast<int64_t>(selected_) + delta;
-                                selected_ = static_cast<size_t>(neforce::clamp(target, static_cast<int64_t>(0),
-                                                                               static_cast<int64_t>(count) - 1));
-                            }
+                            const size_t visible = static_cast<size_t>(neforce::max(0, body_.h_ - 2));
+                            const size_t maximum = count > visible ? count - visible : 0;
+                            const int64_t target = static_cast<int64_t>(table_offset_) + delta;
+                            table_offset_ = static_cast<size_t>(
+                                    neforce::clamp(target, static_cast<int64_t>(0), static_cast<int64_t>(maximum)));
+                            free_scroll_ = true;
                         } else if (current_ == view::events) {
                             size_t count = 0;
                             for (const auto& item: alert_events_) {
@@ -6948,10 +7149,14 @@ namespace neforce::neflux::ui {
                                 selected_ = static_cast<size_t>(neforce::clamp(target, static_cast<int64_t>(0),
                                                                                static_cast<int64_t>(count) - 1));
                             }
-                        } else {
+                        } else if (current_ == view::processes || current_ == view::overview) {
                             const auto rows = process_rows();
-                            move_selection(delta, rows.size());
-                            remember_selection(rows);
+                            const size_t visible = static_cast<size_t>(neforce::max(0, process_table_rect_.h_ - 4));
+                            const size_t maximum = rows.size() > visible ? rows.size() - visible : 0;
+                            const int64_t target = static_cast<int64_t>(table_offset_) + delta;
+                            table_offset_ = static_cast<size_t>(
+                                    neforce::clamp(target, static_cast<int64_t>(0), static_cast<int64_t>(maximum)));
+                            free_scroll_ = true;
                         }
                     }
                     return true;
@@ -7090,6 +7295,15 @@ namespace neforce::neflux::ui {
                     return history_.time_window(cfg_.time_window_seconds_);
                 }
                 return history_.window(cfg_.history_);
+            }
+
+            NEFORCE_NODISCARD ::neforce::neflux::plot_window storage_chart_window() const {
+                if (history_.timestamps_.size() < 2) {
+                    return chart_window();
+                }
+                const double span = history_.timestamps_.back() - history_.timestamps_.front();
+                const uint64_t seconds = neforce::max<uint64_t>(3, static_cast<uint64_t>(span) + 1);
+                return history_.time_window(seconds);
             }
         };
 

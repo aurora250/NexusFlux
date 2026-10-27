@@ -743,14 +743,24 @@ namespace neforce::neflux {
         cpu_json.set("Core VID", or_dash(cpu.core_vid));
         cpu_json.set("Technology", or_dash(cpu.technology));
         cpu_json.set("Package", or_dash(cpu.package));
+        cpu_json.set("Code name", or_dash(cpu.code_name));
         cpu_json.set("Core name", or_dash(cpu.brand));
+        cpu_json.set("Bus speed", cpu.bus_speed_mhz != 0 ? format("{} MHz", cpu.bus_speed_mhz) : string("—"));
+        cpu_json.set("Multiplier", cpu.bus_speed_mhz != 0 && cpu.current_mhz != 0
+                                           ? format("{:.2f}", static_cast<double>(cpu.current_mhz) /
+                                                                      static_cast<double>(cpu.bus_speed_mhz))
+                                           : string("—"));
         cpu_json.set("Max TDP", cpu.max_tdp_watts != 0 ? format("{} W", cpu.max_tdp_watts) : string("—"));
         cpu_json.set("Clocks (P-core)",
                      cpu.max_mhz != 0 ? format("{} / {} MHz", cpu.max_mhz, cpu.current_mhz) : string("—"));
-        cpu_json.set("Cores / Threads", format("{} / {}", cpu.cores, cpu.logical_processors));
+        cpu_json.set("Cores / Threads", cpu.ecore_count != 0 ? format("{}P + {}E / {}T", cpu.pcore_count,
+                                                                      cpu.ecore_count, cpu.logical_processors)
+                                                             : format("{} / {}", cpu.cores, cpu.logical_processors));
         cpu_json.set("Instructions", or_dash(cpu.features));
         cpu_json.set("SIMD", or_dash(simd_extensions(cpu.simd)));
         cpu_json.set("L1", cache_label(cpu.l1_kib, cpu.l1_instances));
+        cpu_json.set("L1 data", cache_label(cpu.l1_data_kib, cpu.l1_data_instances));
+        cpu_json.set("L1 inst", cache_label(cpu.l1_instruction_kib, cpu.l1_instruction_instances));
         cpu_json.set("L2", cache_label(cpu.l2_kib, cpu.l2_instances));
         cpu_json.set("L3", cache_label(cpu.l3_kib, cpu.l3_instances));
         root.set("CPU", move(cpu_json));
@@ -778,6 +788,12 @@ namespace neforce::neflux {
                    hardware.memory.configured_mts != 0
                            ? format("{} MT/s (rated {})", hardware.memory.configured_mts, hardware.memory.rated_mts)
                            : string("—"));
+        const double dram_mhz = static_cast<double>(hardware.memory.configured_mts) / 2.0;
+        memory.set("DRAM freq", dram_mhz > 0.0 ? format("{:.1f} MHz", dram_mhz) : string("—"));
+        memory.set("FSB:DRAM", dram_mhz > 0.0 && cpu.bus_speed_mhz != 0
+                                       ? format("1:{}", static_cast<uint64_t>(neforce::round(
+                                                                dram_mhz / static_cast<double>(cpu.bus_speed_mhz))))
+                                       : string("—"));
         memory.set("LLC / Ring", or_dash(hardware.memory.llc_ring));
         memory.set("Timings", or_dash(hardware.memory.timings));
         root.set("Memory", move(memory));
@@ -870,6 +886,9 @@ namespace neforce::neflux {
             const uint64_t swap_free = memory_status_value.available_page_file;
             memory_value.swap_total_ = memory_status_value.total_page_file;
             memory_value.swap_used_ = memory_value.swap_total_ > swap_free ? memory_value.swap_total_ - swap_free : 0;
+            if (memory_status_value.cached_physical > 0) {
+                memory_value.cached_ = memory_status_value.cached_physical;
+            }
 #if NEFLUX_PLATFORM_LINUX
             const auto meminfo = read_meminfo();
             if (meminfo.total.has_value()) {
@@ -1294,6 +1313,9 @@ namespace neforce::neflux {
         result.memory_.total_ = memory.total_physical;
         result.memory_.available_ = memory.available_physical;
         result.memory_.free_ = memory.available_physical;
+        if (memory.cached_physical > 0) {
+            result.memory_.cached_ = memory.cached_physical;
+        }
         result.memory_.used_ = memory.total_physical > memory.available_physical
                                        ? memory.total_physical - memory.available_physical
                                        : 0;
