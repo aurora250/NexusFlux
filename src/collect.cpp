@@ -557,7 +557,7 @@ namespace neforce::neflux {
 #if NEFLUX_PLATFORM_LINUX
             return host_name();
 #else
-            return sysinfo::instance().get_hostname();
+            return sysinfo::instance().host_name();
 #endif
         }
 
@@ -565,7 +565,7 @@ namespace neforce::neflux {
 #if NEFLUX_PLATFORM_LINUX
             return os_name();
 #else
-            return sysinfo::instance().get_os_version_info().product_name;
+            return sysinfo::instance().os_version().product_name;
 #endif
         }
 
@@ -573,7 +573,7 @@ namespace neforce::neflux {
 #if NEFLUX_PLATFORM_LINUX
             return kernel_version();
 #else
-            return sysinfo::instance().get_os_version_info().version();
+            return sysinfo::instance().os_version().version();
 #endif
         }
 
@@ -669,6 +669,119 @@ namespace neforce::neflux {
             out.set(labels[i], json(static_cast<double>(delta[i]) / static_cast<double>(total) * 100.0));
         }
         return out;
+    }
+
+    string simd_extensions(const sysinfo::simd_info& simd) {
+        string text;
+        const auto add = [&text](const char* name) {
+            if (!text.empty()) {
+                text.append(", ");
+            }
+            text.append(name);
+        };
+        if (simd.supports(sysinfo::simd_instruction::sse2)) {
+            add("SSE2");
+        }
+        if (simd.supports(sysinfo::simd_instruction::ssse3)) {
+            add("SSSE3");
+        }
+        if (simd.supports(sysinfo::simd_instruction::sse4_1)) {
+            add("SSE4.1");
+        }
+        if (simd.supports(sysinfo::simd_instruction::sse4_2)) {
+            add("SSE4.2");
+        }
+        if (simd.supports(sysinfo::simd_instruction::avx)) {
+            add("AVX");
+        }
+        if (simd.supports(sysinfo::simd_instruction::avx2)) {
+            add("AVX2");
+        }
+        if (simd.supports(sysinfo::simd_instruction::fma)) {
+            add("FMA3");
+        }
+        if (simd.supports(sysinfo::simd_instruction::avx512f)) {
+            add("AVX-512");
+        }
+        if (simd.supports(sysinfo::simd_instruction::aes)) {
+            add("AES");
+        }
+        if (simd.supports(sysinfo::simd_instruction::pclmulqdq)) {
+            add("PCLMULQDQ");
+        }
+        if (simd.supports(sysinfo::simd_instruction::neon)) {
+            add("NEON");
+        }
+        if (simd.supports(sysinfo::simd_instruction::sve)) {
+            add("SVE");
+        }
+        return text;
+    }
+
+    string or_dash(const string& value) { return value.empty() ? string("—") : value; }
+
+    string cache_label(const uint32_t kib, const uint32_t instances) {
+        if (kib == 0) {
+            return "—";
+        }
+        const string size = kib >= 1024 ? format("{} MiB", kib / 1024) : format("{} KiB", kib);
+        return instances > 1 ? format("{} ×{}", size, instances) : size;
+    }
+
+    json hardware_snapshot(uint64_t memory_total) {
+        const auto& info = sysinfo::instance();
+        const auto& cpu = info.get_cpu_info();
+        const auto& hardware = info.get_hardware_info();
+        json root = json::object();
+        json cpu_json = json::object();
+        cpu_json.set("Family", or_dash(cpu.family));
+        cpu_json.set("Model", or_dash(cpu.model));
+        cpu_json.set("Stepping", or_dash(cpu.stepping));
+        cpu_json.set("Ext family", or_dash(cpu.ext_family));
+        cpu_json.set("Ext model", or_dash(cpu.ext_model));
+        cpu_json.set("Revision", or_dash(cpu.revision));
+        cpu_json.set("Core VID", or_dash(cpu.core_vid));
+        cpu_json.set("Technology", or_dash(cpu.technology));
+        cpu_json.set("Package", or_dash(cpu.package));
+        cpu_json.set("Core name", or_dash(cpu.brand));
+        cpu_json.set("Max TDP", cpu.max_tdp_watts != 0 ? format("{} W", cpu.max_tdp_watts) : string("—"));
+        cpu_json.set("Clocks (P-core)",
+                     cpu.max_mhz != 0 ? format("{} / {} MHz", cpu.max_mhz, cpu.current_mhz) : string("—"));
+        cpu_json.set("Cores / Threads", format("{} / {}", cpu.cores, cpu.logical_processors));
+        cpu_json.set("Instructions", or_dash(cpu.features));
+        cpu_json.set("SIMD", or_dash(simd_extensions(cpu.simd)));
+        cpu_json.set("L1", cache_label(cpu.l1_kib, cpu.l1_instances));
+        cpu_json.set("L2", cache_label(cpu.l2_kib, cpu.l2_instances));
+        cpu_json.set("L3", cache_label(cpu.l3_kib, cpu.l3_instances));
+        root.set("CPU", move(cpu_json));
+
+        json bios = json::object();
+        bios.set("Brand", or_dash(hardware.bios.brand));
+        bios.set("Version", or_dash(hardware.bios.version));
+        bios.set("Date", or_dash(hardware.bios.date));
+        bios.set("Microcode", or_dash(hardware.bios.microcode));
+        root.set("BIOS", move(bios));
+
+        json board = json::object();
+        board.set("Vendor", or_dash(hardware.board.vendor));
+        board.set("Model", or_dash(hardware.board.model));
+        board.set("Bus", or_dash(hardware.board.bus));
+        board.set("Chipset", or_dash(hardware.board.chipset));
+        board.set("Southbridge", or_dash(hardware.board.southbridge));
+        root.set("Board", move(board));
+
+        json memory = json::object();
+        memory.set("Type", or_dash(hardware.memory.type));
+        memory.set("Channel", or_dash(hardware.memory.channel));
+        memory.set("Size", memory_total != 0 ? bytes(static_cast<double>(memory_total)) : string("—"));
+        memory.set("Controller freq",
+                   hardware.memory.configured_mts != 0
+                           ? format("{} MT/s (rated {})", hardware.memory.configured_mts, hardware.memory.rated_mts)
+                           : string("—"));
+        memory.set("LLC / Ring", or_dash(hardware.memory.llc_ring));
+        memory.set("Timings", or_dash(hardware.memory.timings));
+        root.set("Memory", move(memory));
+        return root;
     }
 
     struct collector::impl {
@@ -934,6 +1047,7 @@ namespace neforce::neflux {
             }
 
             result.extra_ = json::object();
+            result.extra_.set("Hardware", hardware_snapshot(result.memory_.total_));
             advanced_telemetry.collect(result, cfg);
             json collection_state = json::object();
             collection_state.set("processes", json(processes_enabled));

@@ -685,7 +685,8 @@ namespace neforce::neflux::ui {
             snapshot snap_;
             inventory inventory_;
             history history_;
-            process_history process_history_;
+            process_history process_history_;                        ///< 当前选中进程的历史
+            optional<pair<uint32_t, uint64_t>> process_history_key_; ///< 历史对应的 PID/启动时间
             view current_ = view::overview;
             size_t selected_ = 0;
             optional<pair<uint32_t, uint64_t>> selected_process_;
@@ -832,6 +833,7 @@ namespace neforce::neflux::ui {
                         }
                         if (!present) {
                             selected_process_.reset();
+                            process_history_key_.reset();
                             detail_open_ = false;
                             process_history_ = process_history{};
                         }
@@ -923,6 +925,12 @@ namespace neforce::neflux::ui {
                 if (selected_process_.has_value()) {
                     for (const auto& item: snap_.processes_) {
                         if (item.pid_ == selected_process_->first && item.start_time_ == selected_process_->second) {
+                            if (!process_history_key_.has_value() ||
+                                process_history_key_->first != selected_process_->first ||
+                                process_history_key_->second != selected_process_->second) {
+                                process_history_key_ = selected_process_;
+                                process_history_ = process_history{};
+                            }
                             process_history_.push(item, item.gpu_memory_, item.gpu_percent_, cfg_.history_);
                             break;
                         }
@@ -1176,11 +1184,21 @@ namespace neforce::neflux::ui {
                 return none;
             }
 
+            void select_process(const process& item) {
+                const pair<uint32_t, uint64_t> key{item.pid_, item.start_time_};
+                selected_process_ = key;
+                if (process_history_key_.has_value() && process_history_key_->first == key.first &&
+                    process_history_key_->second == key.second) {
+                    return;
+                }
+                process_history_key_ = key;
+                process_history_ = process_history{};
+                process_history_.push(item, item.gpu_memory_, item.gpu_percent_, cfg_.history_);
+            }
+
             void remember_selection(const vector<process_row>& rows) {
                 if (selected_ < rows.size()) {
-                    const auto& item = snap_.processes_[rows[selected_].index_];
-                    selected_process_ = pair<uint32_t, uint64_t>{item.pid_, item.start_time_};
-                    process_history_.push(item, item.gpu_memory_, item.gpu_percent_, cfg_.history_);
+                    select_process(snap_.processes_[rows[selected_].index_]);
                 }
             }
 
@@ -1763,6 +1781,21 @@ namespace neforce::neflux::ui {
                 }
             }
 
+            NEFORCE_NODISCARD color device_tint(size_t index) const {
+                switch (index % 5) {
+                    case 0:
+                        return colors_.mint_;
+                    case 1:
+                        return colors_.blue_;
+                    case 2:
+                        return colors_.purple_;
+                    case 3:
+                        return colors_.amber_;
+                    default:
+                        return colors_.red_;
+                }
+            }
+
             void draw_storage_card(painter& brush, const rect& area) {
                 if (area.h_ < 4 || area.w_ < 10) {
                     return;
@@ -1782,7 +1815,7 @@ namespace neforce::neflux::ui {
                 for (int index = 0; index < shown && compare_less(index, snap_.disks_.size()); ++index) {
                     const auto& disk = snap_.disks_[static_cast<size_t>(index)];
                     const double usage = percent(disk.used_, disk.total_);
-                    const color tint = usage >= 90 ? colors_.red_ : (usage >= 70 ? colors_.amber_ : colors_.mint_);
+                    const color tint = usage >= 90 ? colors_.red_ : device_tint(static_cast<size_t>(index));
                     brush.text(inner.x_, y, truncate_display(disk.mount_.view(), inner.w_ - 8).view(), colors_.text_);
                     brush.text_right(inner.x_, y, inner.w_, format("{:5.1f}%", usage).view(), tint);
                     if (y + 1 < inner.bottom()) {
@@ -2772,6 +2805,16 @@ namespace neforce::neflux::ui {
             }
 
             void draw_storage_page(painter& brush, const rect& area) {
+                if (!snap_.disk_io_.empty() && selected_io_ >= snap_.disk_io_.size()) {
+                    selected_io_ = 0;
+                }
+                const disk_io* selected_device =
+                        selected_io_ < snap_.disk_io_.size() ? &snap_.disk_io_[selected_io_] : nullptr;
+                const disk_history* selected_history =
+                        selected_device != nullptr ? history_.disk(selected_device->name_) : nullptr;
+                const bool per_device = selected_device != nullptr && selected_history != nullptr;
+                const deque<double>& chart_read = per_device ? selected_history->read_ : history_.disk_read_;
+                const deque<double>& chart_write = per_device ? selected_history->write_ : history_.disk_write_;
                 double read_total = 0.0;
                 double write_total = 0.0;
                 for (const auto& item: snap_.disk_io_) {
@@ -2795,17 +2838,19 @@ namespace neforce::neflux::ui {
                 if (chart_height > 0) {
                     const rect chart_area{area.x_, cursor, area.w_, chart_height};
                     double peak = 1024.0;
-                    for (const double value: history_.disk_read_) {
+                    for (const double value: chart_read) {
                         peak = neforce::max(peak, value);
                     }
-                    for (const double value: history_.disk_write_) {
+                    for (const double value: chart_write) {
                         peak = neforce::max(peak, value);
                     }
-                    brush.box(chart_area, " DISK THROUGHPUT · physical devices ", colors_.amber_);
+                    const string chart_title = per_device ? format(" DISK THROUGHPUT · {} ", selected_device->name_)
+                                                          : string(" DISK THROUGHPUT · physical devices ");
+                    brush.box(chart_area, chart_title.view(), colors_.amber_);
                     graph_painter(brush, cfg_.display_.graph_symbol_proc_)
-                            .chart(chart_area.inset(1), "read / write",
-                                   {chart_series{"Read", &history_.disk_read_, colors_.mint_},
-                                    chart_series{"Write", &history_.disk_write_, colors_.blue_}},
+                            .chart(chart_area.inset(1), per_device ? "selected device" : "read / write",
+                                   {chart_series{"Read", &chart_read, colors_.mint_},
+                                    chart_series{"Write", &chart_write, colors_.blue_}},
                                    nice_max(peak * 1.1), "B/s", chart_window());
                     cursor += chart_height;
                 }
@@ -2842,7 +2887,7 @@ namespace neforce::neflux::ui {
                 for (size_t index = 0; index < snap_.disks_.size() && y < filesystems.bottom() - 1; ++index, ++y) {
                     const auto& disk = snap_.disks_[index];
                     const double usage = percent(disk.used_, disk.total_);
-                    const color tint = usage >= 90 ? colors_.red_ : (usage >= 70 ? colors_.amber_ : colors_.mint_);
+                    const color tint = usage >= 90 ? colors_.red_ : device_tint(index);
                     const bool active = storage_section_ == 0 && selected_ == index;
                     hits_.push_back(
                             {{filesystems.x_ + 1, y, filesystems.w_ - 2, 1}, hit_action::storage_fs_row, index});
@@ -3305,51 +3350,133 @@ namespace neforce::neflux::ui {
                 if (rest.h_ < 4) {
                     return;
                 }
-                const int left_width = rest.w_ / 2;
-                const rect left{rest.x_, rest.y_, left_width - 1, rest.h_};
+                const int left_width = neforce::max(40, rest.w_ * 55 / 100);
+                const rect host{rest.x_, rest.y_, left_width - 1, rest.h_};
                 const rect right{rest.x_ + left_width, rest.y_, rest.w_ - left_width, rest.h_};
-                const int host_height = neforce::min(rest.w_ >= 100 ? 9 : 7, left.h_ - 4);
-                const rect host{left.x_, left.y_, left.w_, host_height};
                 brush.box(host, " HOST & POWER ", colors_.mint_);
+                const json* hardware = snap_.extra_.get("Hardware");
+                const auto hardware_value = [&](const char* section, const char* key) {
+                    if (hardware == nullptr) {
+                        return string("—");
+                    }
+                    const json* group = hardware->get(section);
+                    if (group == nullptr) {
+                        return string("—");
+                    }
+                    const json* value = group->get(key);
+                    if (value == nullptr) {
+                        return string("—");
+                    }
+                    return value->is_string() ? value->as_string() : value->dump();
+                };
                 vector<pair<string, string>> fields;
                 fields.push_back({"Host", snap_.hostname_});
                 fields.push_back({"OS", snap_.os_});
                 fields.push_back({"Kernel", snap_.kernel_});
                 fields.push_back({"CPU", snap_.cpu_name_});
-                fields.push_back({"Clock", snap_.cpu_mhz_ > 0 ? format("{} MHz", snap_.cpu_mhz_) : "—"});
-                fields.push_back({"Sampling", format("{:.1f} / {} ms", snap_.collection_ms_,
-                                                     static_cast<uint64_t>(cfg_.interval_ms_))});
+                fields.push_back({"Clocks", snap_.cpu_mhz_ > 0 ? format("{} MHz", snap_.cpu_mhz_) : "—"});
                 fields.push_back(
                         {"Load", format("{:.2f} {:.2f} {:.2f}", snap_.load_[0], snap_.load_[1], snap_.load_[2])});
-                if (!inventory_.runtimes_.empty() || !inventory_.service_managers_.empty()) {
-                    string managers;
-                    for (const auto& item: inventory_.service_managers_) {
-                        if (!managers.empty()) {
-                            managers.append(", ");
-                        }
-                        managers.append(item);
-                    }
-                    fields.push_back({"Services", managers.empty() ? "—" : managers});
+                fields.push_back({"Sampling", format("{:.1f} / {} ms", snap_.collection_ms_,
+                                                     static_cast<uint64_t>(cfg_.interval_ms_))});
+                if (!inventory_.service_managers_.empty()) {
+                    fields.push_back({"Services", join_strings(inventory_.service_managers_, ", ")});
                 }
                 int host_row = host.y_ + 1;
                 for (const auto& item: fields) {
                     if (host_row >= host.bottom() - 1) {
                         break;
                     }
-                    brush.text(host.x_ + 2, host_row, truncate_display(item.first.view(), 10).view(), colors_.muted_);
-                    brush.text(host.x_ + 13, host_row, truncate_display(item.second.view(), host.w_ - 16).view(),
+                    brush.text(host.x_ + 2, host_row, truncate_display(item.first.view(), 12).view(), colors_.muted_);
+                    brush.text(host.x_ + 14, host_row, truncate_display(item.second.view(), host.w_ - 17).view(),
                                colors_.text_);
                     ++host_row;
                 }
+
+                vector<pair<string, string>> left_fields = {
+                        {"Family", hardware_value("CPU", "Family")},
+                        {"Model", hardware_value("CPU", "Model")},
+                        {"Stepping", hardware_value("CPU", "Stepping")},
+                        {"Ext F/M",
+                         format("{}/{}", hardware_value("CPU", "Ext family"), hardware_value("CPU", "Ext model"))},
+                        {"Revision", hardware_value("CPU", "Revision")},
+                        {"Core VID", hardware_value("CPU", "Core VID")},
+                        {"Technology", hardware_value("CPU", "Technology")},
+                        {"Package", hardware_value("CPU", "Package")},
+                        {"Max TDP", hardware_value("CPU", "Max TDP")},
+                        {"P-core", hardware_value("CPU", "Clocks (P-core)")},
+                        {"Cores", hardware_value("CPU", "Cores / Threads")},
+                };
+                vector<pair<string, string>> right_fields = {
+                        {"BIOS", hardware_value("BIOS", "Brand")},
+                        {"BIOS ver", hardware_value("BIOS", "Version")},
+                        {"BIOS date", hardware_value("BIOS", "Date")},
+                        {"Microcode", hardware_value("BIOS", "Microcode")},
+                        {"Board", hardware_value("Board", "Vendor")},
+                        {"Board model", hardware_value("Board", "Model")},
+                        {"Bus", hardware_value("Board", "Bus")},
+                        {"Chipset", hardware_value("Board", "Chipset")},
+                        {"Southbridge", hardware_value("Board", "Southbridge")},
+                        {"Mem type", hardware_value("Memory", "Type")},
+                        {"Channel", hardware_value("Memory", "Channel")},
+                        {"Mem size", hardware_value("Memory", "Size")},
+                        {"MC freq", hardware_value("Memory", "Controller freq")},
+                        {"LLC / Ring", hardware_value("Memory", "LLC / Ring")},
+                        {"Timings", hardware_value("Memory", "Timings")},
+                };
+                const int column_width = neforce::max(18, (host.w_ - 4) / 2);
+                int grid_row = host_row + 1;
+                const size_t grid_rows = neforce::max(left_fields.size(), right_fields.size());
+                for (size_t index = 0; index < grid_rows && grid_row < host.bottom() - 1; ++index) {
+                    if (index < left_fields.size()) {
+                        const auto& left_field = left_fields[index];
+                        brush.text(host.x_ + 2, grid_row, truncate_display(left_field.first.view(), 11).view(),
+                                   colors_.muted_);
+                        brush.text(host.x_ + 14, grid_row,
+                                   truncate_display(left_field.second.view(), column_width - 12).view(), colors_.text_);
+                    }
+                    if (index < right_fields.size()) {
+                        const auto& right_field = right_fields[index];
+                        brush.text(host.x_ + 2 + column_width, grid_row,
+                                   truncate_display(right_field.first.view(), 11).view(), colors_.muted_);
+                        brush.text(host.x_ + 14 + column_width, grid_row,
+                                   truncate_display(right_field.second.view(), column_width - 12).view(),
+                                   colors_.text_);
+                    }
+                    ++grid_row;
+                }
+                if (grid_row < host.bottom() - 1) {
+                    const string cache = format("L1 {} · L2 {} · L3 {}", hardware_value("CPU", "L1"),
+                                                hardware_value("CPU", "L2"), hardware_value("CPU", "L3"));
+                    brush.text(host.x_ + 2, grid_row, "CACHE", colors_.muted_);
+                    brush.text(host.x_ + 14, grid_row, truncate_display(cache.view(), host.w_ - 17).view(),
+                               colors_.text_);
+                    ++grid_row;
+                }
+                if (grid_row < host.bottom() - 1) {
+                    brush.text(host.x_ + 2, grid_row, "INSTR", colors_.muted_);
+                    brush.text(host.x_ + 14, grid_row,
+                               truncate_display(hardware_value("CPU", "Instructions").view(), host.w_ - 17).view(),
+                               colors_.text_);
+                    ++grid_row;
+                }
+                if (grid_row < host.bottom() - 1) {
+                    brush.text(host.x_ + 2, grid_row, "SIMD", colors_.muted_);
+                    brush.text(host.x_ + 14, grid_row,
+                               truncate_display(hardware_value("CPU", "SIMD").view(), host.w_ - 17).view(),
+                               colors_.text_);
+                    ++grid_row;
+                }
                 for (const auto& battery: snap_.batteries_) {
-                    if (host_row >= host.bottom() - 1) {
+                    if (grid_row >= host.bottom() - 1) {
                         break;
                     }
-                    brush.text(host.x_ + 2, host_row, truncate_display(battery.summary().view(), host.w_ - 4).view(),
+                    brush.text(host.x_ + 2, grid_row, truncate_display(battery.summary().view(), host.w_ - 4).view(),
                                colors_.mint_);
-                    ++host_row;
+                    ++grid_row;
                 }
-                const rect sensors{left.x_, host.bottom(), left.w_, left.h_ - host.h_};
+                const int sensors_height = neforce::max(7, right.h_ * 30 / 100);
+                const rect sensors{right.x_, right.y_, right.w_, sensors_height};
                 brush.box(sensors, format(" TEMPERATURES · {} ", cfg_.display_.temperature_symbol()).view(),
                           colors_.amber_);
                 if (sensors.h_ > 2) {
@@ -3377,8 +3504,8 @@ namespace neforce::neflux::ui {
                                    colors_.muted_);
                     }
                 }
-                const int pressure_height = neforce::max(5, right.h_ * 62 / 100);
-                const rect pressure{right.x_, right.y_, right.w_, pressure_height};
+                const int pressure_height = neforce::max(5, (right.h_ - sensors_height) * 52 / 100);
+                const rect pressure{right.x_, sensors.bottom(), right.w_, pressure_height};
                 brush.box(pressure, " PRESSURE ", colors_.blue_);
                 if (pressure.h_ > 2) {
                     constexpr int resource_width = 10;
@@ -3421,7 +3548,8 @@ namespace neforce::neflux::ui {
                         }
                     }
                 }
-                const rect listeners{right.x_, pressure.bottom(), right.w_, right.h_ - pressure.h_};
+                const rect listeners{right.x_, pressure.bottom(), right.w_,
+                                     right.h_ - sensors_height - pressure_height};
                 brush.box(listeners,
                           format(" LISTENERS · {} ", static_cast<uint64_t>(inventory_.listeners_.size())).view(),
                           colors_.blue_);
@@ -5248,7 +5376,7 @@ namespace neforce::neflux::ui {
                         if (!item.pids_.empty()) {
                             for (const auto& process: snap_.processes_) {
                                 if (process.pid_ == item.pids_[0]) {
-                                    selected_process_ = {process.pid_, process.start_time_};
+                                    select_process(process);
                                     open_detail();
                                     break;
                                 }
@@ -5847,8 +5975,12 @@ namespace neforce::neflux::ui {
                             --selected_;
                         }
                     } else if (current_ == view::storage) {
-                        if (selected_ > 0) {
-                            --selected_;
+                        if (storage_section_ == 0) {
+                            if (selected_ > 0) {
+                                --selected_;
+                            }
+                        } else if (selected_io_ > 0) {
+                            --selected_io_;
                         }
                     } else if (current_ == view::network) {
                         if (network_section_ == 1) {
@@ -5891,9 +6023,13 @@ namespace neforce::neflux::ui {
                             ++selected_;
                         }
                     } else if (current_ == view::storage) {
-                        const size_t count = snap_.disks_.size();
-                        if (selected_ + 1 < count) {
-                            ++selected_;
+                        if (storage_section_ == 0) {
+                            const size_t count = snap_.disks_.size();
+                            if (selected_ + 1 < count) {
+                                ++selected_;
+                            }
+                        } else if (selected_io_ + 1 < snap_.disk_io_.size()) {
+                            ++selected_io_;
                         }
                     } else if (current_ == view::network) {
                         if (network_section_ == 1) {
@@ -5985,6 +6121,11 @@ namespace neforce::neflux::ui {
                         static const char* names[] = {"RX/s", "TX/s", "state", "local port", "PID"};
                         status_ = format("Connection sort: {}", names[network_sort_]);
                     }
+                    return true;
+                }
+                if (key == tui::key_event::type::printable && event.cp == U'N' && current_ == view::storage) {
+                    storage_section_ = storage_section_ == 0 ? 1 : 0;
+                    status_ = storage_section_ == 0 ? "Storage: filesystems" : "Storage: block devices";
                     return true;
                 }
                 if (key == tui::key_event::type::printable && event.cp == U'N' && current_ == view::network) {
@@ -6241,7 +6382,7 @@ namespace neforce::neflux::ui {
                             if (!item.pids_.empty()) {
                                 for (const auto& proc: snap_.processes_) {
                                     if (proc.pid_ == item.pids_[0]) {
-                                        selected_process_ = {proc.pid_, proc.start_time_};
+                                        select_process(proc);
                                         open_detail();
                                         return true;
                                     }
@@ -6712,7 +6853,7 @@ namespace neforce::neflux::ui {
                                 if (process.pid_ != hit->index_) {
                                     continue;
                                 }
-                                selected_process_ = {process.pid_, process.start_time_};
+                                select_process(process);
                                 open_detail();
                                 break;
                             }

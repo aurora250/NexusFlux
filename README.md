@@ -75,10 +75,12 @@ GPU cards, utilization/VRAM history, device details and per-process GPU usage.
 ![Storage](docs/images/storage.png)
 
 Filesystem capacity/inode table and block-device throughput, IOPS, latency and queue
-depth. Filesystem and block-device selections are independent.
+depth. Filesystem and block-device selections are independent; the throughput chart
+follows the selected block device and keeps a separate read/write history per device.
 
 - `4` opens Storage.
-- Click either table to select a row.
+- `N` switches between the filesystem and block-device tables.
+- `↑/↓` selects a row in the active table; clicking a row also selects it.
 - `Enter` / `d` opens the selected filesystem or block-device details.
 - Right click for details and previous/next row actions.
 
@@ -101,7 +103,11 @@ Download/upload history, interface counters, connections and socket ownership.
 ![System](docs/images/system.png)
 
 Host identity, load average, CPU/GPU sensors, pressure stall information and listening
-ports.
+ports. `HOST & POWER` also shows the hardware inventory: CPU family/model/stepping,
+extended family/model, package, core name, instructions and SIMD extensions, L1/L2/L3
+caches, BIOS brand/version/date/microcode, motherboard vendor/model/chipset/southbridge,
+and memory type/channel/size/controller speed/LLC/timings. The values come from
+`neforce::sysinfo`; unsupported fields are shown as `—`.
 
 - `6` opens System.
 - `↑/↓` scrolls sensors and listeners.
@@ -244,6 +250,21 @@ AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|t
 
 Configuration is read from `$XDG_CONFIG_HOME/neflux/config.toml` (falling back to
 `~/.config/neflux/config.toml`). On Windows it lives under `%APPDATA%\neflux\config.toml`.
+
+## Building
+
+NexusForce is the only external dependency. Let CMake obtain it with `NEXUSFLUX_NEXUSFORCE_MODE`:
+
+| Mode             | Behaviour                                                                                                  |
+|------------------|------------------------------------------------------------------------------------------------------------|
+| `auto` (default) | Use `.deps/NexusForce`, then an explicit build tree, then an installed package. Never compiles NexusForce. |
+| `source`         | Compile the NexusForce checkout as part of the NexusFlux build.                                            |
+| `prebuilt`       | Only `.deps/NexusForce` or `NEXUSFLUX_NEXUSFORCE_BUILD_DIR`.                                               |
+| `package`        | Only `find_package(NexusForce 1.0 CONFIG)`.                                                                |
+
+Package mode also needs NexusForce's own dependencies (OpenSSL, PCRE2, ICU, ...)
+to be discoverable; when they live in vcpkg, add
+`-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`.
 
 ## License
 

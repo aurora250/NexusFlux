@@ -35,6 +35,14 @@ namespace neforce::neflux {
     };
 
     /**
+     * @brief 单个块设备的读写历史
+     */
+    struct disk_history {
+        deque<double> read_;  ///< 读取速率（字节/秒）
+        deque<double> write_; ///< 写入速率（字节/秒）
+    };
+
+    /**
      * @brief GPU 历史
      */
     struct gpu_history {
@@ -87,21 +95,22 @@ namespace neforce::neflux {
      * @brief 遥测历史集合
      */
     struct history {
-        uint64_t sequence_ = 0;                 ///< 采样序列号
-        deque<double> timestamps_;              ///< 样本时间
-        deque<double> periods_;                 ///< 采样周期
-        deque<double> cpu_;                     ///< CPU 百分比
-        deque<double> memory_;                  ///< 内存百分比
-        deque<double> rx_;                      ///< 网络接收
-        deque<double> tx_;                      ///< 网络发送
-        network_peak network_peaks_[2];         ///< 会话峰值（不含/含环回）
-        map<string, network_history> networks_; ///< 接口历史
-        network_history network_totals_[2];     ///< 聚合历史
-        deque<double> disk_read_;               ///< 磁盘读取
-        deque<double> disk_write_;              ///< 磁盘写入
-        map<string, deque<double>> gpu_;        ///< GPU 利用率
-        map<string, gpu_history> gpu_details_;  ///< GPU 详细历史
-        map<string, deque<double>> series_;     ///< 通用序列
+        uint64_t sequence_ = 0;                  ///< 采样序列号
+        deque<double> timestamps_;               ///< 样本时间
+        deque<double> periods_;                  ///< 采样周期
+        deque<double> cpu_;                      ///< CPU 百分比
+        deque<double> memory_;                   ///< 内存百分比
+        deque<double> rx_;                       ///< 网络接收
+        deque<double> tx_;                       ///< 网络发送
+        network_peak network_peaks_[2];          ///< 会话峰值（不含/含环回）
+        map<string, network_history> networks_;  ///< 接口历史
+        network_history network_totals_[2];      ///< 聚合历史
+        deque<double> disk_read_;                ///< 磁盘读取（汇总）
+        deque<double> disk_write_;               ///< 磁盘写入（汇总）
+        map<string, disk_history> disk_devices_; ///< 按块设备保存的读写历史
+        map<string, deque<double>> gpu_;         ///< GPU 利用率
+        map<string, gpu_history> gpu_details_;   ///< GPU 详细历史
+        map<string, deque<double>> series_;      ///< 通用序列
 
         /**
          * @brief 获取网络历史
@@ -116,6 +125,13 @@ namespace neforce::neflux {
          * @return 网络历史，未知接口时为空
          */
         NEFORCE_NODISCARD const network_history* network(const config& cfg) const;
+
+        /**
+         * @brief 获取单个块设备的读写历史
+         * @param name 设备名
+         * @return 历史，不存在时为空
+         */
+        NEFORCE_NODISCARD const disk_history* disk(const string& name) const;
 
         /**
          * @brief 按样本数创建窗口

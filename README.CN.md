@@ -72,10 +72,11 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 ![存储](docs/images/storage.png)
 
 文件系统容量/inode 表，以及块设备吞吐、IOPS、延迟和队列深度。文件系统与块设备
-使用独立选中项，不再联动。
+使用独立选中项；吞吐图跟随当前块设备，并为每个设备保留独立的读写历史。
 
 - `4` 打开存储页。
-- 点击任一张表选择行。
+- `N` 在文件系统表和块设备表之间切换。
+- `↑/↓` 在当前表中选择行；点击行也会选中。
 - `Enter` / `d` 打开当前选中的文件系统或块设备详情。
 - 右键打开详情、上一行/下一行操作。
 
@@ -97,7 +98,11 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 
 ![系统](docs/images/system.png)
 
-主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。
+主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。`HOST & POWER` 同时显示硬件档案：
+CPU 的 Family/Model/Stepping、扩展 Family/Model、封装、核心名、指令集和 SIMD 扩展、
+L1/L2/L3 缓存；BIOS 厂商/版本/日期/微码；主板厂商/型号/芯片组/南桥；以及内存类型、
+通道、容量、控制器频率、LLC 和时序。数据来自 `neforce::sysinfo`，平台不支持的字段
+显示为 `—`。
 
 - `6` 打开系统页。
 - `↑/↓` 滚动传感器和监听列表。
@@ -235,6 +240,20 @@ ACTIVE，恢复后记录 RECOVERED。
 
 配置文件路径为 `$XDG_CONFIG_HOME/neflux/config.toml`（回退 `~/.config/neflux/config.toml`）；
 Windows 下为 `%APPDATA%\neflux\config.toml`。
+
+## 构建
+
+NexusForce 是唯一的外部依赖，用 `NEXUSFLUX_NEXUSFORCE_MODE` 选择 CMake 获取它的方式：
+
+| 模式           | 行为                                                                                 |
+|----------------|--------------------------------------------------------------------------------------|
+| `auto`（默认） | 依次使用 `.deps/NexusForce`、显式指定的构建树、已安装的包；不会自动编译 NexusForce。 |
+| `source`       | 把 NexusForce 源码树作为子目录，随 NexusFlux 一起编译。                              |
+| `prebuilt`     | 只使用 `.deps/NexusForce` 或 `NEXUSFLUX_NEXUSFORCE_BUILD_DIR`。                      |
+| `package`      | 只使用 `find_package(NexusForce 1.0 CONFIG)`。                                       |
+
+package 模式还要求 NexusForce 自己的依赖（OpenSSL、PCRE2、ICU 等）可被发现；
+如果它们在 vcpkg 中，加上 `-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`。
 
 ## 许可证
 

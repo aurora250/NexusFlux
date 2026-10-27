@@ -1,4 +1,33 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.21)
+
+# ---------------------------------------------------------------------------
+# NexusForce dependency selection
+#
+# Configure-time switches (all cache variables):
+#   NEXUSFLUX_NEXUSFORCE_MODE=auto|source|package|prebuilt
+#   NEXUSFORCE_ROOT=<NexusForce checkout>          (default: ../NexusForce)
+#   NEXUSFLUX_NEXUSFORCE_VCPKG_ROOT=<vcpkg root>  (source mode; default: config.json)
+#   NEXUSFLUX_NEXUSFORCE_SOURCE_BUILD_DIR=<dir>   (source mode binary dir)
+#   NEXUSFLUX_NEXUSFORCE_BUILD_DIR=<build tree>   (prebuilt/auto)
+#   NEXUSFLUX_NEXUSFORCE_PACKAGE_DIR=<prefix>     (package/auto)
+#   NEXUSFLUX_DEPS_DIR=<dir>                      (.deps install root)
+#
+# "source" is the fully automatic path: it selects NexusForce's vcpkg
+# toolchain before project(), adds the checkout as a subdirectory, and builds
+# the library as part of the NexusFlux build.
+# ---------------------------------------------------------------------------
+set(NEXUSFLUX_NEXUSFORCE_MODE "auto" CACHE STRING
+    "How NexusFlux obtains NexusForce: auto, source, package or prebuilt")
+set_property(CACHE NEXUSFLUX_NEXUSFORCE_MODE PROPERTY STRINGS auto source package prebuilt)
+
+set(NEXUSFORCE_ROOT "" CACHE PATH
+    "NexusForce source tree (auto-detected from ../NexusForce)")
+set(NEXUSFLUX_NEXUSFORCE_VCPKG_ROOT "" CACHE PATH
+    "vcpkg root used by source mode (default: read from NexusForce/config.json)")
+set(NEXUSFLUX_NEXUSFORCE_SOURCE_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/nexusforce" CACHE PATH
+    "Build directory used for the in-tree NexusForce build")
+
+include(cmake/NexusForceBootstrap.cmake)
 
 project(NexusFlux VERSION 0.1.0 LANGUAGES CXX)
 
@@ -14,83 +43,22 @@ endif()
 
 option(NEXUSFLUX_BUILD_TESTS "Build NeFlux unit tests" ON)
 option(NEXUSFLUX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-set(NEXUSFORCE_ROOT "" CACHE PATH "NexusForce source tree (optional)")
-if(NOT NEXUSFORCE_ROOT)
-    foreach(candidate "${CMAKE_CURRENT_SOURCE_DIR}/../NexusForce-Linux" "${CMAKE_CURRENT_SOURCE_DIR}/../NexusForce")
-        if(EXISTS "${candidate}/include/NeForce")
-            set(NEXUSFORCE_ROOT "${candidate}")
-            break()
-        endif()
-    endforeach()
-endif()
 
 include(cmake/NeFluxCompilerOptions.cmake)
 
-# Dependency search order: .deps install tree, source build tree, installed package.
-set(NEXUSFLUX_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps" CACHE PATH "Local dependency install root")
+# Prebuilt search roots.  .deps/NexusForce is what scripts/install_nexusforce.py
+# produces; a NexusForce build tree or an installed package can be pointed at
+# explicitly.
+set(NEXUSFLUX_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps" CACHE PATH
+    "Local dependency install root")
+set(NEXUSFLUX_NEXUSFORCE_BUILD_DIR "" CACHE PATH
+    "NexusForce build tree used by prebuilt/auto mode")
+set(NEXUSFLUX_NEXUSFORCE_PACKAGE_DIR "" CACHE PATH
+    "Installed NexusForce prefix used by package/auto mode")
 
-set(NEXUSFLUX_NEXUSFORCE_DEFINITIONS
-    NEXUSFORCE_VERSION_MAJOR=1
-    NEXUSFORCE_VERSION_MINOR=0
-    NEXUSFORCE_VERSION_PATCH=1
-    "NEXUSFORCE_VERSION=\"1.0.1\""
-    NEFORCE_USING_MEMORY_POOL
-    NEFORCE_USING_SSO
-    NEFORCE_USING_AES_NI
-    NEFORCE_USING_PCLMUL
-    NEFORCE_USING_SQLCIPHER
-    NEFORCE_USING_IO_URING
-    NEFORCE_SUPPORT_POSTGRESQL
-    NEFORCE_SUPPORT_DB
-    NEFORCE_SUPPORT_MYSQL
-    NEFORCE_SUPPORT_SQLITE3
-    NEFORCE_SUPPORT_HIREDIS
-    NEFORCE_SUPPORT_ZLIB
-    NEFORCE_SUPPORT_LZ4
-    NEFORCE_SUPPORT_OPENSSL
-    NEFORCE_SUPPORT_PCRE2
-    PCRE2_CODE_UNIT_WIDTH=8
-    NEFORCE_SUPPORT_LOCALE
-    NEFORCE_SUPPORT_ICU
-    NEFORCE_USING_MEMORY_POOL_OVERRIDE
-)
+include(cmake/NexusForceDependency.cmake)
 
-set(NEXUSFLUX_NEXUSFORCE_DEPS "${NEXUSFLUX_DEPS_DIR}/NexusForce")
-
-if(EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/libNexusForce.so")
-    message(STATUS "NexusFlux: NexusForce from ${NEXUSFLUX_NEXUSFORCE_DEPS}")
-    add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
-    set_target_properties(NexusForce::NexusForce PROPERTIES
-        IMPORTED_LOCATION "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/libNexusForce.so"
-        INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFLUX_NEXUSFORCE_DEPS}/include"
-        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
-    if(UNIX)
-        set_property(TARGET NexusForce::NexusForce APPEND PROPERTY
-            INTERFACE_LINK_OPTIONS "-Wl,-rpath,${NEXUSFLUX_NEXUSFORCE_DEPS}/lib")
-    endif()
-elseif(WIN32 AND EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/bin/NexusForce.dll"
-       AND EXISTS "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/NexusForce.lib")
-    message(STATUS "NexusFlux: NexusForce from ${NEXUSFLUX_NEXUSFORCE_DEPS}")
-    add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
-    set_target_properties(NexusForce::NexusForce PROPERTIES
-        IMPORTED_LOCATION "${NEXUSFLUX_NEXUSFORCE_DEPS}/bin/NexusForce.dll"
-        IMPORTED_IMPLIB "${NEXUSFLUX_NEXUSFORCE_DEPS}/lib/NexusForce.lib"
-        INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFLUX_NEXUSFORCE_DEPS}/include"
-        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
-elseif(NEXUSFORCE_ROOT AND EXISTS "${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release/libNexusForce.so")
-    message(STATUS "NexusFlux: NexusForce from ${NEXUSFORCE_ROOT} build tree")
-    add_library(NexusForce::NexusForce SHARED IMPORTED GLOBAL)
-    set_target_properties(NexusForce::NexusForce PROPERTIES
-        IMPORTED_LOCATION "${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release/libNexusForce.so"
-        INTERFACE_INCLUDE_DIRECTORIES "${NEXUSFORCE_ROOT}/include"
-        INTERFACE_COMPILE_DEFINITIONS "${NEXUSFLUX_NEXUSFORCE_DEFINITIONS}")
-    if(UNIX)
-        set_property(TARGET NexusForce::NexusForce APPEND PROPERTY
-            INTERFACE_LINK_OPTIONS "-Wl,-rpath,${NEXUSFORCE_ROOT}/cmake-build-release-clang-x64/lib/Release")
-    endif()
-else()
-    find_package(NexusForce 1.0 REQUIRED)
-endif()
+include(GNUInstallDirs)
 
 set(NEFLUX_SOURCES
     src/cli.cpp
@@ -128,6 +96,7 @@ add_executable(nexus-flux src/main.cpp)
 target_link_libraries(nexus-flux PRIVATE NeFlux::NeFlux)
 neflux_compiler_options(nexus-flux)
 set_target_properties(nexus-flux PROPERTIES FOLDER "tools")
+nexusflux_deploy_nexusforce_runtime(nexus-flux)
 
 if(WIN32)
     target_link_libraries(NeFlux PUBLIC ws2_32 iphlpapi psapi dxgi user32 advapi32)
@@ -136,9 +105,10 @@ endif()
 if(UNIX)
     add_custom_command(TARGET nexus-flux POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE_NAME:nexus-flux> $<TARGET_FILE_DIR:nexus-flux>/neflux)
+    set_target_properties(nexus-flux PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 endif()
 
-include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 install(TARGETS NeFlux nexus-flux
     EXPORT NeFluxTargets
@@ -166,5 +136,6 @@ if(NEXUSFLUX_BUILD_TESTS)
     add_executable(NeFluxTests tests/unit/test_main.cpp)
     target_link_libraries(NeFluxTests PRIVATE NeFlux::NeFlux)
     neflux_compiler_options(NeFluxTests)
+    nexusflux_deploy_nexusforce_runtime(NeFluxTests)
     add_test(NAME NeFluxTests COMMAND NeFluxTests)
 endif()

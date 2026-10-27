@@ -334,8 +334,22 @@ namespace {
         CHECK(value.cpu_.size() == 1);
         CHECK(value.cpu_.back() == 12.5);
         CHECK(value.memory_.back() == 50.0);
+        disk_io device;
+        device.name_ = "sda";
+        device.aggregate_ = true;
+        device.read_per_sec_ = 100.0;
+        device.write_per_sec_ = 50.0;
+        sample.disk_io_.push_back(device);
+        value.ingest(sample, cfg);
+        const auto* first = value.disk("sda");
+        CHECK(first != nullptr && first->read_.back() == 100.0 && first->write_.back() == 50.0);
+        sample.disk_io_[0].read_per_sec_ = 200.0;
+        value.ingest(sample, cfg);
+        const auto* second = value.disk("sda");
+        CHECK(second != nullptr && second->read_.back() == 200.0 && second->read_.size() == 2);
+        CHECK(value.disk_read_.back() == 200.0);
         const auto window = value.window(30);
-        CHECK(window.end == 1);
+        CHECK(window.end == value.sequence_);
     }
 
     void test_neforce_system_components() {

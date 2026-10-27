@@ -62,6 +62,11 @@ namespace neforce::neflux {
         return found == networks_.end() ? nullptr : &found->second;
     }
 
+    const disk_history* history::disk(const string& name) const {
+        const auto found = disk_devices_.find(name);
+        return found == disk_devices_.end() ? nullptr : &found->second;
+    }
+
     plot_window history::window(size_t samples) const {
         plot_window result;
         result.samples = samples;
@@ -175,11 +180,25 @@ namespace neforce::neflux {
         }
         double disk_read = 0.0;
         double disk_write = 0.0;
+        set<string> present_disks;
         for (const auto& item: value.disk_io_) {
             if (item.aggregate_) {
                 disk_read += item.read_per_sec_;
                 disk_write += item.write_per_sec_;
             }
+            present_disks.insert(item.name_);
+            auto& device = disk_devices_[item.name_];
+            push_limited(device.read_, item.read_per_sec_, limit);
+            push_limited(device.write_, item.write_per_sec_, limit);
+        }
+        vector<string> stale_disks;
+        for (const auto& entry: disk_devices_) {
+            if (present_disks.count(entry.first) == 0) {
+                stale_disks.push_back(entry.first);
+            }
+        }
+        for (const auto& name: stale_disks) {
+            disk_devices_.erase(name);
         }
         push_limited(disk_read_, disk_read, limit);
         push_limited(disk_write_, disk_write, limit);
