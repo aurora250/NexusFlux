@@ -34,8 +34,12 @@ storage and network cards, plus a process preview.
 - `1` opens Overview.
 - `W` changes the chart window; `-` / `+` changes the sampling interval.
 - `↑/↓` and `PgUp/PgDn` select processes in the preview.
+- `O` cycles the configured overview box presets.
 - `Enter` / `d` opens process details.
-- `Enter` / `d` opens process details.
+
+Overview boxes are comma-separated lists in `overview_presets`, with the active
+index in `overview_preset`. Examples: `"cpu,memory,gpu,storage,network,processes"`,
+`"cpu,gpu,processes"`, and `"cpu,memory,storage,network,processes"`.
 
 ### Processes
 
@@ -51,7 +55,8 @@ per-process CPU/RAM/GPU/I/O columns.
 - `D` toggles the persistent process side panel.
 - Mouse wheel scrolls the table viewport; `↑/↓` moves the selected process.
 - `d` / `Enter` opens the detailed process panel.
-- `P` pauses the process list; `F` follows the selected process.
+- `P` pauses the process list and retains the last CPU/RAM/GPU values.
+- `F` follows the selected process.
 - `L` switches lazy/direct CPU sorting.
 - `Space` marks a process; `k`/`K`, `t`, `s`, `n`, `a` act on it.
 - `e` / `o` show environment and open files; `l` / `F7` reads output files.
@@ -222,6 +227,9 @@ The theme chooser lists built-in and `.theme` files. The highlighted theme is ap
 `Esc` returns to the main menu. 
 Put `.theme` files in `~/.config/neflux/themes` (Linux), `%APPDATA%\neflux\themes` (Windows),
 set `NEFLUX_THEME_DIR`, or point `theme_file = "…"` at a specific file.
+Themes may override CPU/memory/network/GPU/temperature/process gradient stops,
+`graph_text`, `meter_bg`, followed/pause/banner attributes, plus the base palette.
+`graph_gradient` enables vertical graph gradients.
 
 ![Sort chooser](docs/images/sort.png)
 

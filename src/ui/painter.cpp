@@ -38,10 +38,9 @@ namespace neforce::neflux::ui {
                 const int value = base + static_cast<int>(neforce::clamp(level / 100.0, 0.0, 1.0) * span);
                 return color{value, value, value};
             }
-            const bool light = light_palette(p);
-            const color green = light ? color{0, 125, 72} : color{119, 202, 155};
-            const color yellow = light ? color{162, 124, 0} : color{203, 192, 108};
-            const color red = light ? color{187, 39, 39} : color{220, 76, 76};
+            const color green = p.cpu_start_;
+            const color yellow = p.cpu_mid_;
+            const color red = p.cpu_end_;
             level = neforce::clamp(level, 0.0, 1.0);
             const color start = level <= 0.5 ? green : yellow;
             const color end = level <= 0.5 ? yellow : red;
@@ -84,6 +83,34 @@ namespace neforce::neflux::ui {
             }
         }
 
+        void apply_palette_defaults(palette& p) {
+            p.cpu_start_ = p.mint_;
+            p.cpu_mid_ = p.amber_;
+            p.cpu_end_ = p.red_;
+            p.mem_start_ = p.blue_;
+            p.mem_mid_ = p.amber_;
+            p.mem_end_ = p.red_;
+            p.net_start_ = p.mint_;
+            p.net_mid_ = p.blue_;
+            p.net_end_ = p.purple_;
+            p.gpu_start_ = p.blue_;
+            p.gpu_mid_ = p.purple_;
+            p.gpu_end_ = p.red_;
+            p.temp_start_ = p.mint_;
+            p.temp_mid_ = p.amber_;
+            p.temp_end_ = p.red_;
+            p.proc_start_ = p.mint_;
+            p.proc_mid_ = p.amber_;
+            p.proc_end_ = p.red_;
+            p.meter_bg_ = blend(p.bg_, p.border_);
+            p.graph_text_ = p.muted_;
+            p.followed_bg_ = blend(p.panel_, p.blue_);
+            p.followed_fg_ = p.text_;
+            p.pause_bg_ = blend(p.panel_, p.amber_);
+            p.follow_bg_ = blend(p.panel_, p.mint_);
+            p.banner_bg_ = blend(p.panel_, p.purple_);
+            p.banner_fg_ = p.text_;
+        }
     } // namespace
 
     palette make_palette(const string& name, const json& custom) {
@@ -125,6 +152,7 @@ namespace neforce::neflux::ui {
                  color{215, 226, 241}, color{124, 184, 165}, color{134, 166, 204}, color{173, 157, 198},
                  color{204, 179, 141}, color{216, 151, 160}, color{29, 51, 70}};
         }
+        apply_palette_defaults(p);
         for (const auto& member: custom.as_object()) {
             if (!member.second.is_string() || member.second.as_string().size() != 7) {
                 continue;
@@ -165,6 +193,58 @@ namespace neforce::neflux::ui {
                 p.amber_ = value;
             } else if (member.first == "red") {
                 p.red_ = value;
+            } else if (member.first == "cpu_start") {
+                p.cpu_start_ = value;
+            } else if (member.first == "cpu_mid") {
+                p.cpu_mid_ = value;
+            } else if (member.first == "cpu_end") {
+                p.cpu_end_ = value;
+            } else if (member.first == "mem_start") {
+                p.mem_start_ = value;
+            } else if (member.first == "mem_mid") {
+                p.mem_mid_ = value;
+            } else if (member.first == "mem_end") {
+                p.mem_end_ = value;
+            } else if (member.first == "net_start") {
+                p.net_start_ = value;
+            } else if (member.first == "net_mid") {
+                p.net_mid_ = value;
+            } else if (member.first == "net_end") {
+                p.net_end_ = value;
+            } else if (member.first == "gpu_start") {
+                p.gpu_start_ = value;
+            } else if (member.first == "gpu_mid") {
+                p.gpu_mid_ = value;
+            } else if (member.first == "gpu_end") {
+                p.gpu_end_ = value;
+            } else if (member.first == "temp_start") {
+                p.temp_start_ = value;
+            } else if (member.first == "temp_mid") {
+                p.temp_mid_ = value;
+            } else if (member.first == "temp_end") {
+                p.temp_end_ = value;
+            } else if (member.first == "proc_start") {
+                p.proc_start_ = value;
+            } else if (member.first == "proc_mid") {
+                p.proc_mid_ = value;
+            } else if (member.first == "proc_end") {
+                p.proc_end_ = value;
+            } else if (member.first == "meter_bg") {
+                p.meter_bg_ = value;
+            } else if (member.first == "graph_text") {
+                p.graph_text_ = value;
+            } else if (member.first == "followed_bg") {
+                p.followed_bg_ = value;
+            } else if (member.first == "followed_fg") {
+                p.followed_fg_ = value;
+            } else if (member.first == "pause_bg" || member.first == "proc_pause_bg") {
+                p.pause_bg_ = value;
+            } else if (member.first == "follow_bg" || member.first == "proc_follow_bg") {
+                p.follow_bg_ = value;
+            } else if (member.first == "banner_bg" || member.first == "proc_banner_bg") {
+                p.banner_bg_ = value;
+            } else if (member.first == "banner_fg" || member.first == "proc_banner_fg") {
+                p.banner_fg_ = value;
             }
         }
         return p;
@@ -187,6 +267,15 @@ namespace neforce::neflux::ui {
         colors.amber_ = colors.text_;
         colors.red_ = colors.text_;
         colors.selection_ = gray(source.selection_);
+        for (color* value: {&colors.cpu_start_, &colors.cpu_mid_, &colors.cpu_end_, &colors.mem_start_,
+                            &colors.mem_mid_, &colors.mem_end_, &colors.net_start_, &colors.net_mid_,
+                            &colors.net_end_, &colors.gpu_start_, &colors.gpu_mid_, &colors.gpu_end_,
+                            &colors.temp_start_, &colors.temp_mid_, &colors.temp_end_, &colors.proc_start_,
+                            &colors.proc_mid_, &colors.proc_end_, &colors.meter_bg_, &colors.graph_text_,
+                            &colors.followed_bg_, &colors.followed_fg_, &colors.pause_bg_, &colors.follow_bg_,
+                            &colors.banner_bg_, &colors.banner_fg_}) {
+            *value = gray(*value);
+        }
         return colors;
     }
 
@@ -210,14 +299,15 @@ namespace neforce::neflux::ui {
     }
 
     painter::painter(tui::canvas_painter& target, const palette& colors, bool ascii, bool transparent,
-                     string graph_symbol, bool rounded) :
+                     string graph_symbol, bool rounded, bool graph_gradient) :
     target_(target),
     palette_(colors),
     area_{0, 0, target.width(), target.height()},
     ascii_(ascii),
     transparent_(transparent),
     graph_symbol_(move(graph_symbol)),
-    rounded_(rounded) {}
+    rounded_(rounded),
+    graph_gradient_(graph_gradient) {}
 
     painter painter::with_graph_symbol(string symbol) const {
         painter copy = *this;
@@ -368,6 +458,7 @@ namespace neforce::neflux::ui {
             return;
         }
         const tui::style border_style = make_style(palette_.border_);
+        const tui::style track_style = make_style(palette_.meter_bg_);
         if (!value.has_value() || !neforce::is_finite(*value) || !neforce::is_finite(maximum) || maximum <= 0.0) {
             for (int index = 0; index < width; ++index) {
                 put(x + index, y, codepoint(ascii_ ? U'-' : U'┄'), border_style);
@@ -389,7 +480,7 @@ namespace neforce::neflux::ui {
             ++used;
         }
         for (int index = used; index < width; ++index) {
-            put(x + index, y, codepoint(ascii_ ? U'-' : U'░'), border_style);
+            put(x + index, y, codepoint(ascii_ ? U'-' : U'░'), track_style);
         }
     }
 
@@ -476,7 +567,21 @@ namespace neforce::neflux::ui {
             }
             static constexpr int dots[2][4] = {{0, 1, 2, 6}, {3, 4, 5, 7}};
             bits[index] |= static_cast<uint8_t>(1U << dots[x % 2][y % 4]);
-            colors[index] = cpu_mode ? row_colors[static_cast<size_t>(y / 4)] : tint;
+            if (cpu_mode) {
+                colors[index] = row_colors[static_cast<size_t>(y / 4)];
+            } else if (graph_gradient_ && area.h_ > 1) {
+                const double fade =
+                        0.55 * static_cast<double>(y / 4) / static_cast<double>(area.h_ - 1);
+                const auto mix_channel = [fade](int base, int accent) {
+                    return static_cast<int>(neforce::round(static_cast<double>(base) +
+                                                           (static_cast<double>(accent) - base) * (1.0 - fade)));
+                };
+                colors[index] = color{mix_channel(palette_.panel_.R(), tint.R()),
+                                      mix_channel(palette_.panel_.G(), tint.G()),
+                                      mix_channel(palette_.panel_.B(), tint.B())};
+            } else {
+                colors[index] = tint;
+            }
         };
         vector<plot_range> columns;
         for (const auto& item: series) {
@@ -566,15 +671,15 @@ namespace neforce::neflux::ui {
                 left = 0;
             }
             if (left > 0) {
-                text(body.x_, body.y_, high.view(), palette_.muted_);
-                text(body.x_, body.y_ + (body.h_ - 2) / 2, mid.view(), palette_.muted_);
-                text(body.x_, body.bottom() - 2, low.view(), palette_.muted_);
+                text(body.x_, body.y_, high.view(), palette_.graph_text_);
+                text(body.x_, body.y_ + (body.h_ - 2) / 2, mid.view(), palette_.graph_text_);
+                text(body.x_, body.bottom() - 2, low.view(), palette_.graph_text_);
                 text(body.x_ + left, body.bottom() - 1,
                      window.has_time
                              ? format("−{}", time_label(window.time.seconds)).view()
                              : format("{} samples", window.capacity(static_cast<size_t>(body.w_ - left) * 2)).view(),
-                     palette_.muted_);
-                text_right(body.x_ + left, body.bottom() - 1, body.w_ - left, "now", palette_.muted_);
+                     palette_.graph_text_);
+                text_right(body.x_ + left, body.bottom() - 1, body.w_ - left, "now", palette_.graph_text_);
                 body.x_ += left;
                 body.w_ -= left;
                 body.h_ -= 1;
@@ -594,7 +699,7 @@ namespace neforce::neflux::ui {
         if (!trimmed.empty() && !title.contains("(")) {
             caption = format("{} ({})", title, trimmed);
         }
-        text(area.x_, area.y_, caption.view(), palette_.muted_);
+        text(area.x_, area.y_, caption.view(), palette_.graph_text_);
         if (series.size() > 1) {
             int x = area.x_ + display_width(caption.view()) + 2;
             for (const auto& item: series) {
@@ -617,7 +722,7 @@ namespace neforce::neflux::ui {
         } else if (upper_name != "total") {
             title = format("CPU history (%) · {}", upper_name);
         }
-        text(area.x_, area.y_, title.view(), palette_.muted_);
+        text(area.x_, area.y_, title.view(), palette_.graph_text_);
         rect body{area.x_, area.y_ + 1, area.w_, area.h_ - 1};
         if (body.h_ >= 4 && body.w_ >= 14) {
             constexpr int axis = 5;
@@ -625,14 +730,14 @@ namespace neforce::neflux::ui {
                  window.has_time
                          ? format("−{}", time_label(window.time.seconds)).view()
                          : format("{} samples", window.capacity(static_cast<size_t>(body.w_ - axis) * 2)).view(),
-                 palette_.muted_);
-            text_right(body.x_ + axis, body.bottom() - 1, body.w_ - axis, "now", palette_.muted_);
+                 palette_.graph_text_);
+            text_right(body.x_ + axis, body.bottom() - 1, body.w_ - axis, "now", palette_.graph_text_);
             body.h_ -= 1;
             const int center = lower != nullptr ? (body.h_ + 1) / 2 - 1 : body.h_ - 1;
-            text(body.x_, body.y_, "100%", palette_.muted_);
-            text(body.x_, body.y_ + center, "0%", palette_.muted_);
+            text(body.x_, body.y_, "100%", palette_.graph_text_);
+            text(body.x_, body.y_ + center, "0%", palette_.graph_text_);
             if (lower != nullptr) {
-                text(body.x_, body.y_ + body.h_ - 1, "100%", palette_.muted_);
+                text(body.x_, body.y_ + body.h_ - 1, "100%", palette_.graph_text_);
             }
             body.x_ += axis;
             body.w_ -= axis;
@@ -642,7 +747,7 @@ namespace neforce::neflux::ui {
             raster(rect{body.x_, body.y_, body.w_, upper_height}, {chart_series{upper_name, upper, palette_.mint_}},
                    100.0, window, false, -1);
         } else {
-            text(body.x_, body.y_, format("{} · unavailable", upper_name).view(), palette_.muted_);
+            text(body.x_, body.y_, format("{} · unavailable", upper_name).view(), palette_.graph_text_);
         }
         if (lower != nullptr) {
             // The lower plot is mirrored: 0% is at the center line and 100% at the bottom.

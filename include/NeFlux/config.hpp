@@ -44,6 +44,9 @@ namespace neforce::neflux {
         bool rounded_corners_ = true;          ///< 圆角边框
         bool process_colors_ = true;           ///< 进程行按 CPU 着色
         bool process_gradient_ = true;         ///< 进程 CPU 颜色渐变
+        bool graph_gradient_ = true;           ///< 图表垂直渐变
+        bool gpu_in_cpu_box_ = false;          ///< 在 CPU 面板内显示 GPU 摘要
+        bool multi_gpu_overview_ = true;       ///< 总览 GPU 卡片显示多个设备
         string graph_symbol_cpu_ = "default";  ///< CPU 图表符号
         string graph_symbol_mem_ = "default";  ///< 内存图表符号
         string graph_symbol_net_ = "default";  ///< 网络图表符号
@@ -149,6 +152,8 @@ namespace neforce::neflux {
         size_t sort_index_ = 0;                   ///< 排序索引
         bool reverse_sort_ = false;               ///< 反向排序
         bool tree_ = false;                       ///< 进程树
+        size_t tree_auto_collapse_ = 0;           ///< 子进程数达到此值自动折叠，0 关闭
+        bool tree_aggregate_ = false;             ///< 树模式累计子进程 CPU/内存
         size_t history_ = 180;                    ///< 历史样本数
         uint64_t time_window_seconds_ = 180;      ///< 图表时间窗口
         bool show_loopback_ = false;              ///< 显示环回接口
@@ -160,6 +165,12 @@ namespace neforce::neflux {
         bool ascii_ = false;                      ///< ASCII 模式
         bool no_color_ = false;                   ///< 无颜色模式
         string layout_ = "balanced";              ///< 布局
+        size_t overview_preset_ = 0;              ///< 当前总览 box preset
+        vector<string> overview_presets_ = {      ///< 总览 box 组合 preset
+                "cpu,memory,gpu,storage,network,processes",
+                "cpu,gpu,processes",
+                "cpu,memory,storage,network,processes",
+                "cpu,memory,processes"};
         optional<layout_node> custom_layout_;     ///< 自定义布局
         vector<string> columns_;                  ///< 进程列
         json custom_colors_;                      ///< 自定义颜色

@@ -114,7 +114,16 @@ namespace {
             if (!args.export_svg_.has_value()) {
                 return true;
             }
-            const string svg = ui::render_svg(value, data, cfg, wanted, args.gpu_panel_, args.width_, args.height_);
+            string svg;
+            try {
+                svg = ui::render_svg(value, data, cfg, wanted, args.gpu_panel_, args.width_, args.height_);
+            } catch (const exception& error) {
+                errln(format("SVG render failed: {}", error.what()));
+                return false;
+            } catch (...) {
+                errln("SVG render failed: unknown exception");
+                return false;
+            }
             if (!write_text_file(*args.export_svg_, svg)) {
                 errln(format("Cannot write SVG: {}", *args.export_svg_));
                 return false;

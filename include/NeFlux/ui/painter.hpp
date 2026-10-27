@@ -56,6 +56,33 @@ namespace neforce::neflux::ui {
         color amber_;     ///< 警告
         color red_;       ///< 危险
         color selection_; ///< 选中行底色
+
+        color cpu_start_;  ///< CPU 渐变起点
+        color cpu_mid_;    ///< CPU 渐变中点
+        color cpu_end_;    ///< CPU 渐变终点
+        color mem_start_;  ///< 内存渐变起点
+        color mem_mid_;    ///< 内存渐变中点
+        color mem_end_;    ///< 内存渐变终点
+        color net_start_;  ///< 网络渐变起点
+        color net_mid_;    ///< 网络渐变中点
+        color net_end_;    ///< 网络渐变终点
+        color gpu_start_;  ///< GPU 渐变起点
+        color gpu_mid_;    ///< GPU 渐变中点
+        color gpu_end_;    ///< GPU 渐变终点
+        color temp_start_; ///< 温度渐变起点
+        color temp_mid_;   ///< 温度渐变中点
+        color temp_end_;   ///< 温度渐变终点
+        color proc_start_; ///< 进程渐变起点
+        color proc_mid_;   ///< 进程渐变中点
+        color proc_end_;   ///< 进程渐变终点
+        color meter_bg_;   ///< 仪表背景
+        color graph_text_; ///< 图表文字
+        color followed_bg_; ///< 跟随进程底色
+        color followed_fg_; ///< 跟随进程文字
+        color pause_bg_;    ///< 暂停横幅底色
+        color follow_bg_;   ///< 跟随横幅底色
+        color banner_bg_;   ///< 暂停+跟随横幅底色
+        color banner_fg_;   ///< 横幅文字
     };
 
     /**
@@ -105,7 +132,7 @@ namespace neforce::neflux::ui {
          * @param rounded
          */
         painter(tui::canvas_painter& target, const palette& colors, bool ascii = false, bool transparent = false,
-                string graph_symbol = "braille", bool rounded = true);
+                string graph_symbol = "braille", bool rounded = true, bool graph_gradient = true);
 
         /**
          * @brief 创建裁剪区域子绘制器
@@ -296,6 +323,7 @@ namespace neforce::neflux::ui {
         bool transparent_ = false;
         string graph_symbol_ = "braille";
         bool rounded_ = true;
+        bool graph_gradient_ = true;
 
         NEFORCE_NODISCARD bool visible(int x, int y) const noexcept {
             return x >= area_.x_ && y >= area_.y_ && x < area_.right() && y < area_.bottom();

@@ -287,6 +287,35 @@ namespace neforce::neflux {
         if (!(layout_ == "balanced" || layout_ == "compute" || layout_ == "storage" || layout_ == "minimal")) {
             fail("invalid layout");
         }
+        if (tree_auto_collapse_ > 10000) {
+            fail("tree_auto_collapse must be 0..=10000");
+        }
+        if (overview_presets_.empty()) {
+            fail("overview_presets must not be empty");
+        }
+        if (overview_preset_ >= overview_presets_.size()) {
+            fail("overview_preset is out of range");
+        }
+        for (const auto& preset: overview_presets_) {
+            size_t begin = 0;
+            while (begin <= preset.size()) {
+                size_t end = preset.find(',', begin);
+                if (end == string::npos) {
+                    end = preset.size();
+                }
+                string_view token = preset.view().substr(begin, end - begin);
+                token.trim();
+                if (token.empty()) {
+                    fail("overview preset contains an empty box");
+                }
+                const string name(token.data(), token.size());
+                if (!(name == "cpu" || name == "memory" || name == "gpu" || name == "storage" ||
+                      name == "network" || name == "processes")) {
+                    fail(format("Unknown overview box: {}", name));
+                }
+                begin = end + 1;
+            }
+        }
         if (alert_history_ < 1 || alert_history_ > 10000) {
             fail("alert_history must be 1..=10000");
         }
@@ -329,7 +358,14 @@ namespace neforce::neflux {
             const auto& key = member_entry.first;
             if (!(key == "background" || key == "panel" || key == "text" || key == "accent" || key == "border" ||
                   key == "muted" || key == "selection" || key == "blue" || key == "purple" || key == "amber" ||
-                  key == "red")) {
+                  key == "red" || key == "cpu_start" || key == "cpu_mid" || key == "cpu_end" || key == "mem_start" ||
+                  key == "mem_mid" || key == "mem_end" || key == "net_start" || key == "net_mid" || key == "net_end" ||
+                  key == "gpu_start" || key == "gpu_mid" || key == "gpu_end" || key == "temp_start" ||
+                  key == "temp_mid" || key == "temp_end" || key == "proc_start" || key == "proc_mid" ||
+                  key == "proc_end" || key == "meter_bg" || key == "graph_text" || key == "followed_bg" ||
+                  key == "followed_fg" || key == "pause_bg" || key == "follow_bg" || key == "banner_bg" ||
+                  key == "banner_fg" || key == "proc_pause_bg" || key == "proc_follow_bg" ||
+                  key == "proc_banner_bg" || key == "proc_banner_fg")) {
                 fail(format("Unknown color: {}", key));
             }
             const auto& value = member_entry.second.as_string();
@@ -358,6 +394,8 @@ namespace neforce::neflux {
         out.append("sort_index = ").append(format("{}", sort_index_)).append("\n");
         out.append("reverse_sort = ").append(toml_bool(reverse_sort_)).append("\n");
         out.append("tree = ").append(toml_bool(tree_)).append("\n");
+        out.append("tree_auto_collapse = ").append(format("{}", tree_auto_collapse_)).append("\n");
+        out.append("tree_aggregate = ").append(toml_bool(tree_aggregate_)).append("\n");
         out.append("history = ").append(format("{}", history_)).append("\n");
         out.append("time_window_seconds = ").append(format("{}", time_window_seconds_)).append("\n");
         out.append("show_loopback = ").append(toml_bool(show_loopback_)).append("\n");
@@ -369,6 +407,8 @@ namespace neforce::neflux {
         out.append("ascii = ").append(toml_bool(ascii_)).append("\n");
         out.append("no_color = ").append(toml_bool(no_color_)).append("\n");
         out.append("layout = ").append(quote(layout_)).append("\n");
+        out.append("overview_preset = ").append(format("{}", overview_preset_)).append("\n");
+        write_string_array(out, "overview_presets", overview_presets_);
         write_string_array(out, "columns", columns_);
         out.append("custom_colors = {");
         bool first_color = true;
@@ -442,6 +482,9 @@ namespace neforce::neflux {
         out.append("rounded_corners = ").append(toml_bool(display_.rounded_corners_)).append("\n");
         out.append("process_colors = ").append(toml_bool(display_.process_colors_)).append("\n");
         out.append("process_gradient = ").append(toml_bool(display_.process_gradient_)).append("\n");
+        out.append("graph_gradient = ").append(toml_bool(display_.graph_gradient_)).append("\n");
+        out.append("gpu_in_cpu_box = ").append(toml_bool(display_.gpu_in_cpu_box_)).append("\n");
+        out.append("multi_gpu_overview = ").append(toml_bool(display_.multi_gpu_overview_)).append("\n");
         out.append("graph_symbol_cpu = ").append(quote(display_.graph_symbol_cpu_)).append("\n");
         out.append("graph_symbol_mem = ").append(quote(display_.graph_symbol_mem_)).append("\n");
         out.append("graph_symbol_net = ").append(quote(display_.graph_symbol_net_)).append("\n");
@@ -467,6 +510,8 @@ namespace neforce::neflux {
                     "sort_index",
                     "reverse_sort",
                     "tree",
+                    "tree_auto_collapse",
+                    "tree_aggregate",
                     "history",
                     "time_window_seconds",
                     "show_loopback",
@@ -478,6 +523,8 @@ namespace neforce::neflux {
                     "ascii",
                     "no_color",
                     "layout",
+                    "overview_preset",
+                    "overview_presets",
                     "custom_layout",
                     "columns",
                     "custom_colors",
@@ -508,6 +555,10 @@ namespace neforce::neflux {
         }
         read_bool(*root, "reverse_sort", value.reverse_sort_);
         read_bool(*root, "tree", value.tree_);
+        if (read_integer(*root, "tree_auto_collapse", number)) {
+            value.tree_auto_collapse_ = static_cast<size_t>(neforce::max<int64_t>(0, number));
+        }
+        read_bool(*root, "tree_aggregate", value.tree_aggregate_);
         if (read_integer(*root, "history", number)) {
             value.history_ = static_cast<size_t>(number);
         }
@@ -530,6 +581,10 @@ namespace neforce::neflux {
         read_bool(*root, "ascii", value.ascii_);
         read_bool(*root, "no_color", value.no_color_);
         read_string(*root, "layout", value.layout_);
+        if (read_integer(*root, "overview_preset", number)) {
+            value.overview_preset_ = static_cast<size_t>(neforce::max<int64_t>(0, number));
+        }
+        read_string_array(*root, "overview_presets", value.overview_presets_);
         if (const toml_value* layout = root->get_member("custom_layout"); layout != nullptr && layout->is_table()) {
             value.custom_layout_ = parse_layout(*layout->as_table(), 0);
         }
@@ -600,8 +655,8 @@ namespace neforce::neflux {
                         "memory_graphs",      "show_swap",          "show_battery",           "process_basename",
                         "group_processes",    "overview_panel",     "transparent_background", "graph_symbol",
                         "cpu_lazy_sort",      "rounded_corners",    "process_colors",         "process_gradient",
-                        "graph_symbol_cpu",   "graph_symbol_mem",   "graph_symbol_net",       "graph_symbol_proc",
-                        "graph_symbol_gpu"});
+                        "graph_gradient",     "gpu_in_cpu_box",     "multi_gpu_overview",     "graph_symbol_cpu",
+                        "graph_symbol_mem",   "graph_symbol_net",   "graph_symbol_proc",      "graph_symbol_gpu"});
             display_config& d = value.display_;
             read_string(table, "cpu_graph", d.cpu_graph_);
             read_string(table, "cpu_graph_lower", d.cpu_graph_lower_);
@@ -629,6 +684,9 @@ namespace neforce::neflux {
             read_bool(table, "rounded_corners", d.rounded_corners_);
             read_bool(table, "process_colors", d.process_colors_);
             read_bool(table, "process_gradient", d.process_gradient_);
+            read_bool(table, "graph_gradient", d.graph_gradient_);
+            read_bool(table, "gpu_in_cpu_box", d.gpu_in_cpu_box_);
+            read_bool(table, "multi_gpu_overview", d.multi_gpu_overview_);
             read_string(table, "graph_symbol_cpu", d.graph_symbol_cpu_);
             read_string(table, "graph_symbol_mem", d.graph_symbol_mem_);
             read_string(table, "graph_symbol_net", d.graph_symbol_net_);
@@ -741,6 +799,9 @@ namespace neforce::neflux {
         rows.push_back({"Network graph symbol", graph_symbol_net_});
         rows.push_back({"Process graph symbol", graph_symbol_proc_});
         rows.push_back({"GPU graph symbol", graph_symbol_gpu_});
+        rows.push_back({"Graph gradient", graph_gradient_ ? "true" : "false"});
+        rows.push_back({"GPU in CPU box", gpu_in_cpu_box_ ? "true" : "false"});
+        rows.push_back({"Multi-GPU overview", multi_gpu_overview_ ? "true" : "false"});
         return rows;
     }
 
@@ -864,6 +925,15 @@ namespace neforce::neflux {
                 break;
             case 28:
                 cycle(graph_symbol_gpu_, {"default", "braille", "block", "tty", "ascii"});
+                break;
+            case 29:
+                graph_gradient_ = !graph_gradient_;
+                break;
+            case 30:
+                gpu_in_cpu_box_ = !gpu_in_cpu_box_;
+                break;
+            case 31:
+                multi_gpu_overview_ = !multi_gpu_overview_;
                 break;
             default:
                 break;

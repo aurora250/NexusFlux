@@ -215,6 +215,27 @@ namespace neforce::neflux::ui {
                 } else if (key == "div_line" || key == "cpu_box" || key == "mem_box" || key == "net_box" ||
                            key == "proc_box") {
                     target = "border";
+                } else if (key == "selected_fg") {
+                    target = "text";
+                } else if (key == "graph_text" || key == "meter_bg" || key == "followed_bg" || key == "followed_fg" ||
+                           key == "proc_pause_bg" || key == "proc_follow_bg" || key == "proc_banner_bg" ||
+                           key == "proc_banner_fg") {
+                    target = key;
+                } else if (key == "cpu_start" || key == "cpu_mid" || key == "cpu_end" || key == "temp_start" ||
+                           key == "temp_mid" || key == "temp_end") {
+                    target = key;
+                } else if (key == "process_start") {
+                    target = "proc_start";
+                } else if (key == "process_mid") {
+                    target = "proc_mid";
+                } else if (key == "process_end") {
+                    target = "proc_end";
+                } else if (key == "download_start") {
+                    target = "net_start";
+                } else if (key == "download_mid") {
+                    target = "net_mid";
+                } else if (key == "download_end") {
+                    target = "net_end";
                 }
                 if (!target.empty()) {
                     custom.set(target, json(value));
@@ -425,6 +446,7 @@ namespace neforce::neflux::ui {
             uint32_t group_count_ = 0;  ///< 聚合进程数
             double group_cpu_ = 0.0;    ///< 聚合 CPU
             uint64_t group_memory_ = 0; ///< 聚合内存
+            bool tree_aggregate_ = false; ///< 树模式累计子进程
         };
 
         struct sampler {
@@ -645,6 +667,8 @@ namespace neforce::neflux::ui {
             config_path_(move(config_path)),
             args_(move(args)) {
                 replay_ = source != nullptr && source->replay_;
+                tree_ = cfg_.tree_;
+                auto_collapse_done_ = false;
             }
 
             void setup() override {
@@ -681,7 +705,8 @@ namespace neforce::neflux::ui {
                 return tui::element::canvas(
                         [this](tui::canvas_painter& canvas) {
                             painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
-                                          cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_);
+                                          cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
+                                          cfg_.display_.graph_gradient_);
                             draw(brush);
                         },
                         make_canvas_style());
@@ -703,6 +728,7 @@ namespace neforce::neflux::ui {
                 seeded_ = true;
                 inventory_ = move(data);
                 status_.clear();
+                apply_tree_auto_collapse();
             }
 
             void seed(snapshot value, inventory data, view target) {
@@ -711,6 +737,7 @@ namespace neforce::neflux::ui {
                 current_ = target;
                 seeded_ = true;
                 status_.clear();
+                apply_tree_auto_collapse();
                 if (replay_) {
                     inventory_ = snap_.inventory_;
                 }
@@ -750,6 +777,7 @@ namespace neforce::neflux::ui {
             size_t sort_index_ = 0;
             bool reverse_ = false;
             bool tree_ = false;
+            bool auto_collapse_done_ = false;
             bool process_paused_ = false;
             bool follow_process_ = false;
             bool process_side_panel_ = false;
@@ -975,6 +1003,9 @@ namespace neforce::neflux::ui {
                     }
                 }
                 snap_ = move(incoming);
+                if (tree_ && !auto_collapse_done_) {
+                    apply_tree_auto_collapse();
+                }
                 if (!inventory_.containers_.empty() || !inventory_.services_.empty() ||
                     !inventory_.listeners_.empty() || !inventory_.extra_.empty()) {
                     snap_.apply_inventory(inventory_);
@@ -1229,7 +1260,69 @@ namespace neforce::neflux::ui {
                         rows.push_back(process_row{index, 0});
                     }
                 }
+                if (cfg_.tree_aggregate_) {
+                    struct subtree_total {
+                        double cpu = 0.0;
+                        uint64_t memory = 0;
+                        uint32_t count = 0;
+                    };
+                    const auto subtotal = [&](auto&& self, uint32_t pid) -> subtree_total {
+                        subtree_total total;
+                        const auto found = children.find(pid);
+                        if (found == children.end()) {
+                            return total;
+                        }
+                        for (const size_t child: found->second) {
+                            const auto& item = snap_.processes_[child];
+                            ++total.count;
+                            total.cpu += item.cpu_;
+                            total.memory += item.memory_;
+                            const auto child_total = self(self, item.pid_);
+                            total.cpu += child_total.cpu;
+                            total.memory += child_total.memory;
+                            total.count += child_total.count;
+                        }
+                        return total;
+                    };
+                    for (auto& row: rows) {
+                        const auto& item = snap_.processes_[row.index_];
+                        const auto found = children.find(item.pid_);
+                        if (found == children.end() || found->second.empty()) {
+                            continue;
+                        }
+                        const auto total = subtotal(subtotal, item.pid_);
+                        row.group_count_ = total.count + 1;
+                        row.group_cpu_ = item.cpu_ + total.cpu;
+                        row.group_memory_ = item.memory_ + total.memory;
+                        row.tree_aggregate_ = true;
+                    }
+                }
                 return rows;
+            }
+
+            void apply_tree_auto_collapse() {
+                auto_collapse_done_ = true;
+                if (!tree_ || cfg_.tree_auto_collapse_ == 0) {
+                    return;
+                }
+                set<uint32_t> present;
+                for (const auto& item: snap_.processes_) {
+                    present.insert(item.pid_);
+                }
+                map<uint32_t, uint32_t> children;
+                for (const auto& item: snap_.processes_) {
+                    if (!item.parent_.has_value() || *item.parent_ == item.pid_) {
+                        continue;
+                    }
+                    if (present.count(*item.parent_) != 0) {
+                        ++children[*item.parent_];
+                    }
+                }
+                for (const auto& entry: children) {
+                    if (entry.first != 0 && entry.second >= cfg_.tree_auto_collapse_) {
+                        collapsed_.insert(entry.first);
+                    }
+                }
             }
 
             NEFORCE_NODISCARD optional<process> selected_process_value() const {
@@ -1414,6 +1507,49 @@ namespace neforce::neflux::ui {
                 brush.text_right(area.x_, area.y_, area.w_ - 1, right.view(), colors_.border_);
             }
 
+            NEFORCE_NODISCARD vector<string> active_overview_boxes() const {
+                vector<string> boxes;
+                if (cfg_.overview_presets_.empty() || cfg_.overview_preset_ >= cfg_.overview_presets_.size()) {
+                    for (const char* name: {"cpu", "memory", "gpu", "storage", "network", "processes"}) {
+                        boxes.push_back(name);
+                    }
+                    return boxes;
+                }
+                const auto& preset = cfg_.overview_presets_[cfg_.overview_preset_];
+                size_t begin = 0;
+                while (begin <= preset.size()) {
+                    size_t end = preset.find(',', begin);
+                    if (end == string::npos) {
+                        end = preset.size();
+                    }
+                    string token = preset.substr(begin, end - begin);
+                    token.trim();
+                    if (!token.empty()) {
+                        boxes.push_back(move(token));
+                    }
+                    begin = end + 1;
+                }
+                return boxes;
+            }
+
+            NEFORCE_NODISCARD bool overview_has_box(const vector<string>& boxes, string_view name) const {
+                for (const auto& item: boxes) {
+                    if (item.view() == name) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            void cycle_overview_preset() {
+                if (cfg_.overview_presets_.empty()) {
+                    return;
+                }
+                cfg_.overview_preset_ = (cfg_.overview_preset_ + 1) % cfg_.overview_presets_.size();
+                status_ = format("Overview preset {}/{}: {}", cfg_.overview_preset_ + 1,
+                                 cfg_.overview_presets_.size(), cfg_.overview_presets_[cfg_.overview_preset_]);
+            }
+
             NEFORCE_NODISCARD bool layout_visible(const layout_node& node) const {
                 if (node.kind_ == layout_node::kind::panel) {
                     if (node.panel_ == "gpu") {
@@ -1526,30 +1662,70 @@ namespace neforce::neflux::ui {
                     draw_memory_panel(brush, rect{area.x_ + left, area.y_, area.w_ - left, area.h_});
                     return;
                 }
-                const size_t core_rows = (snap_.cores_.size() + 1) / 2;
-                int cpu_height = neforce::max(12, neforce::min(static_cast<int>(core_rows) + 6, area.h_ - 14));
-                cpu_height = neforce::min(cpu_height, area.h_ - 10);
-                const int process_height = area.h_ >= 36 ? neforce::min(10, area.h_ / 4) : 0;
-                const int card_height =
-                        neforce::max(8, area.h_ - cpu_height - 1 - (process_height > 0 ? process_height + 1 : 0));
-                draw_cpu_panel(brush, rect{area.x_, area.y_, area.w_, cpu_height});
-                const rect cards{area.x_, area.y_ + cpu_height + 1, area.w_, card_height};
-                const bool gpu_visible = cfg_.collect_gpu_ || !snap_.gpus_.empty();
-                const int count = gpu_visible ? 4 : 3;
-                const int card_width = (cards.w_ - (count - 1)) / count;
-                int x = cards.x_;
-                draw_memory_panel(brush, rect{x, cards.y_, card_width, cards.h_});
-                x += card_width + 1;
-                if (gpu_visible) {
-                    draw_gpu_card(brush, rect{x, cards.y_, card_width, cards.h_});
-                    x += card_width + 1;
+                const auto boxes = active_overview_boxes();
+                const bool show_cpu = overview_has_box(boxes, "cpu");
+                const bool show_processes = overview_has_box(boxes, "processes");
+                if (boxes.empty()) {
+                    brush.box(area, " OVERVIEW ", colors_.muted_);
+                    brush.text(area.x_ + 2, area.y_ + 1, "No overview boxes in the active preset.",
+                               colors_.muted_);
+                    return;
                 }
-                draw_storage_card(brush, rect{x, cards.y_, card_width, cards.h_});
-                x += card_width + 1;
-                draw_network_card(brush, rect{x, cards.y_, cards.x_ + cards.w_ - x, cards.h_});
+                const size_t core_rows = (snap_.cores_.size() + 1) / 2;
+                const int process_height =
+                        show_processes && area.h_ >= 36 ? neforce::min(10, area.h_ / 4) : 0;
+                const int reserved = (process_height > 0 ? process_height + 1 : 0);
+                int cpu_height = show_cpu ? neforce::max(10, neforce::min(static_cast<int>(core_rows) + 6,
+                                                                           area.h_ - reserved - 8))
+                                          : 0;
+                cpu_height = neforce::min(cpu_height, area.h_ - 8);
+                int cursor_y = area.y_;
+                if (show_cpu) {
+                    draw_cpu_panel(brush, rect{area.x_, cursor_y, area.w_, cpu_height});
+                    cursor_y += cpu_height + 1;
+                }
+                vector<const char*> card_names;
+                const bool gpu_visible = cfg_.collect_gpu_ || !snap_.gpus_.empty();
+                if (overview_has_box(boxes, "memory")) {
+                    card_names.push_back("memory");
+                }
+                if (overview_has_box(boxes, "gpu") && gpu_visible) {
+                    card_names.push_back("gpu");
+                }
+                if (overview_has_box(boxes, "storage")) {
+                    card_names.push_back("storage");
+                }
+                if (overview_has_box(boxes, "network")) {
+                    card_names.push_back("network");
+                }
+                const int card_height = neforce::max(8, area.h_ - (cursor_y - area.y_) - reserved);
+                const rect cards{area.x_, cursor_y, area.w_, card_height};
+                if (!card_names.empty()) {
+                    const int count = static_cast<int>(card_names.size());
+                    const int card_width = (cards.w_ - (count - 1)) / count;
+                    int x = cards.x_;
+                    for (size_t index = 0; index < card_names.size(); ++index) {
+                        const int width = index + 1 == card_names.size() ? cards.right() - x : card_width;
+                        const string_view name = card_names[index];
+                        if (name == "memory") {
+                            draw_memory_panel(brush, rect{x, cards.y_, width, cards.h_});
+                        } else if (name == "gpu") {
+                            draw_gpu_card(brush, rect{x, cards.y_, width, cards.h_});
+                        } else if (name == "storage") {
+                            draw_storage_card(brush, rect{x, cards.y_, width, cards.h_});
+                        } else {
+                            draw_network_card(brush, rect{x, cards.y_, width, cards.h_});
+                        }
+                        x += width + 1;
+                    }
+                }
                 if (process_height > 0) {
-                    draw_process_table(brush, rect{area.x_, cards.bottom() + 1, area.w_, process_height},
-                                       process_rows());
+                    const int process_y = cards.bottom() + 1;
+                    if (process_y < area.bottom()) {
+                        draw_process_table(brush, rect{area.x_, process_y, area.w_,
+                                                       area.bottom() - process_y},
+                                           process_rows());
+                    }
                 }
             }
 
@@ -1620,12 +1796,14 @@ namespace neforce::neflux::ui {
                 if (inner.h_ < 4) {
                     return;
                 }
+                const bool gpu_footer = cfg_.display_.gpu_in_cpu_box_ && !snap_.gpus_.empty();
+                const int content_bottom = inner.bottom() - (gpu_footer ? 1 : 0);
                 const bool wide = inner.w_ >= 70 && snap_.cores_.size() > 6;
                 const int core_width = wide ? neforce::max(24, inner.w_ * 38 / 100) : inner.w_;
                 rect chart_area{inner.x_, inner.y_ + 1, wide ? inner.w_ - core_width - 2 : inner.w_,
-                                wide ? inner.h_ - 1 : inner.h_ - 1};
+                                content_bottom - inner.y_ - 1};
                 if (!wide) {
-                    chart_area.h_ = neforce::max(3, (inner.h_ - 1) * 2 / 3);
+                    chart_area.h_ = neforce::max(3, (content_bottom - inner.y_ - 1) * 2 / 3);
                 }
                 const string upper = cfg_.display_.cpu_graph_;
                 const string lower = cfg_.display_.cpu_graph_lower_;
@@ -1649,7 +1827,7 @@ namespace neforce::neflux::ui {
                     const int grid_top = chart_area.bottom();
                     const int rows =
                             neforce::max(1, snap_.cores_.empty() ? 1 : (static_cast<int>(snap_.cores_.size()) + 1) / 2);
-                    const int available = inner.bottom() - grid_top;
+                    const int available = content_bottom - grid_top;
                     const int shown = neforce::max(0, neforce::min(rows, available));
                     constexpr int columns = 2;
                     const int cell_width = neforce::max(1, inner.w_ / columns);
@@ -1670,7 +1848,7 @@ namespace neforce::neflux::ui {
                 } else {
                     brush.text(inner.x_ + inner.w_ - core_width, inner.y_ + 1, "Per-core history", colors_.muted_);
                     const int rows = neforce::max(1, static_cast<int>(snap_.cores_.size()));
-                    const int available = inner.h_ - 3;
+                    const int available = content_bottom - inner.y_ - 3;
                     const int shown = neforce::min(rows, available);
                     for (int index = 0; index < shown; ++index) {
                         const int y = inner.y_ + 2 + index;
@@ -1683,6 +1861,21 @@ namespace neforce::neflux::ui {
                                          format("{:5.1}%", value).view(),
                                          value >= 90 ? colors_.red_ : (value >= 70 ? colors_.amber_ : colors_.mint_));
                     }
+                }
+                if (gpu_footer) {
+                    const auto index = neforce::min(selected_gpu_, snap_.gpus_.size() - 1);
+                    const auto& gpu = snap_.gpus_[index];
+                    const string gpu_text = format(
+                            "GPU{} {}/{} · {}% · {} · {}", gpu.id_, index + 1, snap_.gpus_.size(),
+                            gpu.utilization_.has_value() ? *gpu.utilization_ : 0,
+                            gpu.memory_used_.has_value() && gpu.memory_total_.has_value()
+                                    ? format("{}/{}", bytes(static_cast<double>(*gpu.memory_used_)),
+                                             bytes(static_cast<double>(*gpu.memory_total_)))
+                                    : string("—"),
+                            gpu.temperature_.has_value() ? cfg_.display_.temperature(*gpu.temperature_, 0)
+                                                          : string("—"));
+                    brush.text(inner.x_, content_bottom, truncate_display(gpu_text.view(), inner.w_).view(),
+                               colors_.blue_);
                 }
             }
 
@@ -1782,6 +1975,40 @@ namespace neforce::neflux::ui {
                                           snap_.gpu_status_.empty() ? string_view("NVML unavailable")
                                                                     : snap_.gpu_status_.view(),
                                           colors_.muted_);
+                    }
+                    return;
+                }
+                if (cfg_.display_.multi_gpu_overview_ && snap_.gpus_.size() > 1) {
+                    brush.box(area, format(" GPU · {} devices ", snap_.gpus_.size()).view(), colors_.blue_);
+                    const rect inner = area.inset(1);
+                    const bool paged = snap_.gpus_.size() > static_cast<size_t>(inner.h_);
+                    const size_t visible = static_cast<size_t>(neforce::max(1, inner.h_ - (paged ? 1 : 0)));
+                    const size_t page_start = (neforce::min(selected_gpu_, snap_.gpus_.size() - 1) / visible) * visible;
+                    const size_t page_end = neforce::min(snap_.gpus_.size(), page_start + visible);
+                    int y = inner.y_;
+                    for (size_t index = page_start; index < page_end; ++index, ++y) {
+                        const auto& item = snap_.gpus_[index];
+                        const bool active = index == neforce::min(selected_gpu_, snap_.gpus_.size() - 1);
+                        const color tint = device_tint(index);
+                        if (active) {
+                            brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", colors_.text_, colors_.selection_);
+                        }
+                        const string name = format("GPU{} {}", item.id_,
+                                                   item.name_.empty() ? item.vendor_ : item.name_);
+                        brush.text(inner.x_, y, truncate_display(name.view(), inner.w_ - 11).view(),
+                                   active ? tint : colors_.text_);
+                        const string usage =
+                                format("{:>3}%", item.utilization_.has_value() ? *item.utilization_ : 0);
+                        brush.text_right(inner.x_, y, inner.w_, usage.view(), active ? colors_.text_ : tint);
+                        hits_.push_back({{inner.x_, y, inner.w_, 1}, hit_action::gpu_device, index});
+                    }
+                    if (paged) {
+                        brush.text_right(area.x_, area.bottom() - 1, area.w_,
+                                         format("[ {}/{} ]", neforce::min(selected_gpu_, snap_.gpus_.size() - 1) +
+                                                                   1,
+                                                snap_.gpus_.size())
+                                                 .view(),
+                                         colors_.muted_);
                     }
                     return;
                 }
@@ -2219,9 +2446,17 @@ namespace neforce::neflux::ui {
                 return value->dump();
             }
 
-            NEFORCE_NODISCARD color process_tint(const process& item) const {
-                const double cpu = neforce::clamp(static_cast<double>(item.cpu_), 0.0, 100.0);
-                const color accent = cpu >= 50.0 ? colors_.red_ : (cpu >= 20.0 ? colors_.amber_ : colors_.mint_);
+            NEFORCE_NODISCARD color process_tint_value(double cpu) const {
+                cpu = neforce::clamp(cpu, 0.0, 100.0);
+                const color& start = cpu < 50.0 ? colors_.proc_start_ : colors_.proc_mid_;
+                const color& finish = cpu < 50.0 ? colors_.proc_mid_ : colors_.proc_end_;
+                const double fraction = cpu < 50.0 ? cpu / 50.0 : (cpu - 50.0) / 50.0;
+                const auto blend_channel = [fraction](int from, int to) {
+                    return static_cast<int>(neforce::round(static_cast<double>(from) +
+                                                           (static_cast<double>(to) - from) * fraction));
+                };
+                const color accent{blend_channel(start.R(), finish.R()), blend_channel(start.G(), finish.G()),
+                                   blend_channel(start.B(), finish.B())};
                 if (!cfg_.display_.process_gradient_) {
                     return accent;
                 }
@@ -2231,6 +2466,10 @@ namespace neforce::neflux::ui {
                                  (base.B() * (10 - weight) + tint.B() * weight) / 10};
                 };
                 return mix(colors_.text_, accent, static_cast<int>(neforce::round(3.0 + cpu * 0.07)));
+            }
+
+            NEFORCE_NODISCARD color process_tint(const process& item) const {
+                return process_tint_value(static_cast<double>(item.cpu_));
             }
 
             NEFORCE_NODISCARD pair<string, color> column_value(const process& item, const string& key,
@@ -2290,7 +2529,7 @@ namespace neforce::neflux::ui {
                     return {item.state_, state_color(item.state_, colors_)};
                 }
                 if (key == "name") {
-                    return {row != nullptr && row->group_count_ > 1
+                    return {row != nullptr && row->group_count_ > 1 && !row->tree_aggregate_
                                     ? format("{} ({})", item.name_, static_cast<uint64_t>(row->group_count_))
                                     : item.name_,
                             colors_.text_};
@@ -2304,7 +2543,7 @@ namespace neforce::neflux::ui {
                     if (cfg_.display_.process_basename_) {
                         command = basename_of(command.view());
                     }
-                    if (row != nullptr && row->group_count_ > 1) {
+                    if (row != nullptr && row->group_count_ > 1 && !row->tree_aggregate_) {
                         command.append(format(" ({})", static_cast<uint64_t>(row->group_count_)));
                     }
                     return {command, colors_.muted_};
@@ -2449,11 +2688,16 @@ namespace neforce::neflux::ui {
                     const int y = inner.y_ + 1 + row;
                     const bool active = index == selected_;
                     const bool marked = marked_processes_.count({item.pid_, item.start_time_}) != 0;
+                    const bool followed = follow_process_ && selected_process_.has_value() &&
+                                          selected_process_->first == item.pid_ &&
+                                          selected_process_->second == item.start_time_;
                     color bg = active ? colors_.selection_ : colors_.panel_;
-                    if (marked && !active) {
+                    if (followed && !active) {
+                        bg = colors_.followed_bg_;
+                    } else if (marked && !active) {
                         bg = colors_.bg_;
                     }
-                    brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", colors_.text_, bg);
+                    brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", followed ? colors_.followed_fg_ : colors_.text_, bg);
                     hits_.push_back(
                             {{inner.x_, y, inner.w_, 1}, hit_action::process_row, index, item.pid_, item.start_time_});
                     const int indent = neforce::min(rows[index].depth_, 4);
@@ -2470,7 +2714,8 @@ namespace neforce::neflux::ui {
                         auto cell = column_value(item, column.key_, &rows[index]);
                         if (cfg_.display_.process_colors_ && !active &&
                             (column.key_ == "command" || column.key_ == "name" || column.key_ == "user")) {
-                            cell.second = process_tint(item);
+                            cell.second = process_tint_value(rows[index].tree_aggregate_ ? rows[index].group_cpu_
+                                                                                           : static_cast<double>(item.cpu_));
                         }
                         if ((column.key_ == "command" || column.key_ == "name") && tree_ && indent > 0) {
                             string prefix;
@@ -4590,6 +4835,7 @@ namespace neforce::neflux::ui {
                         "T, Ctrl+←/→                  Process tree; collapse/expand subtree",
                         "S, r                        Next sort key; reverse sort",
                         "P, F, L                     Pause; follow selected process; lazy CPU sort",
+                        "O                           Cycle overview box preset",
                         "g, u                        GPU processes only; own processes only",
                         "Network: N, ↑/↓, Enter, p     Connections/interfaces; select; details; owner",
                         "i                           Show or hide loopback interfaces",
@@ -4647,6 +4893,15 @@ namespace neforce::neflux::ui {
                     }
                     rows.push_back(move(item));
                 }
+                rows.push_back({"Tree auto-collapse",
+                                cfg_.tree_auto_collapse_ == 0 ? string("Off")
+                                                              : format("{} children", cfg_.tree_auto_collapse_)});
+                rows.push_back({"Tree aggregate", cfg_.tree_aggregate_ ? "On" : "Off"});
+                rows.push_back({"Overview preset",
+                                cfg_.overview_presets_.empty()
+                                        ? string("—")
+                                        : cfg_.overview_presets_[neforce::min(cfg_.overview_preset_,
+                                                                              cfg_.overview_presets_.size() - 1)]});
                 return rows;
             }
 
@@ -4719,7 +4974,20 @@ namespace neforce::neflux::ui {
                     const auto rows = settings_rows();
                     const string label = row < rows.size() ? rows[row].first : string();
                     const string current = row < rows.size() ? rows[row].second : string();
-                    if (label.contains("graph symbol")) {
+                    if (label == "Tree auto-collapse") {
+                        for (const auto value: {0U, 2U, 4U, 8U, 16U, 32U, 64U}) {
+                            add(value == 0 ? "Off" : format("{} children", value), format("{}", value),
+                                format("{}", cfg_.tree_auto_collapse_));
+                        }
+                    } else if (label == "Tree aggregate") {
+                        add("On", "on", cfg_.tree_aggregate_ ? "on" : "off");
+                        add("Off", "off", cfg_.tree_aggregate_ ? "on" : "off");
+                    } else if (label == "Overview preset") {
+                        for (size_t index = 0; index < cfg_.overview_presets_.size(); ++index) {
+                            add(cfg_.overview_presets_[index], format("{}", index),
+                                format("{}", cfg_.overview_preset_));
+                        }
+                    } else if (label.contains("graph symbol")) {
                         for (const auto& value: {"default", "braille", "block", "tty", "ascii"}) {
                             if (value == "default" && label == "Graph symbols") {
                                 continue;
@@ -4813,7 +5081,19 @@ namespace neforce::neflux::ui {
                     const auto rows = settings_rows();
                     const string label = row < rows.size() ? rows[row].first : string();
                     const string current = row < rows.size() ? rows[row].second : string();
-                    if (label == "Expanded overview panel") {
+                    if (label == "Tree auto-collapse") {
+                        const auto value = parse_u64(code.view());
+                        cfg_.tree_auto_collapse_ = value.has_value() ? static_cast<size_t>(*value) : 0;
+                        auto_collapse_done_ = false;
+                        apply_tree_auto_collapse();
+                    } else if (label == "Tree aggregate") {
+                        cfg_.tree_aggregate_ = code == "on";
+                    } else if (label == "Overview preset") {
+                        const auto value = parse_u64(code.view());
+                        if (value.has_value() && *value < cfg_.overview_presets_.size()) {
+                            cfg_.overview_preset_ = static_cast<size_t>(*value);
+                        }
+                    } else if (label == "Expanded overview panel") {
                         cfg_.display_.overview_panel_ = code;
                     } else if (label == "Temperature unit") {
                         cfg_.display_.temperature_unit_ = code;
@@ -5574,6 +5854,10 @@ namespace neforce::neflux::ui {
                 } else if (action == "tree") {
                     tree_ = !tree_;
                     cfg_.tree_ = tree_;
+                    auto_collapse_done_ = false;
+                    if (tree_) {
+                        apply_tree_auto_collapse();
+                    }
                     popup_ = popup_kind::none;
                 } else if (starts_with(action.view(), "view")) {
                     const auto index_value = parse_u64(action.substr(4).view());
@@ -5660,6 +5944,37 @@ namespace neforce::neflux::ui {
             }
 
             void adjust_setting(int direction) {
+                if (settings_index_ < settings_rows().size()) {
+                    const string label = settings_rows()[settings_index_].first;
+                    if (label == "Tree auto-collapse") {
+                        static constexpr size_t values[] = {0, 2, 4, 8, 16, 32, 64};
+                        size_t current = 0;
+                        for (size_t index = 0; index < 7; ++index) {
+                            if (values[index] == cfg_.tree_auto_collapse_) {
+                                current = index;
+                                break;
+                            }
+                        }
+                        current = static_cast<size_t>(
+                                neforce::clamp(static_cast<int64_t>(current) + direction, static_cast<int64_t>(0),
+                                               static_cast<int64_t>(6)));
+                        cfg_.tree_auto_collapse_ = values[current];
+                        auto_collapse_done_ = false;
+                        apply_tree_auto_collapse();
+                        return;
+                    }
+                    if (label == "Tree aggregate") {
+                        cfg_.tree_aggregate_ = !cfg_.tree_aggregate_;
+                        return;
+                    }
+                    if (label == "Overview preset" && !cfg_.overview_presets_.empty()) {
+                        const int64_t count = static_cast<int64_t>(cfg_.overview_presets_.size());
+                        cfg_.overview_preset_ = static_cast<size_t>(neforce::clamp(
+                                static_cast<int64_t>(cfg_.overview_preset_) + direction, static_cast<int64_t>(0),
+                                count - 1));
+                        return;
+                    }
+                }
                 if (settings_index_ == 1) {
                     const int64_t next =
                             static_cast<int64_t>(cfg_.interval_ms_) + static_cast<int64_t>(direction * 250);
@@ -6430,6 +6745,10 @@ namespace neforce::neflux::ui {
                     status_ = cfg_.display_.cpu_lazy_sort_ ? "CPU sort: lazy" : "CPU sort: direct";
                     return true;
                 }
+                if (cp == U'O' && current_ == view::overview) {
+                    cycle_overview_preset();
+                    return true;
+                }
                 if (cp == U'P') {
                     process_paused_ = !process_paused_;
                     status_ = process_paused_ ? "Process list paused · P resume" : "Process list resumed";
@@ -6474,6 +6793,10 @@ namespace neforce::neflux::ui {
                 if (cp == U'T') {
                     tree_ = !tree_;
                     cfg_.tree_ = tree_;
+                    auto_collapse_done_ = false;
+                    if (tree_) {
+                        apply_tree_auto_collapse();
+                    }
                     return true;
                 }
                 if (cp == U'G' && current_ == view::gpu) {
@@ -7042,9 +7365,13 @@ namespace neforce::neflux::ui {
                                     static_cast<int64_t>(selected_gpu_) + delta, static_cast<int64_t>(0), count - 1));
                             return true;
                         }
-                        if (hit->action_ == hit_action::gpu_device && current_ == view::gpu &&
+                        if (hit->action_ == hit_action::gpu_device &&
+                            (current_ == view::gpu || current_ == view::overview) &&
                             hit->index_ < snap_.gpus_.size()) {
                             selected_gpu_ = hit->index_;
+                            if (current_ == view::overview) {
+                                status_ = format("GPU {} selected · {} devices", hit->index_, snap_.gpus_.size());
+                            }
                             return true;
                         }
                         if (hit->action_ == hit_action::gpu_process_row && current_ == view::gpu) {

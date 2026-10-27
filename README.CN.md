@@ -33,7 +33,12 @@ nexus-flux doctor --json
 - `1` 打开概览。
 - `W` 调整图表时间窗口；`-` / `+` 调整采样间隔。
 - `↑/↓`、`PgUp/PgDn` 选择进程预览中的进程。
+- `O` 循环切换概览 box preset。
 - `Enter` / `d` 打开进程详情。
+
+`overview_presets` 是逗号分隔的 box 列表，`overview_preset` 是当前索引。
+例如 `"cpu,memory,gpu,storage,network,processes"`、`"cpu,gpu,processes"`、
+`"cpu,memory,storage,network,processes"`。
 
 ### 进程
 
@@ -48,7 +53,8 @@ nexus-flux doctor --json
 - `D` 切换持久进程侧栏。
 - 鼠标滚轮滚动表格视口；`↑/↓` 移动选中进程。
 - `d` / `Enter` 打开详细进程面板。
-- `P` 暂停进程列表；`F` 跟随选中进程。
+- `P` 暂停进程列表，并保留最后一次 CPU/内存/GPU 数值。
+- `F` 跟随选中进程。
 - `L` 切换 CPU lazy/direct 排序。
 - `Space` 标记进程；`k`/`K`、`t`、`s`、`n`、`a` 对进程操作。
 - `e` / `o` 查看环境与打开文件；`l` / `F7` 读取输出文件。
@@ -212,6 +218,10 @@ ACTIVE，恢复后记录 RECOVERED。
 主题选择器列出内置主题和 `.theme` 文件；高亮主题立即应用，`Esc` 返回主菜单。
 将 `.theme` 文件放到 `~/.config/neflux/themes`（Linux）或 `%APPDATA%\neflux\themes`（Windows），
 也可设置 `NEFLUX_THEME_DIR`，或用 `theme_file = "…"` 指定单个文件。
+主题可覆盖 CPU/内存/网络/GPU/温度/进程的渐变起止色、
+`graph_text`、`meter_bg`、follow/pause/banner 等属性，以及基础调色板。
+`graph_gradient`
+控制图表垂直渐变。
 
 ![排序选择器](docs/images/sort.png)
 
