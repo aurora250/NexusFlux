@@ -144,32 +144,30 @@ namespace neforce::neflux {
     struct config {
         static constexpr size_t settings_count = 32; ///< 总设置项数量
 
-        uint64_t interval_ms_ = 1000;             ///< 采样间隔
-        bool collect_gpu_ = true;                 ///< 采集 GPU
-        string theme_ = "midnight";               ///< 主题
-        string theme_file_;                       ///< 外部 .theme 文件路径
-        size_t view_ = 0;                         ///< 启动页面
-        size_t sort_index_ = 0;                   ///< 排序索引
-        bool reverse_sort_ = false;               ///< 反向排序
-        bool tree_ = false;                       ///< 进程树
-        size_t tree_auto_collapse_ = 0;           ///< 子进程数达到此值自动折叠，0 关闭
-        bool tree_aggregate_ = false;             ///< 树模式累计子进程 CPU/内存
-        size_t history_ = 180;                    ///< 历史样本数
-        uint64_t time_window_seconds_ = 180;      ///< 图表时间窗口
-        bool show_loopback_ = false;              ///< 显示环回接口
-        float cpu_warning_ = 90.0F;               ///< CPU 告警阈值
-        double memory_warning_ = 90.0;            ///< 内存告警阈值
-        uint32_t gpu_temperature_warning_ = 85;   ///< GPU 温度告警阈值
-        bool show_threads_ = false;               ///< 显示线程
-        bool show_kernel_threads_ = true;         ///< 显示内核线程
-        bool ascii_ = false;                      ///< ASCII 模式
-        bool no_color_ = false;                   ///< 无颜色模式
-        string layout_ = "balanced";              ///< 布局
-        size_t overview_preset_ = 0;              ///< 当前总览 box preset
-        vector<string> overview_presets_ = {      ///< 总览 box 组合 preset
-                "cpu,memory,gpu,storage,network,processes",
-                "cpu,gpu,processes",
-                "cpu,memory,storage,network,processes",
+        uint64_t interval_ms_ = 1000;           ///< 采样间隔
+        bool collect_gpu_ = true;               ///< 采集 GPU
+        string theme_ = "midnight";             ///< 主题
+        string theme_file_;                     ///< 外部 .theme 文件路径
+        size_t view_ = 0;                       ///< 启动页面
+        size_t sort_index_ = 0;                 ///< 排序索引
+        bool reverse_sort_ = false;             ///< 反向排序
+        bool tree_ = false;                     ///< 进程树
+        size_t tree_auto_collapse_ = 0;         ///< 子进程数达到此值自动折叠，0 关闭
+        bool tree_aggregate_ = false;           ///< 树模式累计子进程 CPU/内存
+        size_t history_ = 180;                  ///< 历史样本数
+        uint64_t time_window_seconds_ = 180;    ///< 图表时间窗口
+        bool show_loopback_ = false;            ///< 显示环回接口
+        float cpu_warning_ = 90.0F;             ///< CPU 告警阈值
+        double memory_warning_ = 90.0;          ///< 内存告警阈值
+        uint32_t gpu_temperature_warning_ = 85; ///< GPU 温度告警阈值
+        bool show_threads_ = false;             ///< 显示线程
+        bool show_kernel_threads_ = true;       ///< 显示内核线程
+        bool ascii_ = false;                    ///< ASCII 模式
+        bool no_color_ = false;                 ///< 无颜色模式
+        string layout_ = "balanced";            ///< 布局
+        size_t overview_preset_ = 0;            ///< 当前总览 box preset
+        vector<string> overview_presets_ = {    ///< 总览 box 组合 preset
+                "cpu,memory,gpu,storage,network,processes", "cpu,gpu,processes", "cpu,memory,storage,network,processes",
                 "cpu,memory,processes"};
         optional<layout_node> custom_layout_;     ///< 自定义布局
         vector<string> columns_;                  ///< 进程列

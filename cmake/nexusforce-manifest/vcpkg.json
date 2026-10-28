@@ -1,0 +1,16 @@
+{
+  "name": "nexusflux-nexusforce",
+  "version-string": "1.0.1",
+  "description": "Minimal NexusForce dependency set used by NexusFlux (TUI + HTTP + regex).",
+  "builtin-baseline": "62159a45e18f3a9ac0548628dcaf74fcb60c6ff9",
+  "dependencies": [
+    {
+      "name": "openssl",
+      "features": ["tools"]
+    },
+    {
+      "name": "pcre2",
+      "features": ["jit"]
+    }
+  ]
+}

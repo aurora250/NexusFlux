@@ -323,6 +323,14 @@ namespace neforce::neflux::ui {
             return 0;
         }
 
+        struct tab_layout_entry {
+            string label;
+            int x = 0;
+            int width = 0;
+            size_t index = 0;
+            bool overflow = false;
+        };
+
         enum class sort_mode : byte_t {
             cpu,
             memory,
@@ -430,6 +438,7 @@ namespace neforce::neflux::ui {
             prompt,
             confirm,
             signal_menu,
+            tools,
             columns,
             theme_menu,
         };
@@ -441,11 +450,11 @@ namespace neforce::neflux::ui {
         };
 
         struct process_row {
-            size_t index_ = 0;          ///< 快照内索引
-            int depth_ = 0;             ///< 树深度
-            uint32_t group_count_ = 0;  ///< 聚合进程数
-            double group_cpu_ = 0.0;    ///< 聚合 CPU
-            uint64_t group_memory_ = 0; ///< 聚合内存
+            size_t index_ = 0;            ///< 快照内索引
+            int depth_ = 0;               ///< 树深度
+            uint32_t group_count_ = 0;    ///< 聚合进程数
+            double group_cpu_ = 0.0;      ///< 聚合 CPU
+            uint64_t group_memory_ = 0;   ///< 聚合内存
             bool tree_aggregate_ = false; ///< 树模式累计子进程
         };
 
@@ -701,15 +710,32 @@ namespace neforce::neflux::ui {
                 schedule_poll();
             }
 
+            void on_terminal_resize(const int width, const int height) override {
+                terminal_width_ = width;
+                terminal_height_ = height;
+            }
+
             tui::element render() override {
-                return tui::element::canvas(
-                        [this](tui::canvas_painter& canvas) {
-                            painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
-                                          cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
-                                          cfg_.display_.graph_gradient_);
-                            draw(brush);
-                        },
-                        make_canvas_style());
+                auto content = build_content();
+                auto popup = build_popup();
+                auto base = tui::element::canvas([this](tui::canvas_painter& canvas) { draw_background(canvas); },
+                                                 make_canvas_style());
+                vector<tui::element> layers;
+                layers.push_back(move(base));
+                layers.push_back(move(content));
+                layers.push_back(make_header_element());
+                layers.push_back(make_tabs_element());
+                layers.push_back(make_context_element());
+                layers.push_back(make_footer_element());
+                if (popup_ != popup_kind::none) {
+                    layers.push_back(move(popup));
+                }
+                return tui::element::zstack(move(layers));
+            }
+
+            void seed_terminal_size(const int width, const int height) {
+                terminal_width_ = width;
+                terminal_height_ = height;
             }
 
             void seed_history(const vector<snapshot>& values, inventory data, view target) {
@@ -778,6 +804,8 @@ namespace neforce::neflux::ui {
             bool reverse_ = false;
             bool tree_ = false;
             bool auto_collapse_done_ = false;
+            int terminal_width_ = 0;
+            int terminal_height_ = 0;
             bool process_paused_ = false;
             bool follow_process_ = false;
             bool process_side_panel_ = false;
@@ -828,9 +856,13 @@ namespace neforce::neflux::ui {
             bool command_editing_ = false;
             size_t command_cursor_ = 0;
             int64_t last_escape_ms_ = 0;
+            size_t column_offset_ = 0;
             bool replay_ = false;
             tui::state<int>* tick_ = nullptr;
             rect body_{};
+            cell_grid content_grid_;
+            cell_grid popup_grid_;
+            vector<painter::pane> content_panes_;
             rect footer_{};
             rect tabs_{};
             int tab_start_ = 0;
@@ -848,6 +880,7 @@ namespace neforce::neflux::ui {
             string confirm_message_;
             int pending_signal_ = 0;
             string pending_title_;
+            string pending_workload_action_;
             map<string, uint64_t> pending_alerts_;
             set<string> active_alerts_;
             vector<event> alert_events_;
@@ -857,6 +890,213 @@ namespace neforce::neflux::ui {
             bool own_only_ = false;
             string ros_kind_;
             vector<string> ros_entries_;
+
+            tui::element make_header_element() const {
+                if (terminal_width_ < 60 || terminal_height_ < 18) {
+                    return tui::element::empty();
+                }
+                vector<tui::text_span> spans;
+                tui::style title_style;
+                title_style.fg = colors_.mint_;
+                title_style.bold = true;
+                spans.push_back({" nexus-flux", title_style, {}});
+
+                tui::style host_style;
+                host_style.fg = colors_.text_;
+                spans.push_back({format("· {}", snap_.hostname_), host_style, {}});
+
+                tui::style muted_style;
+                muted_style.fg = colors_.muted_;
+                if (snap_.os_.empty()) {
+                    const int column = 22;
+                    int used = 1 + 11 + 2 + static_cast<int>(display_width(snap_.hostname_.view()));
+                    if (used < column) {
+                        spans.push_back({string(static_cast<size_t>(column - used), ' '), {}, {}});
+                    }
+                    spans.push_back({"· discovering", muted_style, {}});
+                }
+
+                string right = format("[{}] · [-]{:.2f}s[+] · up {}", time_label(cfg_.time_window_seconds_),
+                                      static_cast<double>(cfg_.interval_ms_) / 1000.0, duration(snap_.uptime_));
+                if (replay_) {
+                    right = format("REPLAY {}/{} · {}", sampler_->replay_index() + 1, sampler_->replay_size(), right);
+                }
+
+                tui::box_props props;
+                props.dir = tui::style::direction::row;
+                props.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                props.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                return tui::element::hbox({tui::element::rich_text(move(spans)), tui::element::spacer(1),
+                                           tui::element::text(move(right), muted_style)},
+                                          props);
+            }
+
+            NEFORCE_NODISCARD vector<tab_layout_entry> tab_layout() const {
+                vector<tab_layout_entry> layout;
+                if (terminal_width_ < 60 || terminal_height_ < 18) {
+                    return layout;
+                }
+                int x = 0;
+                for (size_t index = 0; index < sizeof(views) / sizeof(views[0]); ++index) {
+                    string label = format("[{}] {}", views[index].key, views[index].name);
+                    int width = display_width(label.view()) + 2;
+                    if (x + width > terminal_width_ && index >= 8) {
+                        label = format("[{}]", views[index].key);
+                        width = display_width(label.view()) + 2;
+                    }
+                    if (x + width > terminal_width_ - 8) {
+                        break;
+                    }
+                    tab_layout_entry entry;
+                    entry.label = move(label);
+                    entry.x = x;
+                    entry.width = width;
+                    entry.index = index;
+                    layout.push_back(move(entry));
+                    x += width;
+                }
+                if (x + 4 <= terminal_width_) {
+                    tab_layout_entry entry;
+                    entry.label = "[+]";
+                    entry.x = x;
+                    entry.width = 4;
+                    entry.overflow = true;
+                    layout.push_back(move(entry));
+                }
+                return layout;
+            }
+
+            tui::element make_tabs_element() const {
+                const vector<tab_layout_entry> layout = tab_layout();
+                if (layout.empty()) {
+                    return tui::element::empty();
+                }
+                vector<tui::text_span> spans;
+                const size_t active = view_index(current_);
+                for (const auto& entry: layout) {
+                    if (entry.overflow) {
+                        tui::style style;
+                        style.fg = colors_.muted_;
+                        style.bold = true;
+                        spans.push_back({entry.label, style, {}});
+                        continue;
+                    }
+                    const bool selected = entry.index == active;
+                    tui::style style;
+                    style.fg = selected ? colors_.mint_ : colors_.muted_;
+                    if (selected) {
+                        style.bg = colors_.selection_;
+                    }
+                    style.bold = selected;
+                    spans.push_back({format(" {} ", entry.label), style, {}});
+                }
+                tui::style base;
+                base.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                base.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                struct tui::style::margin pad;
+                pad.top = 1;
+                base.margin = pad;
+                return tui::element::rich_text(move(spans), base);
+            }
+
+            void record_tab_hits() {
+                tabs_ = rect{0, 1, terminal_width_, 1};
+                for (const auto& entry: tab_layout()) {
+                    hits_.push_back({{entry.x, 1, entry.width, 1},
+                                     entry.overflow ? hit_action::view_overflow : hit_action::tab,
+                                     entry.index});
+                }
+            }
+
+            tui::element make_footer_element() const {
+                if (terminal_width_ < 60 || terminal_height_ < 18) {
+                    return tui::element::empty();
+                }
+                struct action {
+                    string_view key;
+                    string_view label;
+                };
+                vector<action> actions{{"Esc", "Menu"},   {"F3", "Filter"}, {"F4", "Sort"}, {"F5", "View"},
+                                       {"F6", "Tools"},   {"F7", "Logs"},   {"F1", "Help"}, {"F2", "Settings"},
+                                       {":", "Commands"}, {"q", "Quit"}};
+                if (terminal_width_ < 100) {
+                    actions = {{"Esc", "Menu"}, {"F3", "Filter"}, {"F4", "Sort"}, {"F6", "Tools"},
+                               {"F7", "Logs"},  {"F1", "Help"},   {"q", "Quit"}};
+                }
+                if (replay_) {
+                    actions.push_back({", / .", "Seek"});
+                }
+                if (current_ == view::processes) {
+                    actions.push_back({"Shift+←/→", "Columns"});
+                }
+                vector<tui::text_span> spans;
+                tui::style key_style;
+                key_style.fg = colors_.blue_;
+                key_style.bold = true;
+                tui::style label_style;
+                label_style.fg = colors_.muted_;
+                int x = 1;
+                for (const auto& item: actions) {
+                    const int width = static_cast<int>(item.key.size() + item.label.size() + 3);
+                    if (x + width >= terminal_width_) {
+                        break;
+                    }
+                    spans.push_back({string(item.key), key_style, {}});
+                    spans.push_back({" ", label_style, {}});
+                    spans.push_back({string(item.label), label_style, {}});
+                    spans.push_back({"  ", {}, {}});
+                    x += width;
+                }
+                tui::style right_style;
+                right_style.fg = colors_.border_;
+                const string right = format("{} × {} · {}{}", terminal_width_, terminal_height_, view_name(current_),
+                                            replay_ ? " · REPLAY" : (args_.read_only_ ? " · READ-ONLY" : ""));
+                tui::box_props props;
+                props.dir = tui::style::direction::row;
+                props.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                props.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                auto row = tui::element::hbox({tui::element::rich_text(move(spans)), tui::element::spacer(1),
+                                               tui::element::text(move(right), right_style)},
+                                              props);
+                tui::box_props outer;
+                outer.dir = tui::style::direction::column;
+                outer.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                outer.height = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                return tui::element::vbox({tui::element::spacer(1), move(row)}, outer);
+            }
+
+            string context_line() const {
+                if (editing_filter_) {
+                    return format(" Filter: {}█", filter_);
+                }
+                if (!status_.empty()) {
+                    return " " + status_;
+                }
+                if (!filter_.empty()) {
+                    const auto parsed = query::parse(filter_);
+                    return parsed.error().has_value() ? format(" Invalid filter: {}", *parsed.error())
+                                                      : format(" Filter: {}", filter_);
+                }
+                return format(" {}", summary(snap_, cfg_));
+            }
+
+            tui::style make_context_style() const {
+                tui::style value;
+                value.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                value.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                struct tui::style::margin pad;
+                pad.top = 2;
+                value.margin = pad;
+                value.fg = colors_.muted_;
+                return value;
+            }
+
+            tui::element make_context_element() const {
+                if (terminal_width_ < 60 || terminal_height_ < 18) {
+                    return tui::element::empty();
+                }
+                return tui::element::text(context_line(), make_context_style());
+            }
 
             static tui::style make_canvas_style() {
                 tui::style style;
@@ -1366,22 +1606,35 @@ namespace neforce::neflux::ui {
                         neforce::max(static_cast<int64_t>(0), neforce::min(static_cast<int64_t>(count) - 1, next)));
             }
 
-            void draw(painter& brush) {
-                hits_.clear();
-                const int width = brush.width();
-                const int height = brush.height();
+            void draw_background(tui::canvas_painter& canvas) {
+                const int width = canvas.width();
+                const int height = canvas.height();
+                painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
+                              cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
+                              cfg_.display_.graph_gradient_);
                 brush.clear(rect{0, 0, width, height}, colors_.bg_);
                 if (width < 60 || height < 18) {
                     brush.text_center(0, height / 2 - 1, width, "nexus-flux", colors_.mint_);
                     brush.text_center(0, height / 2, width, "Resize to at least 60 × 18", colors_.text_);
                     brush.text_center(0, height / 2 + 1, width, "Recommended: 140 × 44", colors_.muted_);
-                    return;
                 }
-                draw_header(brush, rect{0, 0, width, 1});
-                draw_tabs(brush, rect{0, 1, width, 1});
-                draw_context(brush, rect{0, 2, width, 1});
+            }
+
+            tui::element build_content() {
+                hits_.clear();
+                const int width = terminal_width_;
+                const int height = terminal_height_;
+                if (width < 60 || height < 18) {
+                    return tui::element::empty();
+                }
+                record_tab_hits();
                 footer_ = rect{0, height - 1, width, 1};
                 body_ = rect{0, 3, width, height - 4};
+                content_grid_.reset(rect{0, 0, width, height});
+                painter brush(content_grid_, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
+                              cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
+                              cfg_.display_.graph_gradient_);
+                brush.clear(rect{0, 0, width, height}, colors_.bg_);
                 switch (current_) {
                     case view::overview:
                         draw_overview(brush, body_);
@@ -1417,94 +1670,340 @@ namespace neforce::neflux::ui {
                         draw_explorer_page(brush, body_);
                         break;
                 }
-                draw_footer(brush, footer_);
-                draw_popup(brush);
+                content_panes_ = brush.panes();
+                return make_content_element();
             }
 
-            void draw_header(painter& brush, const rect& area) {
-                brush.text(1, area.y_, "nexus-flux", colors_.mint_, colors_.bg_, true);
-                brush.text(12, area.y_, format("· {}", snap_.hostname_).view(), colors_.text_, colors_.bg_);
-                if (snap_.os_.empty()) {
-                    brush.text(22, area.y_, "· discovering", colors_.muted_, colors_.bg_);
-                }
-                string right = format("[{}] · [-]{:.2f}s[+] · up {}", time_label(cfg_.time_window_seconds_),
-                                      static_cast<double>(cfg_.interval_ms_) / 1000.0, duration(snap_.uptime_));
-                if (replay_) {
-                    right = format("REPLAY {}/{} · {}", sampler_->replay_index() + 1, sampler_->replay_size(), right);
-                }
-                brush.text_right(area.x_, area.y_, area.w_ - 1, right.view(), colors_.muted_);
-            }
-
-            void draw_tabs(painter& brush, const rect& area) {
-                tabs_ = area;
-                int x = 0;
-                const size_t active = view_index(current_);
-                size_t drawn = 0;
-                for (size_t index = 0; index < sizeof(views) / sizeof(views[0]); ++index) {
-                    string label = format("[{}] {}", views[index].key, views[index].name);
-                    int width = display_width(label.view()) + 2;
-                    if (x + width > area.w_ && index >= 8) {
-                        label = format("[{}]", views[index].key);
-                        width = display_width(label.view()) + 2;
+            NEFORCE_NODISCARD vector<tui::text_span> make_row_spans(const cell_grid& grid, const int row,
+                                                                    const int begin, const int end) const {
+                vector<tui::text_span> spans;
+                string run;
+                grid_cell run_cell{};
+                const auto push_run = [&spans, &run, &run_cell]() {
+                    if (run.empty()) {
+                        return;
                     }
-                    if (x + width > area.w_ - 8) {
-                        break;
-                    }
-                    const bool selected = index == active;
-                    brush.fill(rect{x, area.y_, width, 1}, " ", selected ? colors_.bg_ : colors_.text_,
-                               selected ? colors_.selection_ : colors_.bg_);
-                    brush.text(x + 1, area.y_, label.view(), selected ? colors_.mint_ : colors_.muted_,
-                               selected ? colors_.selection_ : colors_.bg_, selected);
-                    hits_.push_back({{x, area.y_, width, 1}, hit_action::tab, index});
-                    x += width;
-                    ++drawn;
-                }
-                if (x + 4 <= area.w_) {
-                    brush.text(x, area.y_, "[+]", colors_.muted_, colors_.bg_, true);
-                    hits_.push_back({{x, area.y_, 4, 1}, hit_action::view_overflow, 0});
-                }
-            }
-
-            void draw_context(painter& brush, const rect& area) {
-                if (editing_filter_) {
-                    const string prompt = format(" Filter: {}█", filter_);
-                    brush.text(1, area.y_, prompt.view(), colors_.mint_);
-                    return;
-                }
-                string text;
-                if (!status_.empty()) {
-                    text = " " + status_;
-                } else if (!filter_.empty()) {
-                    const auto parsed = query::parse(filter_);
-                    text = parsed.error().has_value() ? format(" Invalid filter: {}", *parsed.error())
-                                                      : format(" Filter: {}", filter_);
-                } else {
-                    text = format(" {}", summary(snap_, cfg_));
-                }
-                brush.text(0, area.y_, text.view(), colors_.muted_);
-            }
-
-            void draw_footer(painter& brush, const rect& area) {
-                struct action {
-                    string_view key;
-                    string_view label;
+                    tui::text_span span;
+                    span.content = move(run);
+                    span.style = make_cell_style(run_cell);
+                    spans.push_back(move(span));
+                    run = string{};
                 };
-                static constexpr action actions[] = {{"Esc", "Menu"},   {"F3", "Filter"}, {"F4", "Sort"},
-                                                     {"F5", "View"},    {"F1", "Help"},   {"F2", "Settings"},
-                                                     {":", "Commands"}, {"q", "Quit"}};
-                int x = 1;
-                for (const auto& item: actions) {
-                    const int width = static_cast<int>(item.key.size() + item.label.size() + 3);
-                    if (x + width >= area.w_) {
-                        break;
+                for (int column = begin; column <= end; ++column) {
+                    const auto& cell = grid.at(column, row);
+                    if (cell.continuation) {
+                        continue;
                     }
-                    brush.text(x, area.y_, item.key, colors_.blue_, colors_.bg_, true);
-                    brush.text(x + static_cast<int>(item.key.size()) + 1, area.y_, item.label, colors_.muted_,
-                               colors_.bg_);
-                    x += width;
+                    if (run.empty() || !same_cell_style(run_cell, cell)) {
+                        push_run();
+                        run_cell = cell;
+                    }
+                    append_codepoint(run, cell.value);
                 }
-                const string right = format("{} × {} · {}", area.w_, area.y_ + 1, view_name(current_));
-                brush.text_right(area.x_, area.y_, area.w_ - 1, right.view(), colors_.border_);
+                push_run();
+                return spans;
+            }
+
+            static bool same_cell_style(const grid_cell& left, const grid_cell& right) noexcept {
+                return left.bold == right.bold && same_color(left.fg, right.fg) && same_color(left.bg, right.bg);
+            }
+
+            static bool same_color(const color& left, const color& right) noexcept {
+                return left.A() == right.A() && left.R() == right.R() && left.G() == right.G() && left.B() == right.B();
+            }
+
+            static tui::style make_cell_style(const grid_cell& cell) {
+                tui::style style;
+                style.fg = cell.fg;
+                if (cell.bg.A() != 0) {
+                    style.bg = cell.bg;
+                }
+                if (cell.bold) {
+                    style.bold = true;
+                }
+                return style;
+            }
+
+            static void append_codepoint(string& target, const codepoint& value) {
+                const char32_t raw = static_cast<char32_t>(value.value());
+                codepoint::encode_utf32(&raw, 1, target);
+            }
+
+            tui::element make_island_element(plot_island island, const rect& grid_area) const {
+                const rect local{island.area.x_ - grid_area.x_, island.area.y_ - grid_area.y_, island.area.w_,
+                                 island.area.h_};
+                function<void(painter&, const rect&)> paint = move(island.paint);
+                return tui::element::canvas(
+                        [this, local, paint](tui::canvas_painter& canvas) {
+                            painter brush(canvas, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
+                                          cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
+                                          cfg_.display_.graph_gradient_);
+                            paint(brush, local);
+                        },
+                        make_canvas_style());
+            }
+
+            bool pane_matches_grid(const painter::pane& pane) const {
+                const rect& area = pane.area_;
+                if (area.w_ < 2 || area.h_ < 2) {
+                    return false;
+                }
+                const int width = content_grid_.width();
+                const int height = content_grid_.height();
+                const bool ascii = pane.ascii_;
+                const bool rounded = pane.rounded_;
+                const char32_t tl = ascii ? U'+' : (rounded ? U'╭' : U'┌');
+                const char32_t tr = ascii ? U'+' : (rounded ? U'╮' : U'┐');
+                const char32_t bl = ascii ? U'+' : (rounded ? U'╰' : U'└');
+                const char32_t br = ascii ? U'+' : (rounded ? U'╯' : U'┘');
+                const char32_t hz = ascii ? U'-' : U'─';
+                const char32_t vt = ascii ? U'|' : U'│';
+                const auto matches = [&](int x, int y, char32_t cp, color fg, bool bold, bool check_fg) {
+                    if (x < 0 || y < 0 || x >= width || y >= height) {
+                        return true;
+                    }
+                    const auto& cell = content_grid_.at(x, y);
+                    if (cell.value.value() != cp || cell.bold != bold) {
+                        return false;
+                    }
+                    if (check_fg && !same_color(cell.fg, fg)) {
+                        return false;
+                    }
+                    return true;
+                };
+                for (int x = area.x_; x < area.right(); ++x) {
+                    const char32_t top = x == area.x_ ? tl : (x == area.right() - 1 ? tr : hz);
+                    const char32_t bottom = x == area.x_ ? bl : (x == area.right() - 1 ? br : hz);
+                    if (!matches(x, area.y_, top, colors_.border_, false, true) ||
+                        !matches(x, area.bottom() - 1, bottom, colors_.border_, false, true)) {
+                        return false;
+                    }
+                }
+                for (int y = area.y_ + 1; y < area.bottom() - 1; ++y) {
+                    if (!matches(area.x_, y, vt, colors_.border_, false, true) ||
+                        !matches(area.right() - 1, y, vt, colors_.border_, false, true)) {
+                        return false;
+                    }
+                }
+                if (!pane.title_.empty()) {
+                    size_t index = 0;
+                    int x = area.x_ + 3;
+                    while (index < pane.title_.size()) {
+                        const codepoint cp = codepoint::decode_utf8(reinterpret_cast<const byte_t*>(pane.title_.data()),
+                                                                    index, pane.title_.size());
+                        if (!matches(x, area.y_, cp.value(), pane.accent_, true, true)) {
+                            return false;
+                        }
+                        x += cp.display_width();
+                    }
+                    const int title_width = x - (area.x_ + 3);
+                    const auto& left_pad = content_grid_.at(area.x_ + 2, area.y_);
+                    if (left_pad.value.value() != U' ' || !same_color(left_pad.bg, pane.background_)) {
+                        return false;
+                    }
+                    const auto& right_pad = content_grid_.at(area.x_ + 2 + title_width + 1, area.y_);
+                    if (right_pad.value.value() != U' ' || !same_color(right_pad.bg, pane.background_)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            tui::element make_pane_element(const painter::pane& pane) const {
+                using size_hint = tui::style::size_hint;
+                const int first_col = pane.area_.x_ + 1;
+                const int last_col = pane.area_.right() - 2;
+                const int first_row = pane.area_.y_ + 1;
+                const int last_row = pane.area_.bottom() - 2;
+                vector<tui::element> rows;
+                if (last_col >= first_col && last_row >= first_row) {
+                    rows.reserve(static_cast<size_t>(last_row - first_row + 1));
+                    for (int row = first_row; row <= last_row; ++row) {
+                        tui::style row_style;
+                        row_style.width = size_hint{size_hint::fill, 1};
+                        row_style.height = size_hint{size_hint::fixed, 1};
+                        rows.push_back(tui::element::rich_text(make_row_spans(content_grid_, row, first_col, last_col),
+                                                               row_style, tui::style::wrap_mode::none));
+                    }
+                }
+                tui::box_props rows_props;
+                rows_props.dir = tui::style::direction::column;
+                rows_props.width = size_hint{size_hint::fill, 1};
+                rows_props.height = size_hint{size_hint::fill, 1};
+
+                tui::style style;
+                if (pane.ascii_) {
+                    style.border = tui::style::border::ascii;
+                } else if (pane.rounded_) {
+                    style.border = tui::style::border::rounded;
+                } else {
+                    style.border = tui::style::border::single;
+                }
+                style.borderColor = colors_.border_;
+                style.bg = pane.background_;
+                style.fg = pane.accent_;
+                struct tui::style::margin margin;
+                margin.top = pane.area_.y_;
+                margin.left = pane.area_.x_;
+                margin.right = content_grid_.width() - pane.area_.x_ - pane.area_.w_;
+                margin.bottom = content_grid_.height() - pane.area_.y_ - pane.area_.h_;
+                style.margin = margin;
+                return tui::element::panel(tui::element::vbox(move(rows), rows_props), pane.title_, style);
+            }
+
+            tui::element make_base_row(const int row, const int begin, const int end) const {
+                tui::style row_style;
+                row_style.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                row_style.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                struct tui::style::margin margin;
+                margin.top = row;
+                margin.bottom = content_grid_.height() - row - 1;
+                margin.left = begin;
+                margin.right = content_grid_.width() - end - 1;
+                row_style.margin = margin;
+                return tui::element::rich_text(make_row_spans(content_grid_, row, begin, end), row_style,
+                                               tui::style::wrap_mode::none);
+            }
+
+            tui::element make_content_element() const {
+                using size_hint = tui::style::size_hint;
+                vector<const painter::pane*> panes;
+                panes.reserve(content_panes_.size());
+                for (const auto& pane: content_panes_) {
+                    panes.push_back(&pane);
+                }
+
+                const int width = content_grid_.width();
+                const int height = content_grid_.height();
+                vector<tui::element> layers;
+                vector<tui::element> base_rows;
+                vector<bool> covered;
+                for (int row = 0; row < height; ++row) {
+                    covered.assign(static_cast<size_t>(width), false);
+                    for (const auto* pane: panes) {
+                        if (row < pane->area_.y_ || row >= pane->area_.bottom()) {
+                            continue;
+                        }
+                        for (int x = pane->area_.x_; x < pane->area_.right() && x < width; ++x) {
+                            if (x >= 0) {
+                                covered[static_cast<size_t>(x)] = true;
+                            }
+                        }
+                    }
+                    int column = 0;
+                    while (column < width) {
+                        if (covered[static_cast<size_t>(column)]) {
+                            ++column;
+                            continue;
+                        }
+                        const int begin = column;
+                        while (column < width && !covered[static_cast<size_t>(column)]) {
+                            ++column;
+                        }
+                        base_rows.push_back(make_base_row(row, begin, column - 1));
+                    }
+                }
+                if (!base_rows.empty()) {
+                    tui::style base_style;
+                    base_style.width = size_hint{size_hint::fill, 1};
+                    base_style.height = size_hint{size_hint::fill, 1};
+                    layers.push_back(tui::element::zstack(move(base_rows)).with_style(base_style));
+                }
+                for (const auto* pane: panes) {
+                    layers.push_back(make_pane_element(*pane));
+                }
+                for (const auto* pane: panes) {
+                    if (pane_matches_grid(*pane)) {
+                        continue;
+                    }
+                    const int left = pane->area_.x_;
+                    const int right = pane->area_.right() - 1;
+                    const int top = pane->area_.y_;
+                    const int bottom = pane->area_.bottom() - 1;
+                    layers.push_back(make_base_row(top, left, right));
+                    if (bottom != top) {
+                        layers.push_back(make_base_row(bottom, left, right));
+                    }
+                    for (int row = top + 1; row < bottom; ++row) {
+                        layers.push_back(make_base_row(row, left, left));
+                        if (right != left) {
+                            layers.push_back(make_base_row(row, right, right));
+                        }
+                    }
+                }
+                for (const auto& island: content_grid_.islands()) {
+                    layers.push_back(make_island_element(island, content_grid_.area()));
+                }
+                tui::style style;
+                style.width = size_hint{size_hint::fill, 1};
+                style.height = size_hint{size_hint::fill, 1};
+                return tui::element::zstack(move(layers)).with_style(style);
+            }
+
+            tui::element make_overlay_row(const int row) const {
+                const int width = popup_grid_.width();
+                int first = -1;
+                int last = -1;
+                for (int column = 0; column < width; ++column) {
+                    const auto& cell = popup_grid_.at(column, row);
+                    if (!cell.painted || cell.continuation) {
+                        continue;
+                    }
+                    if (first < 0) {
+                        first = column;
+                    }
+                    last = column;
+                }
+                tui::style row_style;
+                row_style.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                row_style.height = tui::style::size_hint{tui::style::size_hint::fixed, 1};
+                if (first < 0) {
+                    return tui::element::rich_text({}, row_style, tui::style::wrap_mode::none);
+                }
+                struct tui::style::margin margin;
+                margin.left = first;
+                row_style.margin = margin;
+                return tui::element::rich_text(make_row_spans(popup_grid_, row, first, last), row_style,
+                                               tui::style::wrap_mode::none);
+            }
+
+            tui::element make_overlay_element() const {
+                vector<tui::element> rows;
+                const int height = popup_grid_.height();
+                rows.reserve(static_cast<size_t>(neforce::max(0, height)));
+                for (int row = 0; row < height; ++row) {
+                    rows.push_back(make_overlay_row(row));
+                }
+                tui::box_props rows_props;
+                rows_props.dir = tui::style::direction::column;
+                rows_props.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                rows_props.height = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                vector<tui::element> layers;
+                layers.push_back(tui::element::vbox(move(rows), rows_props));
+                for (const auto& island: popup_grid_.islands()) {
+                    layers.push_back(make_island_element(island, popup_grid_.area()));
+                }
+                tui::style style;
+                style.width = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                style.height = tui::style::size_hint{tui::style::size_hint::fill, 1};
+                return tui::element::zstack(move(layers)).with_style(style);
+            }
+
+            tui::element build_popup() {
+                if (popup_ == popup_kind::none) {
+                    return tui::element::empty();
+                }
+                const int width = terminal_width_;
+                const int height = terminal_height_;
+                if (width <= 0 || height <= 0) {
+                    return tui::element::empty();
+                }
+                popup_grid_.reset(rect{0, 0, width, height});
+                painter brush(popup_grid_, colors_, cfg_.ascii_, cfg_.display_.transparent_background_,
+                              cfg_.display_.graph_symbol_, cfg_.display_.rounded_corners_,
+                              cfg_.display_.graph_gradient_);
+                draw_popup(brush);
+                return make_overlay_element();
             }
 
             NEFORCE_NODISCARD vector<string> active_overview_boxes() const {
@@ -1546,8 +2045,8 @@ namespace neforce::neflux::ui {
                     return;
                 }
                 cfg_.overview_preset_ = (cfg_.overview_preset_ + 1) % cfg_.overview_presets_.size();
-                status_ = format("Overview preset {}/{}: {}", cfg_.overview_preset_ + 1,
-                                 cfg_.overview_presets_.size(), cfg_.overview_presets_[cfg_.overview_preset_]);
+                status_ = format("Overview preset {}/{}: {}", cfg_.overview_preset_ + 1, cfg_.overview_presets_.size(),
+                                 cfg_.overview_presets_[cfg_.overview_preset_]);
             }
 
             NEFORCE_NODISCARD bool layout_visible(const layout_node& node) const {
@@ -1580,7 +2079,7 @@ namespace neforce::neflux::ui {
                     } else if (node.panel_ == "network") {
                         draw_network_card(brush, area);
                     } else if (node.panel_ == "processes") {
-                        draw_process_table(brush, area, process_rows());
+                        paint_process_table(brush, layout_process_table(area, process_rows()));
                     }
                     return;
                 }
@@ -1667,16 +2166,14 @@ namespace neforce::neflux::ui {
                 const bool show_processes = overview_has_box(boxes, "processes");
                 if (boxes.empty()) {
                     brush.box(area, " OVERVIEW ", colors_.muted_);
-                    brush.text(area.x_ + 2, area.y_ + 1, "No overview boxes in the active preset.",
-                               colors_.muted_);
+                    brush.text(area.x_ + 2, area.y_ + 1, "No overview boxes in the active preset.", colors_.muted_);
                     return;
                 }
                 const size_t core_rows = (snap_.cores_.size() + 1) / 2;
-                const int process_height =
-                        show_processes && area.h_ >= 36 ? neforce::min(10, area.h_ / 4) : 0;
+                const int process_height = show_processes && area.h_ >= 36 ? neforce::min(8, area.h_ / 5) : 0;
                 const int reserved = (process_height > 0 ? process_height + 1 : 0);
-                int cpu_height = show_cpu ? neforce::max(10, neforce::min(static_cast<int>(core_rows) + 6,
-                                                                           area.h_ - reserved - 8))
+                int cpu_height = show_cpu ? neforce::max(10, neforce::min(static_cast<int>(core_rows) + 2,
+                                                                          area.h_ - reserved - 8))
                                           : 0;
                 cpu_height = neforce::min(cpu_height, area.h_ - 8);
                 int cursor_y = area.y_;
@@ -1722,9 +2219,9 @@ namespace neforce::neflux::ui {
                 if (process_height > 0) {
                     const int process_y = cards.bottom() + 1;
                     if (process_y < area.bottom()) {
-                        draw_process_table(brush, rect{area.x_, process_y, area.w_,
-                                                       area.bottom() - process_y},
-                                           process_rows());
+                        paint_process_table(brush, layout_process_table(
+                                                           rect{area.x_, process_y, area.w_, area.bottom() - process_y},
+                                                           process_rows()));
                     }
                 }
             }
@@ -1813,7 +2310,7 @@ namespace neforce::neflux::ui {
                     upper_values = found == history_.series_.end() ? nullptr : &found->second;
                 }
                 const deque<double>* lower_values = nullptr;
-                if (lower != "none") {
+                if (lower != "none" && lower != upper) {
                     if (lower == "total") {
                         lower_values = &history_.cpu_;
                     } else {
@@ -1824,10 +2321,10 @@ namespace neforce::neflux::ui {
                 graph_painter(brush, cfg_.display_.graph_symbol_cpu_)
                         .cpu_chart(chart_area, upper, upper_values, lower, lower_values, chart_window());
                 if (!wide) {
-                    const int grid_top = chart_area.bottom();
+                    const int grid_top = neforce::min(chart_area.bottom(), content_bottom - 1);
                     const int rows =
                             neforce::max(1, snap_.cores_.empty() ? 1 : (static_cast<int>(snap_.cores_.size()) + 1) / 2);
-                    const int available = content_bottom - grid_top;
+                    const int available = neforce::max(0, content_bottom - grid_top - 1);
                     const int shown = neforce::max(0, neforce::min(rows, available));
                     constexpr int columns = 2;
                     const int cell_width = neforce::max(1, inner.w_ / columns);
@@ -1865,15 +2362,15 @@ namespace neforce::neflux::ui {
                 if (gpu_footer) {
                     const auto index = neforce::min(selected_gpu_, snap_.gpus_.size() - 1);
                     const auto& gpu = snap_.gpus_[index];
-                    const string gpu_text = format(
-                            "GPU{} {}/{} · {}% · {} · {}", gpu.id_, index + 1, snap_.gpus_.size(),
-                            gpu.utilization_.has_value() ? *gpu.utilization_ : 0,
-                            gpu.memory_used_.has_value() && gpu.memory_total_.has_value()
-                                    ? format("{}/{}", bytes(static_cast<double>(*gpu.memory_used_)),
-                                             bytes(static_cast<double>(*gpu.memory_total_)))
-                                    : string("—"),
-                            gpu.temperature_.has_value() ? cfg_.display_.temperature(*gpu.temperature_, 0)
-                                                          : string("—"));
+                    const string gpu_text =
+                            format("GPU{} {}/{} · {}% · {} · {}", gpu.id_, index + 1, snap_.gpus_.size(),
+                                   gpu.utilization_.has_value() ? *gpu.utilization_ : 0,
+                                   gpu.memory_used_.has_value() && gpu.memory_total_.has_value()
+                                           ? format("{}/{}", bytes(static_cast<double>(*gpu.memory_used_)),
+                                                    bytes(static_cast<double>(*gpu.memory_total_)))
+                                           : string("—"),
+                                   gpu.temperature_.has_value() ? cfg_.display_.temperature(*gpu.temperature_, 0)
+                                                                : string("—"));
                     brush.text(inner.x_, content_bottom, truncate_display(gpu_text.view(), inner.w_).view(),
                                colors_.blue_);
                 }
@@ -1902,7 +2399,7 @@ namespace neforce::neflux::ui {
                         {"Cached", memory.cached_, "RAM cached (%)", colors_.amber_},
                         {"Free", memory.free_, "RAM free (%)", colors_.blue_},
                 };
-                const int body_height = inner.h_ - 2;
+                const int body_height = inner.h_ - 1;
                 const bool swap = cfg_.display_.show_swap_ && memory.swap_total_ > 0;
                 const int entries = swap ? 5 : 4;
                 const int per_row = cfg_.display_.memory_graphs_ && body_height > entries
@@ -1981,31 +2478,57 @@ namespace neforce::neflux::ui {
                 if (cfg_.display_.multi_gpu_overview_ && snap_.gpus_.size() > 1) {
                     brush.box(area, format(" GPU · {} devices ", snap_.gpus_.size()).view(), colors_.blue_);
                     const rect inner = area.inset(1);
-                    const bool paged = snap_.gpus_.size() > static_cast<size_t>(inner.h_);
-                    const size_t visible = static_cast<size_t>(neforce::max(1, inner.h_ - (paged ? 1 : 0)));
+                    const size_t rows_per_gpu = inner.h_ >= 10 ? 2 : 1;
+                    const size_t visible = static_cast<size_t>(neforce::max<int>(1, (inner.h_ - 1) / rows_per_gpu));
+                    const bool paged = snap_.gpus_.size() > visible;
                     const size_t page_start = (neforce::min(selected_gpu_, snap_.gpus_.size() - 1) / visible) * visible;
                     const size_t page_end = neforce::min(snap_.gpus_.size(), page_start + visible);
                     int y = inner.y_;
-                    for (size_t index = page_start; index < page_end; ++index, ++y) {
+                    for (size_t index = page_start; index < page_end && y < inner.bottom(); ++index) {
                         const auto& item = snap_.gpus_[index];
                         const bool active = index == neforce::min(selected_gpu_, snap_.gpus_.size() - 1);
                         const color tint = device_tint(index);
                         if (active) {
                             brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", colors_.text_, colors_.selection_);
                         }
-                        const string name = format("GPU{} {}", item.id_,
-                                                   item.name_.empty() ? item.vendor_ : item.name_);
+                        const string name =
+                                format("GPU{} {}", item.id_, item.name_.empty() ? item.vendor_ : item.name_);
                         brush.text(inner.x_, y, truncate_display(name.view(), inner.w_ - 11).view(),
                                    active ? tint : colors_.text_);
-                        const string usage =
-                                format("{:>3}%", item.utilization_.has_value() ? *item.utilization_ : 0);
+                        const string usage = format("{:>3}%", item.utilization_.has_value() ? *item.utilization_ : 0);
                         brush.text_right(inner.x_, y, inner.w_, usage.view(), active ? colors_.text_ : tint);
                         hits_.push_back({{inner.x_, y, inner.w_, 1}, hit_action::gpu_device, index});
+                        ++y;
+                        if (rows_per_gpu > 1 && y < inner.bottom()) {
+                            const string memory = format(
+                                    "{} / {}", bytes(static_cast<double>(item.memory_used_.value_or(0))),
+                                    item.memory_total_.has_value() ? bytes(static_cast<double>(*item.memory_total_))
+                                                                   : string("—"));
+                            const string detail =
+                                    format("{}{}", memory,
+                                           item.temperature_.has_value()
+                                                   ? format(" · {}", cfg_.display_.temperature(*item.temperature_, 0))
+                                                   : string());
+                            brush.text(inner.x_ + 2, y, truncate_display(detail.view(), inner.w_ - 2).view(),
+                                       colors_.muted_);
+                            ++y;
+                        }
+                    }
+                    const size_t chart_index = neforce::min(selected_gpu_, snap_.gpus_.size() - 1);
+                    if (y + 2 < inner.bottom()) {
+                        const auto& device = snap_.gpus_[chart_index];
+                        const auto found = history_.gpu_details_.find(device.uuid_);
+                        if (found != history_.gpu_details_.end()) {
+                            graph_painter(brush, cfg_.display_.graph_symbol_gpu_)
+                                    .trend(rect{inner.x_, y, inner.w_, inner.bottom() - y},
+                                           {chart_series{"GPU", &found->second.utilization_, colors_.blue_},
+                                            chart_series{"VRAM", &found->second.vram_, colors_.purple_}},
+                                           100.0, chart_window(), "%", false);
+                        }
                     }
                     if (paged) {
                         brush.text_right(area.x_, area.bottom() - 1, area.w_,
-                                         format("[ {}/{} ]", neforce::min(selected_gpu_, snap_.gpus_.size() - 1) +
-                                                                   1,
+                                         format("[ {}/{} ]", neforce::min(selected_gpu_, snap_.gpus_.size() - 1) + 1,
                                                 snap_.gpus_.size())
                                                  .view(),
                                          colors_.muted_);
@@ -2145,21 +2668,35 @@ namespace neforce::neflux::ui {
                         series.push_back({string("Read"), &history_.disk_read_, colors_.mint_});
                         series.push_back({string("Write"), &history_.disk_write_, colors_.blue_});
                     }
-                    graph_painter(brush, cfg_.display_.graph_symbol_proc_)
-                            .trend(
-                                    rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1}, series,
-                                    [&] {
-                                        double maximum = 1.0;
-                                        for (const auto& item: series) {
-                                            for (const double value: *item.values_) {
-                                                if (neforce::is_finite(value)) {
-                                                    maximum = neforce::max(maximum, value);
+                    bool has_signal = false;
+                    for (const auto& item: series) {
+                        for (const double value: *item.values_) {
+                            if (neforce::is_finite(value) && value > 0.0) {
+                                has_signal = true;
+                                break;
+                            }
+                        }
+                        if (has_signal) {
+                            break;
+                        }
+                    }
+                    if (has_signal) {
+                        graph_painter(brush, cfg_.display_.graph_symbol_proc_)
+                                .trend(
+                                        rect{inner.x_, y + 1, inner.w_, inner.bottom() - y - 1}, series,
+                                        [&] {
+                                            double maximum = 1.0;
+                                            for (const auto& item: series) {
+                                                for (const double value: *item.values_) {
+                                                    if (neforce::is_finite(value)) {
+                                                        maximum = neforce::max(maximum, value);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        return nice_max(maximum);
-                                    }(),
-                                    storage_chart_window(), "B/s", false);
+                                            return tui::canvas_chart_nice_max(maximum);
+                                        }(),
+                                        storage_chart_window(), "B/s", false);
+                    }
                 }
             }
 
@@ -2232,24 +2769,24 @@ namespace neforce::neflux::ui {
                         graph_painter(brush, cfg_.display_.graph_symbol_net_)
                                 .trend(rect{inner.x_, chart_top, inner.w_, half},
                                        {chart_series{"RX", &net->rx_, colors_.mint_}},
-                                       nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
-                                       cfg_.display_.network_logarithmic_);
+                                       tui::canvas_chart_nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s",
+                                       false, cfg_.display_.network_logarithmic_);
                         graph_painter(brush, cfg_.display_.graph_symbol_net_)
                                 .trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
                                        {chart_series{"TX", &net->tx_, colors_.blue_}},
-                                       nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
-                                       cfg_.display_.network_logarithmic_);
+                                       tui::canvas_chart_nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s",
+                                       false, cfg_.display_.network_logarithmic_);
                     } else {
                         graph_painter(brush, cfg_.display_.graph_symbol_net_)
                                 .trend(rect{inner.x_, chart_top, inner.w_, half},
                                        {chart_series{"TX", &net->tx_, colors_.blue_}},
-                                       nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s", false,
-                                       cfg_.display_.network_logarithmic_);
+                                       tui::canvas_chart_nice_max(neforce::max(1.0, tx_peak)), chart_window(), "B/s",
+                                       false, cfg_.display_.network_logarithmic_);
                         graph_painter(brush, cfg_.display_.graph_symbol_net_)
                                 .trend(rect{inner.x_, chart_top + half, inner.w_, inner.bottom() - chart_top - half},
                                        {chart_series{"RX", &net->rx_, colors_.mint_}},
-                                       nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s", false,
-                                       cfg_.display_.network_logarithmic_);
+                                       tui::canvas_chart_nice_max(neforce::max(1.0, rx_peak)), chart_window(), "B/s",
+                                       false, cfg_.display_.network_logarithmic_);
                     }
                 }
             }
@@ -2313,6 +2850,41 @@ namespace neforce::neflux::ui {
                 }
             }
 
+            struct process_cell_view {
+                int x_ = 0;
+                int width_ = 0;
+                string text_;
+                color fg_{};
+                bool right_ = false;
+            };
+
+            struct process_table_row_view {
+                size_t index_ = 0;
+                size_t process_index_ = 0;
+                int y_ = 0;
+                color fg_{};
+                color bg_{};
+                bool active_ = false;
+                bool followed_ = false;
+                int indent_ = 0;
+                int toggle_width_ = 0;
+                vector<process_cell_view> cells_;
+            };
+
+            struct process_table_view {
+                rect area_{};
+                rect inner_{};
+                rect scrollbar_{};
+                string title_;
+                int header_y_ = 0;
+                int visible_ = 0;
+                size_t offset_ = 0;
+                size_t total_ = 0;
+                bool tree_ = false;
+                vector<process_cell_view> header_cells_;
+                vector<process_table_row_view> rows_;
+            };
+
             void draw_processes(painter& brush, const rect& area) {
                 const auto rows = process_rows();
                 const rect summary{area.x_, area.y_, area.w_, neforce::min(3, area.h_)};
@@ -2339,10 +2911,12 @@ namespace neforce::neflux::ui {
                 }
                 if (process_side_panel_ && area.w_ >= 80 && selected_process_.has_value()) {
                     const int left = neforce::max(40, area.w_ * 68 / 100);
-                    draw_process_table(brush, rect{table.x_, table.y_, left - 1, table.h_}, rows);
+                    const auto view = layout_process_table(rect{table.x_, table.y_, left - 1, table.h_}, rows);
+                    paint_process_table(brush, view);
                     draw_process_side_panel(brush, rect{table.x_ + left, table.y_, table.w_ - left, table.h_});
                 } else {
-                    draw_process_table(brush, table, rows);
+                    const auto view = layout_process_table(table, rows);
+                    paint_process_table(brush, view);
                 }
             }
 
@@ -2353,7 +2927,7 @@ namespace neforce::neflux::ui {
                 bool right_;
             };
 
-            static const column_def& column_definition(string_view key) {
+            static const vector<column_def>& column_catalog() {
                 static const column_def catalog[] = {
                         {"pid", "PID", 7, true},
                         {"ppid", "PPID", 7, true},
@@ -2406,8 +2980,54 @@ namespace neforce::neflux::ui {
                         {"stime", "STIME", 9, true},
                         {"context_switches", "CTX", 9, true},
                         {"io_priority", "IO PRIO", 14, false},
+                        {"tgid", "TGID", 7, true},
+                        {"sid", "SID", 7, true},
+                        {"pgrp", "PGRP", 7, true},
+                        {"tty", "TTY", 10, false},
+                        {"tpgid", "TPGID", 7, true},
+                        {"oom_score", "OOM", 6, true},
+                        {"oom_adj", "OOM ADJ", 8, true},
+                        {"policy", "POLICY", 10, false},
+                        {"cpus_allowed", "CPUS", 14, false},
+                        {"last_cpu", "CPU#", 5, true},
+                        {"start_time", "START", 12, true},
+                        {"syscall", "SYSCALL", 8, true},
+                        {"io_rchar", "RCHAR/s", 10, true},
+                        {"io_wchar", "WCHAR/s", 10, true},
+                        {"io_read_bytes", "READ B", 10, true},
+                        {"io_write_bytes", "WRITE B", 10, true},
+                        {"io_syscr", "SYSR", 8, true},
+                        {"io_syscw", "SYSCW", 8, true},
+                        {"io_cancelled", "CANCEL", 8, true},
+                        {"delay_cpu", "CPU DLY", 9, true},
+                        {"delay_io", "IO DLY", 9, true},
+                        {"delay_swap", "SWAP DLY", 9, true},
+                        {"vm_hwm", "VMHWM", 9, true},
+                        {"vm_rss", "VMRSS", 9, true},
+                        {"vm_data", "VMDATA", 9, true},
+                        {"vm_stk", "VMSTK", 7, true},
+                        {"vm_exe", "VMEXE", 8, true},
+                        {"vm_lib", "VMLIB", 8, true},
+                        {"vm_swap", "VMSWAP", 9, true},
+                        {"rss_anon", "RSS ANON", 9, true},
+                        {"rss_file", "RSS FILE", 9, true},
+                        {"rss_shmem", "RSS SHM", 9, true},
+                        {"pss_anon", "PSS ANON", 9, true},
+                        {"pss_file", "PSS FILE", 9, true},
+                        {"pss_shmem", "PSS SHM", 9, true},
+                        {"uss_clean", "USS CLN", 9, true},
+                        {"uss_dirty", "USS DRY", 9, true},
+                        {"swap_pss", "SWAP PSS", 9, true},
+                        {"locked", "LOCKED", 9, true},
                 };
-                for (const auto& item: catalog) {
+                static_assert(sizeof(catalog) / sizeof(catalog[0]) == 90,
+                              "NexusFlux exposes exactly 90 process columns");
+                static const vector<column_def> value(catalog, catalog + sizeof(catalog) / sizeof(catalog[0]));
+                return value;
+            }
+
+            static const column_def& column_definition(string_view key) {
+                for (const auto& item: column_catalog()) {
                     if (item.key_ == key) {
                         return item;
                     }
@@ -2417,17 +3037,21 @@ namespace neforce::neflux::ui {
             }
 
             NEFORCE_NODISCARD vector<column_def> active_columns() const {
-                vector<column_def> out;
+                vector<column_def> all;
                 if (cfg_.columns_.empty()) {
                     for (const char* key: {"pid", "user", "cpu", "memory", "vram", "gpu", "state", "command"}) {
-                        out.push_back(column_definition(key));
+                        all.push_back(column_definition(key));
                     }
-                    return out;
+                } else {
+                    for (const auto& key: cfg_.columns_) {
+                        all.push_back(column_definition(key.view()));
+                    }
                 }
-                for (const auto& key: cfg_.columns_) {
-                    out.push_back(column_definition(key.view()));
+                if (all.empty()) {
+                    return all;
                 }
-                return out;
+                const size_t offset = neforce::min(column_offset_, all.size() - 1);
+                return vector<column_def>(all.begin() + static_cast<ptrdiff_t>(offset), all.end());
             }
 
             NEFORCE_NODISCARD static optional<string> extra_text(const process& item, const char* section,
@@ -2452,8 +3076,8 @@ namespace neforce::neflux::ui {
                 const color& finish = cpu < 50.0 ? colors_.proc_mid_ : colors_.proc_end_;
                 const double fraction = cpu < 50.0 ? cpu / 50.0 : (cpu - 50.0) / 50.0;
                 const auto blend_channel = [fraction](int from, int to) {
-                    return static_cast<int>(neforce::round(static_cast<double>(from) +
-                                                           (static_cast<double>(to) - from) * fraction));
+                    return static_cast<int>(
+                            neforce::round(static_cast<double>(from) + (static_cast<double>(to) - from) * fraction));
                 };
                 const color accent{blend_channel(start.R(), finish.R()), blend_channel(start.G(), finish.G()),
                                    blend_channel(start.B(), finish.B())};
@@ -2628,14 +3252,109 @@ namespace neforce::neflux::ui {
                     const auto value = extra_text(item, "status", "voluntary_ctxt_switches");
                     return {value.has_value() ? *value : string("—"), colors_.muted_};
                 }
+                if (key == "sid" || key == "pgrp" || key == "tty" || key == "tpgid" || key == "last_cpu" ||
+                    key == "policy") {
+                    const char* field = key == "sid"        ? "session"
+                                        : key == "last_cpu" ? "processor"
+                                        : key == "policy"   ? "policy"
+                                                            : key.view().data();
+                    const auto value = extra_text(item, "stat", field);
+                    return {value.has_value() ? *value : string("—"), colors_.muted_};
+                }
+                if (key == "tgid" || key == "cpus_allowed") {
+                    const char* field = key == "tgid" ? "Tgid" : "Cpus_allowed_list";
+                    const auto value = extra_text(item, "status", field);
+                    return {value.has_value() ? *value : string("—"), colors_.muted_};
+                }
+                if (key == "oom_score" || key == "oom_adj") {
+                    const json* value = item.extra_.get("oom");
+                    return {value != nullptr ? value->dump() : string("—"), colors_.muted_};
+                }
+                if (key == "start_time") {
+                    return {item.start_time_ == 0 ? string("—") : format("{}", item.start_time_), colors_.muted_};
+                }
+                if (key == "syscall") {
+                    const json* value = item.extra_.get("syscall");
+                    return {value != nullptr ? value->dump() : string("—"), colors_.muted_};
+                }
+                if (starts_with(key.view(), "io_")) {
+                    const char* field = key == "io_rchar"         ? "rchar"
+                                        : key == "io_wchar"       ? "wchar"
+                                        : key == "io_read_bytes"  ? "read_bytes"
+                                        : key == "io_write_bytes" ? "write_bytes"
+                                        : key == "io_syscr"       ? "syscr"
+                                        : key == "io_syscw"       ? "syscw"
+                                                                  : "cancelled_write_bytes";
+                    const auto value = extra_text(item, "io", field);
+                    if (!value.has_value()) {
+                        return {"—", colors_.muted_};
+                    }
+                    if (key == "io_read_bytes" || key == "io_write_bytes") {
+                        const auto number = parse_u64(value->view());
+                        return {number.has_value() ? bytes(static_cast<double>(*number)) : *value, colors_.amber_};
+                    }
+                    return {*value, colors_.muted_};
+                }
+                if (starts_with(key.view(), "delay_")) {
+                    const json* value = item.extra_.get(key);
+                    return {value != nullptr ? value->dump() : string("—"), colors_.muted_};
+                }
+                if (starts_with(key.view(), "vm_")) {
+                    struct vm_field {
+                        const char* key;
+                        const char* field;
+                    };
+                    static const vm_field vm_fields[] = {
+                            {"vm_hwm", "VmHWM"}, {"vm_rss", "VmRSS"}, {"vm_data", "VmData"}, {"vm_stk", "VmStk"},
+                            {"vm_exe", "VmExe"}, {"vm_lib", "VmLib"}, {"vm_swap", "VmSwap"}};
+                    const char* field = nullptr;
+                    for (const auto& item_field: vm_fields) {
+                        if (key == item_field.key) {
+                            field = item_field.field;
+                        }
+                    }
+                    if (field == nullptr) {
+                        return {"—", colors_.muted_};
+                    }
+                    const auto value = extra_text(item, "status", field);
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
+                if (key == "rss_anon" || key == "rss_file" || key == "rss_shmem") {
+                    const char* field = key == "rss_anon" ? "RssAnon" : (key == "rss_file" ? "RssFile" : "RssShmem");
+                    const auto value = extra_text(item, "status", field);
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
+                if (key == "pss_anon" || key == "pss_file" || key == "pss_shmem") {
+                    const char* field = key == "pss_anon" ? "Pss_Anon" : (key == "pss_file" ? "Pss_File" : "Pss_Shmem");
+                    const auto value = extra_text(item, "smaps_rollup", field);
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
+                if (key == "uss_clean" || key == "uss_dirty") {
+                    const char* field = key == "uss_clean" ? "Private_Clean" : "Private_Dirty";
+                    const auto value = extra_text(item, "smaps_rollup", field);
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
+                if (key == "swap_pss") {
+                    const auto value = extra_text(item, "smaps_rollup", "SwapPss");
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
+                if (key == "locked") {
+                    const auto value = extra_text(item, "status", "VmLck");
+                    return {value.has_value() ? *value : string("—"), colors_.purple_};
+                }
                 if (const json* value = item.extra_.get(key); value != nullptr) {
                     return {value->is_string() ? value->as_string() : value->dump(), colors_.muted_};
                 }
                 return {"—", colors_.muted_};
             }
 
-            void draw_process_table(painter& brush, const rect& area, const vector<process_row>& rows) {
+            NEFORCE_NODISCARD process_table_view layout_process_table(const rect& area,
+                                                                      const vector<process_row>& rows) {
                 process_table_rect_ = area;
+                process_table_view view;
+                view.area_ = area;
+                view.tree_ = tree_;
+                view.total_ = rows.size();
                 const auto columns = active_columns();
                 int fixed = 0;
                 bool has_fill = false;
@@ -2644,100 +3363,140 @@ namespace neforce::neflux::ui {
                     has_fill = has_fill || item.width_ == 0;
                 }
                 const int fill_width = has_fill ? neforce::max(8, area.w_ - fixed - 2) : 0;
-                const int header_y = area.y_ + 1;
-                const rect inner{area.x_ + 1, area.y_ + 1, area.w_ - 2, area.h_ - 2};
-                brush.box(area, format(" PROCESSES · {} columns ", columns.size()).view(), colors_.mint_);
-                int x = inner.x_;
-                brush.fill(rect{inner.x_, header_y, inner.w_, 1}, " ", colors_.muted_, colors_.panel_);
+                view.inner_ = rect{area.x_ + 1, area.y_ + 1, area.w_ - 2, area.h_ - 2};
+                view.header_y_ = area.y_ + 1;
+                view.title_ = format(" PROCESSES · {} columns ", columns.size());
+                int x = view.inner_.x_;
                 size_t column_hit = 0;
                 for (const auto& item: columns) {
                     const int width = item.width_ == 0 ? fill_width : item.width_;
-                    if (x + width > inner.right()) {
+                    if (x + width > view.inner_.right()) {
                         break;
                     }
-                    if (item.right_) {
-                        brush.text_right(x, header_y, width - 1, item.title_.view(), colors_.muted_, colors_.panel_,
-                                         true);
-                    } else {
-                        brush.text(x + 1, header_y, item.title_.view(), colors_.muted_, colors_.panel_, true);
-                    }
-                    hits_.push_back({{x, header_y, width, 1}, hit_action::process_sort, column_hit});
+                    process_cell_view header;
+                    header.x_ = x;
+                    header.width_ = width;
+                    header.text_ = item.title_;
+                    header.fg_ = colors_.muted_;
+                    header.right_ = item.right_;
+                    view.header_cells_.push_back(move(header));
+                    hits_.push_back({{x, view.header_y_, width, 1}, hit_action::process_sort, column_hit});
                     ++column_hit;
                     x += width;
                 }
-                const int visible = neforce::max(0, inner.h_ - 2);
+                view.visible_ = neforce::max(0, view.inner_.h_ - 2);
                 if (!rows.empty() && selected_ >= rows.size()) {
                     selected_ = rows.size() - 1;
                 }
                 if (!free_scroll_) {
-                    if (selected_ >= table_offset_ + static_cast<size_t>(visible)) {
-                        table_offset_ = selected_ + 1 - static_cast<size_t>(visible);
+                    if (selected_ >= table_offset_ + static_cast<size_t>(view.visible_)) {
+                        table_offset_ = selected_ + 1 - static_cast<size_t>(view.visible_);
                     }
                     table_offset_ = neforce::min(selected_, table_offset_);
                 } else {
-                    table_offset_ = rows.size() > static_cast<size_t>(visible)
-                                            ? neforce::min(table_offset_, rows.size() - static_cast<size_t>(visible))
-                                            : 0;
+                    table_offset_ =
+                            rows.size() > static_cast<size_t>(view.visible_)
+                                    ? neforce::min(table_offset_, rows.size() - static_cast<size_t>(view.visible_))
+                                    : 0;
                 }
-                for (int row = 0; row < visible; ++row) {
+                view.offset_ = table_offset_;
+                for (int row = 0; row < view.visible_; ++row) {
                     const size_t index = table_offset_ + static_cast<size_t>(row);
                     if (index >= rows.size()) {
                         break;
                     }
                     const auto& item = snap_.processes_[rows[index].index_];
-                    const int y = inner.y_ + 1 + row;
-                    const bool active = index == selected_;
+                    process_table_row_view row_view;
+                    row_view.index_ = index;
+                    row_view.process_index_ = rows[index].index_;
+                    row_view.y_ = view.inner_.y_ + 1 + row;
+                    row_view.active_ = index == selected_;
                     const bool marked = marked_processes_.count({item.pid_, item.start_time_}) != 0;
-                    const bool followed = follow_process_ && selected_process_.has_value() &&
-                                          selected_process_->first == item.pid_ &&
-                                          selected_process_->second == item.start_time_;
-                    color bg = active ? colors_.selection_ : colors_.panel_;
-                    if (followed && !active) {
-                        bg = colors_.followed_bg_;
-                    } else if (marked && !active) {
-                        bg = colors_.bg_;
+                    row_view.followed_ = follow_process_ && selected_process_.has_value() &&
+                                         selected_process_->first == item.pid_ &&
+                                         selected_process_->second == item.start_time_;
+                    row_view.bg_ = row_view.active_ ? colors_.selection_ : colors_.panel_;
+                    if (row_view.followed_ && !row_view.active_) {
+                        row_view.bg_ = colors_.followed_bg_;
+                    } else if (marked && !row_view.active_) {
+                        row_view.bg_ = colors_.bg_;
                     }
-                    brush.fill(rect{inner.x_, y, inner.w_, 1}, " ", followed ? colors_.followed_fg_ : colors_.text_, bg);
-                    hits_.push_back(
-                            {{inner.x_, y, inner.w_, 1}, hit_action::process_row, index, item.pid_, item.start_time_});
-                    const int indent = neforce::min(rows[index].depth_, 4);
-                    if (tree_ && indent > 0) {
-                        hits_.push_back({{inner.x_, y, neforce::min(inner.w_, indent * 2), 1},
-                                         hit_action::process_tree_toggle, index, item.pid_, item.start_time_});
+                    row_view.fg_ = row_view.followed_ ? colors_.followed_fg_ : colors_.text_;
+                    row_view.indent_ = neforce::min(rows[index].depth_, 4);
+                    hits_.push_back({{view.inner_.x_, row_view.y_, view.inner_.w_, 1},
+                                     hit_action::process_row,
+                                     index,
+                                     item.pid_,
+                                     item.start_time_});
+                    if (tree_ && row_view.indent_ > 0) {
+                        row_view.toggle_width_ = neforce::min(view.inner_.w_, row_view.indent_ * 2);
+                        hits_.push_back({{view.inner_.x_, row_view.y_, row_view.toggle_width_, 1},
+                                         hit_action::process_tree_toggle,
+                                         index,
+                                         item.pid_,
+                                         item.start_time_});
                     }
-                    int cx = inner.x_;
+                    int cx = view.inner_.x_;
                     for (const auto& column: columns) {
                         const int width = column.width_ == 0 ? fill_width : column.width_;
-                        if (cx + width > inner.right() || width <= 0) {
+                        if (cx + width > view.inner_.right() || width <= 0) {
                             break;
                         }
                         auto cell = column_value(item, column.key_, &rows[index]);
-                        if (cfg_.display_.process_colors_ && !active &&
+                        if (cfg_.display_.process_colors_ && !row_view.active_ &&
                             (column.key_ == "command" || column.key_ == "name" || column.key_ == "user")) {
-                            cell.second = process_tint_value(rows[index].tree_aggregate_ ? rows[index].group_cpu_
-                                                                                           : static_cast<double>(item.cpu_));
+                            const double cpu = rows[index].tree_aggregate_ ? rows[index].group_cpu_
+                                                                           : static_cast<double>(item.cpu_);
+                            cell.second = process_tint_value(cpu);
                         }
-                        if ((column.key_ == "command" || column.key_ == "name") && tree_ && indent > 0) {
+                        if ((column.key_ == "command" || column.key_ == "name") && tree_ && row_view.indent_ > 0) {
                             string prefix;
-                            for (int level = 1; level < indent; ++level) {
+                            for (int level = 1; level < row_view.indent_; ++level) {
                                 prefix.append("  ");
                             }
                             prefix.append("└ ");
                             cell.first = prefix + cell.first;
                         }
-                        const string text = truncate_display(cell.first.view(), width - 1);
-                        if (column.right_) {
-                            brush.text_right(cx, y, width - 1, text.view(), cell.second, bg);
-                        } else {
-                            brush.text(cx + 1, y, text.view(), cell.second, bg);
-                        }
+                        process_cell_view cell_view;
+                        cell_view.x_ = cx;
+                        cell_view.width_ = width;
+                        cell_view.text_ = truncate_display(cell.first.view(), width - 1);
+                        cell_view.fg_ = cell.second;
+                        cell_view.right_ = column.right_;
+                        row_view.cells_.push_back(move(cell_view));
                         cx += width;
                     }
+                    view.rows_.push_back(move(row_view));
                 }
-                const rect process_scrollbar_rect{inner.right() - 1, inner.y_ + 1, 1, neforce::max(0, inner.h_ - 2)};
-                hit_target scroll_hit{process_scrollbar_rect, hit_action::process_scrollbar, 0};
-                hits_.push_back(scroll_hit);
-                brush.scrollbar(process_scrollbar_rect, rows.size(), static_cast<size_t>(visible), table_offset_);
+                view.scrollbar_ =
+                        rect{view.inner_.right() - 1, view.inner_.y_ + 1, 1, neforce::max(0, view.inner_.h_ - 2)};
+                hits_.push_back({view.scrollbar_, hit_action::process_scrollbar, 0});
+                return view;
+            }
+
+            void paint_process_table(painter& brush, const process_table_view& view) {
+                brush.box(view.area_, view.title_.view(), colors_.mint_);
+                brush.fill(rect{view.inner_.x_, view.header_y_, view.inner_.w_, 1}, " ", colors_.muted_,
+                           colors_.panel_);
+                for (const auto& cell: view.header_cells_) {
+                    if (cell.right_) {
+                        brush.text_right(cell.x_, view.header_y_, cell.width_ - 1, cell.text_.view(), cell.fg_,
+                                         colors_.panel_, true);
+                    } else {
+                        brush.text(cell.x_ + 1, view.header_y_, cell.text_.view(), cell.fg_, colors_.panel_, true);
+                    }
+                }
+                for (const auto& row: view.rows_) {
+                    brush.fill(rect{view.inner_.x_, row.y_, view.inner_.w_, 1}, " ", row.fg_, row.bg_);
+                    for (const auto& cell: row.cells_) {
+                        if (cell.right_) {
+                            brush.text_right(cell.x_, row.y_, cell.width_ - 1, cell.text_.view(), cell.fg_, row.bg_);
+                        } else {
+                            brush.text(cell.x_ + 1, row.y_, cell.text_.view(), cell.fg_, row.bg_);
+                        }
+                    }
+                }
+                brush.scrollbar(view.scrollbar_, view.total_, static_cast<size_t>(view.visible_), view.offset_);
             }
 
             NEFORCE_NODISCARD vector<string> history_keys() const {
@@ -2803,7 +3562,7 @@ namespace neforce::neflux::ui {
                     }
                 }
                 const bool percentage = key.contains("(%)") && !key.contains("main CPU");
-                const double axis = percentage ? 100.0 : nice_max(maximum * 1.1);
+                const double axis = percentage ? 100.0 : tui::canvas_chart_nice_max(maximum * 1.1);
                 string unit;
                 const auto unit_begin = key.rfind(" (");
                 if (unit_begin != string::npos && key[key.size() - 1] == ')') {
@@ -3203,7 +3962,7 @@ namespace neforce::neflux::ui {
                             .chart(chart_area.inset(1), per_device ? "selected device" : "read / write",
                                    {chart_series{"Read", &chart_read, colors_.mint_},
                                     chart_series{"Write", &chart_write, colors_.blue_}},
-                                   nice_max(peak * 1.1), "B/s", storage_chart_window());
+                                   tui::canvas_chart_nice_max(peak * 1.1), "B/s", storage_chart_window());
                     bool has_data = false;
                     const size_t samples = neforce::min(chart_read.size(), chart_write.size());
                     for (size_t index = 0; index < samples && !has_data; ++index) {
@@ -3558,12 +4317,14 @@ namespace neforce::neflux::ui {
                     const double tx_max = fixed > 0.0 ? fixed : (sync_scale ? shared : net->tx_peak_);
                     graph_painter(brush, cfg_.display_.graph_symbol_net_)
                             .chart(rect{area.x_, area.y_, area.w_ / 2 - 1, top}, "Download",
-                                   {chart_series{"RX", &net->rx_, colors_.mint_}}, nice_max(neforce::max(1.0, rx_max)),
-                                   "B/s", chart_window(), cfg_.display_.network_logarithmic_);
+                                   {chart_series{"RX", &net->rx_, colors_.mint_}},
+                                   tui::canvas_chart_nice_max(neforce::max(1.0, rx_max)), "B/s", chart_window(),
+                                   cfg_.display_.network_logarithmic_);
                     graph_painter(brush, cfg_.display_.graph_symbol_net_)
                             .chart(rect{area.x_ + area.w_ / 2, area.y_, area.w_ / 2, top}, "Upload",
-                                   {chart_series{"TX", &net->tx_, colors_.blue_}}, nice_max(neforce::max(1.0, tx_max)),
-                                   "B/s", chart_window(), cfg_.display_.network_logarithmic_);
+                                   {chart_series{"TX", &net->tx_, colors_.blue_}},
+                                   tui::canvas_chart_nice_max(neforce::max(1.0, tx_max)), "B/s", chart_window(),
+                                   cfg_.display_.network_logarithmic_);
                 }
                 const rect interfaces{area.x_, area.y_ + top, area.w_, neforce::max(7, (area.h_ - top) / 2)};
                 network_interfaces_rect_ = interfaces;
@@ -3869,7 +4630,6 @@ namespace neforce::neflux::ui {
                         brush.text(pressure.x_ + 2, row, line.view(), hot ? colors_.red_ : colors_.muted_);
                         ++row;
                     }
-
                 }
                 const rect listeners{right.x_, pressure.bottom(), right.w_,
                                      right.h_ - sensors_height - pressure_height};
@@ -3947,6 +4707,47 @@ namespace neforce::neflux::ui {
                 return true;
             }
 
+            NEFORCE_NODISCARD const process* process_for_pid(const optional<uint32_t>& pid) const {
+                if (!pid.has_value() || *pid == 0) {
+                    return nullptr;
+                }
+                for (const auto& item: snap_.processes_) {
+                    if (!item.thread_ && item.pid_ == *pid) {
+                        return &item;
+                    }
+                }
+                return nullptr;
+            }
+
+            NEFORCE_NODISCARD float service_cpu(const service& item) const {
+                if (item.cpu_percent_.has_value()) {
+                    return *item.cpu_percent_;
+                }
+                const process* owner = process_for_pid(item.pid_);
+                return owner != nullptr ? owner->cpu_ : 0.0F;
+            }
+
+            NEFORCE_NODISCARD uint64_t service_memory(const service& item) const {
+                if (item.memory_.has_value()) {
+                    return *item.memory_;
+                }
+                const process* owner = process_for_pid(item.pid_);
+                return owner != nullptr ? owner->memory_ : 0;
+            }
+
+            NEFORCE_NODISCARD string service_tasks_text(const service& item) const {
+                if (item.tasks_.has_value()) {
+                    return format("{}", *item.tasks_);
+                }
+                const process* owner = process_for_pid(item.pid_);
+                if (owner != nullptr) {
+                    if (const json* tasks = owner->extra_.get("threads"); tasks != nullptr) {
+                        return tasks->is_string() ? tasks->as_string() : tasks->dump();
+                    }
+                }
+                return "—";
+            }
+
             NEFORCE_NODISCARD vector<size_t> workload_rows(bool containers) const {
                 vector<size_t> rows;
                 const size_t count = containers ? inventory_.containers_.size() : inventory_.services_.size();
@@ -3984,9 +4785,9 @@ namespace neforce::neflux::ui {
                         const auto& a = inventory_.services_[left];
                         const auto& b = inventory_.services_[right];
                         if (mode == sort_mode::memory) {
-                            result = a.memory_.value_or(0) > b.memory_.value_or(0);
+                            result = service_memory(a) > service_memory(b);
                         } else if (mode == sort_mode::cpu) {
-                            result = a.cpu_percent_.value_or(0.0F) > b.cpu_percent_.value_or(0.0F);
+                            result = service_cpu(a) > service_cpu(b);
                         } else {
                             result = a.name_ < b.name_;
                         }
@@ -4040,6 +4841,20 @@ namespace neforce::neflux::ui {
                                            : string("—")));
                 } else {
                     const auto& item = inventory_.services_[index];
+                    const process* owner = process_for_pid(item.pid_);
+                    const string cpu_text = item.cpu_percent_.has_value()
+                                                    ? format("{:.1f}%", *item.cpu_percent_)
+                                                    : (owner != nullptr ? format("{:.1f}%", owner->cpu_) : string("—"));
+                    const string memory_text =
+                            item.memory_.has_value()
+                                    ? bytes(static_cast<double>(*item.memory_))
+                                    : (owner != nullptr ? bytes(static_cast<double>(owner->memory_)) : string("—"));
+                    const string cpu_time_text =
+                            item.cpu_time_ns_.has_value()
+                                    ? format("{:.2f}s", static_cast<double>(*item.cpu_time_ns_) / 1e9)
+                                    : (owner != nullptr
+                                               ? format("{:.2f}s", static_cast<double>(owner->cpu_time_ms_) / 1000.0)
+                                               : string("—"));
                     detail_lines_.push_back(format("Name          {}", item.name_));
                     detail_lines_.push_back(format("Scope         {}", item.scope_));
                     detail_lines_.push_back(format("Load          {}", item.load_));
@@ -4048,23 +4863,50 @@ namespace neforce::neflux::ui {
                     detail_lines_.push_back(format("Description   {}", item.description_));
                     detail_lines_.push_back(
                             format("Main PID      {}", item.pid_.has_value() ? format("{}", *item.pid_) : string("—")));
-                    detail_lines_.push_back(format("CPU           {}", item.cpu_percent_.has_value()
-                                                                               ? format("{:.1f}%", *item.cpu_percent_)
-                                                                               : string("—")));
-                    detail_lines_.push_back(
-                            format("Memory        {}",
-                                   item.memory_.has_value() ? bytes(static_cast<double>(*item.memory_)) : string("—")));
-                    detail_lines_.push_back(
-                            format("CPU time      {}",
-                                   item.cpu_time_ns_.has_value()
-                                           ? format("{:.2f}s", static_cast<double>(*item.cpu_time_ns_) / 1e9)
-                                           : string("—")));
-                    detail_lines_.push_back(format("Tasks         {}",
-                                                   item.tasks_.has_value() ? format("{}", *item.tasks_) : string("—")));
+                    detail_lines_.push_back(format("CPU           {}", cpu_text));
+                    detail_lines_.push_back(format("Memory        {}", memory_text));
+                    detail_lines_.push_back(format("CPU time      {}", cpu_time_text));
+                    detail_lines_.push_back(format("Tasks         {}", service_tasks_text(item)));
                 }
                 popup_title_ = containers ? "CONTAINER" : "SERVICE";
                 popup_ = popup_kind::info;
                 popup_scroll_ = 0;
+            }
+
+            void jump_to_service_process() {
+                if (current_ != view::services) {
+                    return;
+                }
+                const auto rows = workload_rows(false);
+                if (rows.empty() || selected_ >= rows.size()) {
+                    status_ = "Select a service first.";
+                    return;
+                }
+                const auto& item = inventory_.services_[rows[selected_]];
+                if (!item.pid_.has_value() || *item.pid_ == 0) {
+                    status_ = "This service has no running main process.";
+                    return;
+                }
+                const process* owner = process_for_pid(item.pid_);
+                if (owner == nullptr) {
+                    status_ = format("PID {} is no longer in the process snapshot.", static_cast<uint64_t>(*item.pid_));
+                    return;
+                }
+                const auto pid = *item.pid_;
+                switch_view(view::processes);
+                filter_.clear();
+                editing_filter_ = false;
+                const auto process_view_rows = process_rows();
+                selected_ = 0;
+                for (size_t index = 0; index < process_view_rows.size(); ++index) {
+                    if (snap_.processes_[process_view_rows[index].index_].pid_ == pid) {
+                        selected_ = index;
+                        break;
+                    }
+                }
+                table_offset_ = selected_ > 5 ? selected_ - 5 : 0;
+                select_process(*owner);
+                status_ = format("Service {} → process {} ({})", item.name_, static_cast<uint64_t>(pid), owner->name_);
             }
 
             void draw_workloads(painter& brush, const rect& area, bool containers) {
@@ -4245,21 +5087,39 @@ namespace neforce::neflux::ui {
                                    active ? colors_.text_ : state_color(item.state_, colors_));
                     } else {
                         const auto& item = inventory_.services_[rows[offset]];
+                        const process* owner = nullptr;
+                        if (item.pid_.has_value() && *item.pid_ != 0) {
+                            for (const auto& proc: snap_.processes_) {
+                                if (!proc.thread_ && proc.pid_ == *item.pid_) {
+                                    owner = &proc;
+                                    break;
+                                }
+                            }
+                        }
+                        const string cpu_text =
+                                item.cpu_percent_.has_value()
+                                        ? format("{:.1f}%", *item.cpu_percent_)
+                                        : (owner != nullptr ? format("{:.1f}%", owner->cpu_) : string("—"));
+                        const string memory_text =
+                                item.memory_.has_value()
+                                        ? bytes(static_cast<double>(*item.memory_))
+                                        : (owner != nullptr ? bytes(static_cast<double>(owner->memory_)) : string("—"));
+                        string tasks_text = item.tasks_.has_value() ? format("{}", *item.tasks_) : string("—");
+                        if (tasks_text == "—" && owner != nullptr) {
+                            if (const json* tasks = owner->extra_.get("threads"); tasks != nullptr) {
+                                tasks_text = tasks->is_string() ? tasks->as_string() : tasks->dump();
+                            }
+                        }
                         string line = align_cell(item.name_, name_width) + align_cell(item.scope_, scope_width) +
                                       align_cell(item.active_, state_width) + align_cell(item.sub_, sub_width) +
                                       align_cell(item.pid_.has_value() ? format("{}", *item.pid_) : string("—"),
                                                  pid_width, true);
                         if (wide) {
-                            line.append(align_cell(item.cpu_percent_.has_value() ? format("{:.1f}", *item.cpu_percent_)
-                                                                                 : string("—"),
-                                                   cpu_width, true));
+                            line.append(align_cell(cpu_text, cpu_width, true));
                         }
-                        line.append(align_cell(item.memory_.has_value() ? bytes(static_cast<double>(*item.memory_))
-                                                                        : string("—"),
-                                               memory_width, true));
+                        line.append(align_cell(memory_text, memory_width, true));
                         if (wide) {
-                            line.append(align_cell(item.tasks_.has_value() ? format("{}", *item.tasks_) : string("—"),
-                                                   tasks_width, true));
+                            line.append(align_cell(tasks_text, tasks_width, true));
                             line.append(item.description_);
                         }
                         brush.text(table.x_ + 2, row, truncate_display(line.view(), table.w_ - 4).view(),
@@ -4327,6 +5187,7 @@ namespace neforce::neflux::ui {
                     return;
                 }
                 pending_signal_ = signal_value;
+                pending_workload_action_.clear();
                 pending_title_ = title;
                 describe_targets(targets);
                 popup_ = popup_kind::confirm;
@@ -4341,6 +5202,12 @@ namespace neforce::neflux::ui {
             }
 
             void execute_pending_signal() {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 const auto targets = action_targets();
                 size_t succeeded = 0;
                 size_t failed = 0;
@@ -4435,6 +5302,12 @@ namespace neforce::neflux::ui {
             }
 
             void apply_nice() {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 const auto value = parse_i64(prompt_text_.view());
                 if (!value.has_value() || *value < -20 || *value > 19) {
                     status_ = "Nice must be -20..19";
@@ -4460,6 +5333,12 @@ namespace neforce::neflux::ui {
             }
 
             void apply_affinity() {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 const auto targets = action_targets();
                 if (targets.empty()) {
                     status_ = "Select a process first.";
@@ -4590,7 +5469,247 @@ namespace neforce::neflux::ui {
                 popup_scroll_ = 0;
             }
 
+            void open_nice_prompt() {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                } else if (action_targets().empty()) {
+                    status_ = "Select a process first.";
+                } else {
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "Set nice (-20..19)";
+                    prompt_action_ = prompt_action::nice;
+                    prompt_text_ = selected_process_value().has_value() && selected_process_value()->nice_.has_value()
+                                           ? format("{}", *selected_process_value()->nice_)
+                                           : string("0");
+                    prompt_cursor_ = prompt_text_.size();
+                }
+            }
+
+            void open_affinity_prompt() {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                } else if (action_targets().empty()) {
+                    status_ = "Select a process first.";
+                } else {
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "CPU affinity (e.g. 0-3,6)";
+                    prompt_action_ = prompt_action::affinity;
+                    prompt_text_.clear();
+                    prompt_cursor_ = 0;
+                }
+            }
+
+            void open_context_detail() {
+                if (current_ == view::network) {
+                    if (network_section_ == 1) {
+                        open_network_detail();
+                    } else {
+                        open_connection_detail();
+                    }
+                } else if (current_ == view::containers) {
+                    open_workload_detail(true);
+                } else if (current_ == view::services) {
+                    open_workload_detail(false);
+                } else if (current_ == view::explorer) {
+                    open_extra_detail();
+                } else if (current_ == view::storage) {
+                    open_storage_detail();
+                } else if (current_ == view::gpu) {
+                    gpu_section_ = 2;
+                } else {
+                    open_detail();
+                }
+            }
+
+            /**
+             * @brief 当前页面的上下文工具菜单（F6）
+             *
+             * 所有状态变更动作都在 activate_popup 中再次检查
+             * state_changes_allowed()，保证 read-only / replay 严格只读。
+             */
+            void open_tools_menu() {
+                popup_ = popup_kind::tools;
+                popup_title_ = "Tools";
+                popup_entries_.clear();
+                popup_selected_ = 0;
+                popup_scroll_ = 0;
+                popup_parent_ = popup_kind::none;
+                const auto add = [this](string label, string action) {
+                    popup_entries_.push_back({move(label), "", move(action)});
+                };
+                add("Details", "tool_detail");
+                if (current_ == view::processes || current_ == view::overview) {
+                    add("Logs (F7)", "tool_logs");
+                    add("Environment", "tool_env");
+                    add("Open files", "tool_files");
+                    add("Signal", "tool_signal");
+                    add("Set nice", "tool_nice");
+                    add("CPU affinity", "tool_affinity");
+                    add(follow_process_ ? "Stop following" : "Follow process", "tool_follow");
+                    add(process_paused_ ? "Resume process list" : "Pause process list", "tool_pause");
+                } else if (current_ == view::containers) {
+                    add("Container logs", "tool_logs");
+                    add("Start container", "container_start");
+                    add("Stop container", "container_stop");
+                    add("Restart container", "container_restart");
+                    add("Remove stopped container", "container_remove");
+                } else if (current_ == view::services) {
+                    add("Service logs", "tool_logs");
+                    add("Start service", "service_start");
+                    add("Stop service", "service_stop");
+                    add("Restart service", "service_restart");
+                } else if (current_ == view::network) {
+                    add("Filter by port", "net_filter_port");
+                    add("Filter by PID", "net_filter_pid");
+                    add("Open owning process", "net_owner");
+                    add("Toggle loopback", "net_toggle_loopback");
+                } else if (current_ == view::storage) {
+                    add("Previous device", "storage_prev");
+                    add("Next device", "storage_next");
+                } else if (current_ == view::gpu) {
+                    add("GPU devices", "gpu_processes");
+                    add("Previous GPU", "gpu_prev");
+                    add("Next GPU", "gpu_next");
+                }
+                add("Copy selection (Ctrl+C)", "tool_copy_selection");
+            }
+
+            /**
+             * @brief 请求容器/服务管理动作（先确认）
+             * @param action start/stop/restart/remove
+             */
+            void request_workload_action(string action) {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                const bool containers = current_ == view::containers;
+                const auto rows = workload_rows(containers);
+                if (rows.empty() || selected_ >= rows.size()) {
+                    status_ = containers ? "Select a container first." : "Select a service first.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                const auto index = rows[selected_];
+                const string target =
+                        containers ? inventory_.containers_[index].name_ : inventory_.services_[index].name_;
+                const string kind = containers ? "container" : "service";
+                pending_signal_ = 0;
+                pending_workload_action_ = move(action);
+                popup_title_ = "Confirm";
+                confirm_message_ = format("{} {} '{}'?\n\nThis action changes system state. Confirm with y/Enter, "
+                                          "cancel with n/Esc.",
+                                          pending_workload_action_, kind, target);
+                popup_ = popup_kind::confirm;
+            }
+
+            /**
+             * @brief 执行容器/服务管理动作
+             * @param action start/stop/restart/remove
+             */
+            void run_workload_action(const string_view action) {
+                if (!state_changes_allowed()) {
+                    status_ =
+                            replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                const bool containers = current_ == view::containers;
+                const auto rows = workload_rows(containers);
+                if (rows.empty() || selected_ >= rows.size()) {
+                    status_ = containers ? "Select a container first." : "Select a service first.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                const auto index = rows[selected_];
+                if (containers) {
+                    const auto& item = inventory_.containers_[index];
+                    const string runtime = item.runtime_.empty() ? string("docker") : item.runtime_;
+                    if (action == "remove") {
+                        if (item.state_ != "exited" && item.state_ != "created") {
+                            status_ = "Only stopped containers can be removed.";
+                            popup_ = popup_kind::none;
+                            return;
+                        }
+                        run_command(runtime, {"rm", item.name_}, 5000);
+                        status_ = format("Removed container {}", item.name_);
+                    } else {
+                        run_command(runtime, {string(action), item.name_}, 5000);
+                        status_ = format("{} requested for container {}", action, item.name_);
+                    }
+                } else {
+                    const auto& item = inventory_.services_[index];
+#if NEFLUX_PLATFORM_WINDOWS
+                    if (action == "restart") {
+                        run_command("sc", {"stop", item.name_}, 5000);
+                        run_command("sc", {"start", item.name_}, 5000);
+                    } else {
+                        run_command("sc", {string(action), item.name_}, 5000);
+                    }
+#else
+                    run_command("systemctl", {string(action), item.name_}, 5000);
+#endif
+                    status_ = format("{} requested for service {}", action, item.name_);
+                }
+                popup_ = popup_kind::none;
+            }
+
+            void execute_pending_workload() {
+                const string action = move(pending_workload_action_);
+                pending_workload_action_.clear();
+                popup_ = popup_kind::none;
+                if (!action.empty()) {
+                    run_workload_action(action.view());
+                }
+            }
+
+            /**
+             * @brief 容器/服务日志（F7）
+             */
+            void open_workload_logs(const bool containers) {
+                vector<string> lines;
+                const auto rows = workload_rows(containers);
+                if (rows.empty() || selected_ >= rows.size()) {
+                    lines.push_back(containers ? "# Select a container first." : "# Select a service first.");
+                } else if (containers) {
+                    const auto& item = inventory_.containers_[rows[selected_]];
+                    const string runtime = item.runtime_.empty() ? string("docker") : item.runtime_;
+                    const string text =
+                            run_command(runtime, {"logs", "--tail", format("{}", cfg_.log_lines_), item.name_}, 5000);
+                    lines = split_lines(text);
+                } else {
+                    const auto& item = inventory_.services_[rows[selected_]];
+#if NEFLUX_PLATFORM_WINDOWS
+                    lines.push_back("# Windows SCM does not expose service logs portably.");
+                    lines.push_back("Use the service's own log file or Event Viewer.");
+#else
+                    const string text = run_command(
+                            "journalctl", {"-u", item.name_, "-n", format("{}", cfg_.log_lines_), "--no-pager"}, 5000);
+                    lines = split_lines(text);
+#endif
+                }
+                if (lines.empty()) {
+                    lines.push_back("# No log output available.");
+                }
+                detail_lines_ = move(lines);
+                popup_ = popup_kind::info;
+                popup_title_ = "Logs";
+                popup_scroll_ = 0;
+            }
+
             void open_logs() {
+                if (current_ == view::containers) {
+                    open_workload_logs(true);
+                    return;
+                }
+                if (current_ == view::services) {
+                    open_workload_logs(false);
+                    return;
+                }
                 const auto value = selected_process_value();
                 vector<string> lines;
                 if (value.has_value()) {
@@ -4829,6 +5948,10 @@ namespace neforce::neflux::ui {
                         "F4                          Sort chooser",
                         "F5                          View options",
                         "Enter, d                    Open details",
+                        "F6                          Context tools (details/logs/signals/priority/actions)",
+                        "F7, l                       Logs: process output, container logs, service journal",
+                        "Shift+←/→                   Horizontal process-column window",
+                        ", / .                       Replay: previous / next frame",
                         "Esc                         Close, filter, or open the menu",
                         "F1, :                       Help; all commands",
                         "F2, c, w                    Settings; theme; save configuration",
@@ -4839,7 +5962,7 @@ namespace neforce::neflux::ui {
                         "g, u                        GPU processes only; own processes only",
                         "Network: N, ↑/↓, Enter, p     Connections/interfaces; select; details; owner",
                         "i                           Show or hide loopback interfaces",
-                        "C                           Process columns",
+                        "C                           Process columns (90 selectable)",
                         "X, 0, E                     Explorer extras; history; events",
                         "D                           Process side panel; GPU device details",
                         "R                           ROS graph for the selected process",
@@ -4847,7 +5970,8 @@ namespace neforce::neflux::ui {
                         "k/K, t, s                   Kill, terminate, or choose a signal",
                         "W, z/Z, -/+                 Chart window; zoom; sampling interval",
                         "[, ]                        Previous or next GPU",
-                        "q, Ctrl+C                   Quit",
+                        "Ctrl+C / Ctrl+Shift+C        Copy selection (OSC52/clipboard); quit when nothing is selected",
+                        "q, Ctrl+C (no selection)     Quit",
                         "",
                         "# Filters",
                         "user:alice cpu:>10 !name:rust",
@@ -4893,8 +6017,8 @@ namespace neforce::neflux::ui {
                     }
                     rows.push_back(move(item));
                 }
-                rows.push_back({"Tree auto-collapse",
-                                cfg_.tree_auto_collapse_ == 0 ? string("Off")
+                rows.push_back({"Tree auto-collapse", cfg_.tree_auto_collapse_ == 0
+                                                              ? string("Off")
                                                               : format("{} children", cfg_.tree_auto_collapse_)});
                 rows.push_back({"Tree aggregate", cfg_.tree_aggregate_ ? "On" : "Off"});
                 rows.push_back({"Overview preset",
@@ -5208,10 +6332,34 @@ namespace neforce::neflux::ui {
 
             void open_sort_menu() {
                 popup_ = popup_kind::sort;
-                popup_title_ = "Sort by";
                 popup_entries_.clear();
-                for (const auto& item: sorts) {
-                    popup_entries_.push_back({item.name, item.descending ? "↓" : "↑", "sort"});
+                if (current_ == view::network) {
+                    popup_title_ = "Network sort";
+                    popup_entries_ = {{"NETWORK RX", "d", "net_sort_rx"},
+                                      {"NETWORK TX", "u", "net_sort_tx"},
+                                      {"NAME", "n", "net_sort_name"}};
+                    popup_selected_ = neforce::min<size_t>(network_sort_, 2);
+                    popup_scroll_ = 0;
+                    return;
+                }
+                popup_title_ = "Sort by";
+                if (current_ == view::containers || current_ == view::services) {
+                    const auto add_mode = [this](sort_mode mode, string label) {
+                        for (size_t index = 0; index < sizeof(sorts) / sizeof(sorts[0]); ++index) {
+                            if (sorts[index].mode == mode) {
+                                popup_entries_.push_back({move(label), sorts[index].descending ? "↓" : "↑",
+                                                          format("sort:{}", static_cast<uint64_t>(index))});
+                                return;
+                            }
+                        }
+                    };
+                    add_mode(sort_mode::cpu, "CPU");
+                    add_mode(sort_mode::memory, "RAM");
+                    add_mode(sort_mode::name, "NAME");
+                } else {
+                    for (const auto& item: sorts) {
+                        popup_entries_.push_back({item.name, item.descending ? "↓" : "↑", "sort"});
+                    }
                 }
                 popup_entries_.push_back({"Reverse current order", "r", "reverse"});
                 popup_selected_ = neforce::min(sort_index_, popup_entries_.size() - 1);
@@ -5380,69 +6528,19 @@ namespace neforce::neflux::ui {
                     }
                 }
                 popup_entries_.clear();
-                static const char* keys[] = {"pid",
-                                             "ppid",
-                                             "user",
-                                             "uid",
-                                             "cpu",
-                                             "cpu_normalized",
-                                             "memory",
-                                             "memory_percent",
-                                             "vms",
-                                             "shared",
-                                             "vram",
-                                             "gpu",
-                                             "state",
-                                             "name",
-                                             "command",
-                                             "comm",
-                                             "threads",
-                                             "priority",
-                                             "nice",
-                                             "processor",
-                                             "runtime",
-                                             "time",
-                                             "read",
-                                             "write",
-                                             "read_total",
-                                             "write_total",
-                                             "rx",
-                                             "tx",
-                                             "tag",
-                                             "thread",
-                                             "kernel_thread",
-                                             "oom",
-                                             "cgroup",
-                                             "autogroup",
-                                             "exe",
-                                             "cwd",
-                                             "wchan",
-                                             "security",
-                                             "fd_count",
-                                             "scheduling",
-                                             "rt_priority",
-                                             "pss",
-                                             "uss",
-                                             "swap",
-                                             "minor_faults",
-                                             "major_faults",
-                                             "utime",
-                                             "stime",
-                                             "context_switches",
-                                             "io_priority"};
-                for (const char* key: keys) {
+                for (const auto& definition: column_catalog()) {
                     bool active = false;
                     for (const auto& column: cfg_.columns_) {
-                        if (column == key) {
+                        if (column == definition.key_) {
                             active = true;
                             break;
                         }
                     }
-                    const auto& definition = column_definition(key);
                     popup_entries_.push_back(
                             {format("{} {:<16} {}", active ? "[x]" : "[ ]", definition.title_, definition.key_), "",
-                             format("col:{}", key)});
+                             format("col:{}", definition.key_)});
                 }
+
                 popup_selected_ = 0;
                 popup_scroll_ = 0;
             }
@@ -5723,6 +6821,48 @@ namespace neforce::neflux::ui {
                         popup_ = popup_kind::settings;
                         popup_scroll_ = 0;
                     }
+                } else if (action == "tool_detail") {
+                    popup_ = popup_kind::none;
+                    open_context_detail();
+                } else if (action == "tool_logs") {
+                    popup_ = popup_kind::none;
+                    open_logs();
+                } else if (action == "tool_env") {
+                    popup_ = popup_kind::none;
+                    open_process_environment();
+                } else if (action == "tool_files") {
+                    popup_ = popup_kind::none;
+                    open_process_files();
+                } else if (action == "tool_signal") {
+                    popup_ = popup_kind::none;
+                    open_signal_menu();
+                } else if (action == "tool_nice") {
+                    popup_ = popup_kind::none;
+                    open_nice_prompt();
+                } else if (action == "tool_affinity") {
+                    popup_ = popup_kind::none;
+                    open_affinity_prompt();
+                } else if (action == "tool_follow") {
+                    popup_ = popup_kind::none;
+                    follow_process_ = !follow_process_;
+                    status_ = follow_process_ ? "Following selected process · F stop" : "Follow disabled";
+                } else if (action == "tool_pause") {
+                    popup_ = popup_kind::none;
+                    process_paused_ = !process_paused_;
+                    status_ = process_paused_ ? "Process list paused · P resume" : "Process list resumed";
+                } else if (action == "tool_copy_selection") {
+                    popup_ = popup_kind::none;
+                    if (tui::application::has_selection()) {
+                        status_ = tui::application::copy_selection() ? "Selection copied"
+                                                                     : "Copy failed: no clipboard backend";
+                    } else {
+                        status_ = "No selection; drag over the screen to select text.";
+                    }
+                } else if (action == "container_start" || action == "container_stop" || action == "container_restart" ||
+                           action == "container_remove") {
+                    request_workload_action(string(action.view().substr(10)));
+                } else if (action == "service_start" || action == "service_stop" || action == "service_restart") {
+                    request_workload_action(string(action.view().substr(8)));
                 } else if (action == "detail") {
                     popup_ = popup_kind::none;
                     open_detail();
@@ -5885,7 +7025,11 @@ namespace neforce::neflux::ui {
                         }
                     }
                     if (!found) {
-                        cfg_.columns_.push_back(key);
+                        if (cfg_.columns_.size() >= 90) {
+                            status_ = "At most 90 process columns are supported.";
+                        } else {
+                            cfg_.columns_.push_back(key);
+                        }
                     }
                     open_columns_menu();
                 } else if (action == "signal") {
@@ -5895,6 +7039,14 @@ namespace neforce::neflux::ui {
                         popup_ = popup_kind::none;
                         request_signal(value, entries[popup_selected_].second);
                     }
+                } else if (starts_with(action.view(), "sort:")) {
+                    const auto index = parse_u64(action.view().substr(5));
+                    if (index.has_value() && *index < sizeof(sorts) / sizeof(sorts[0])) {
+                        sort_index_ = static_cast<size_t>(*index);
+                        reverse_ = !sorts[sort_index_].descending;
+                        sync_sort_config();
+                    }
+                    popup_ = popup_kind::none;
                 } else if (starts_with(action.view(), "sort")) {
                     sort_index_ = popup_selected_;
                     const bool default_desc =
@@ -5955,9 +7107,8 @@ namespace neforce::neflux::ui {
                                 break;
                             }
                         }
-                        current = static_cast<size_t>(
-                                neforce::clamp(static_cast<int64_t>(current) + direction, static_cast<int64_t>(0),
-                                               static_cast<int64_t>(6)));
+                        current = static_cast<size_t>(neforce::clamp(static_cast<int64_t>(current) + direction,
+                                                                     static_cast<int64_t>(0), static_cast<int64_t>(6)));
                         cfg_.tree_auto_collapse_ = values[current];
                         auto_collapse_done_ = false;
                         apply_tree_auto_collapse();
@@ -5969,9 +7120,9 @@ namespace neforce::neflux::ui {
                     }
                     if (label == "Overview preset" && !cfg_.overview_presets_.empty()) {
                         const int64_t count = static_cast<int64_t>(cfg_.overview_presets_.size());
-                        cfg_.overview_preset_ = static_cast<size_t>(neforce::clamp(
-                                static_cast<int64_t>(cfg_.overview_preset_) + direction, static_cast<int64_t>(0),
-                                count - 1));
+                        cfg_.overview_preset_ = static_cast<size_t>(
+                                neforce::clamp(static_cast<int64_t>(cfg_.overview_preset_) + direction,
+                                               static_cast<int64_t>(0), count - 1));
                         return;
                     }
                 }
@@ -6066,11 +7217,17 @@ namespace neforce::neflux::ui {
                 if (popup_ == popup_kind::confirm) {
                     if (key == tui::key_event::type::enter ||
                         (key == tui::key_event::type::printable && (event.cp == U'y' || event.cp == U'Y'))) {
-                        execute_pending_signal();
+                        if (!pending_workload_action_.empty()) {
+                            execute_pending_workload();
+                        } else {
+                            execute_pending_signal();
+                        }
                         return true;
                     }
                     if (key == tui::key_event::type::escape ||
                         (key == tui::key_event::type::printable && (event.cp == U'n' || event.cp == U'N'))) {
+                        pending_workload_action_.clear();
+                        pending_signal_ = 0;
                         popup_ = popup_kind::none;
                         return true;
                     }
@@ -6309,6 +7466,16 @@ namespace neforce::neflux::ui {
                 if (key == tui::key_event::type::printable &&
                     (event.mods & tui::key_modifier::ctrl) != tui::key_modifier::none) {
                     if (event.cp == U'c') {
+                        const bool shift = (event.mods & tui::key_modifier::shift) != tui::key_modifier::none;
+                        if (tui::application::has_selection()) {
+                            status_ = tui::application::copy_selection() ? "Selection copied"
+                                                                         : "Copy failed: no clipboard backend";
+                            return true;
+                        }
+                        if (shift) {
+                            status_ = "No selection; drag over the screen to select text.";
+                            return true;
+                        }
                         quit_ = true;
                         tui::application::request_quit(0);
                         return true;
@@ -6357,7 +7524,11 @@ namespace neforce::neflux::ui {
                     open_view_menu();
                     return true;
                 }
-                if (key == tui::key_event::type::F6 || key == tui::key_event::type::enter) {
+                if (key == tui::key_event::type::F6) {
+                    open_tools_menu();
+                    return true;
+                }
+                if (key == tui::key_event::type::enter) {
                     if (current_ == view::network) {
                         if (network_section_ == 1) {
                             open_network_detail();
@@ -6387,6 +7558,17 @@ namespace neforce::neflux::ui {
                 if (key == tui::key_event::type::tab_reverse) {
                     const size_t index = view_index(current_);
                     switch_view(views[(index + 7) % 8].value);
+                    return true;
+                }
+                if ((key == tui::key_event::type::left || key == tui::key_event::type::right) &&
+                    (event.mods & tui::key_modifier::shift) != tui::key_modifier::none && current_ == view::processes) {
+                    const auto all = cfg_.columns_.empty() ? 8U : static_cast<uint32_t>(cfg_.columns_.size());
+                    const int delta = key == tui::key_event::type::right ? 1 : -1;
+                    const int64_t next = static_cast<int64_t>(column_offset_) + delta;
+                    column_offset_ = static_cast<size_t>(
+                            neforce::clamp(next, static_cast<int64_t>(0), static_cast<int64_t>(all - 1)));
+                    status_ = format("Columns start at {} / {}", static_cast<uint64_t>(column_offset_ + 1),
+                                     static_cast<uint64_t>(all));
                     return true;
                 }
                 if ((key == tui::key_event::type::left || key == tui::key_event::type::right) &&
@@ -6839,7 +8021,18 @@ namespace neforce::neflux::ui {
                     sampler_->seek(1);
                     return true;
                 }
+                if (replay_ && (cp == U',' || cp == U'.' || cp == U'<' || cp == U'>')) {
+                    const bool forward = cp == U'.' || cp == U'>';
+                    sampler_->seek(forward ? 1 : -1);
+                    status_ = format("Replay frame {} / {}", static_cast<uint64_t>(sampler_->replay_index() + 1),
+                                     static_cast<uint64_t>(sampler_->replay_size()));
+                    return true;
+                }
                 if (cp == U'p') {
+                    if (current_ == view::services) {
+                        jump_to_service_process();
+                        return true;
+                    }
                     if (current_ == view::network) {
                         const auto rows = filtered_connections();
                         if (!rows.empty()) {
@@ -7366,8 +8559,7 @@ namespace neforce::neflux::ui {
                             return true;
                         }
                         if (hit->action_ == hit_action::gpu_device &&
-                            (current_ == view::gpu || current_ == view::overview) &&
-                            hit->index_ < snap_.gpus_.size()) {
+                            (current_ == view::gpu || current_ == view::overview) && hit->index_ < snap_.gpus_.size()) {
                             selected_gpu_ = hit->index_;
                             if (current_ == view::overview) {
                                 status_ = format("GPU {} selected · {} devices", hit->index_, snap_.gpus_.size());
@@ -7703,6 +8895,7 @@ namespace neforce::neflux::ui {
         cli_args args;
         args.gpu_panel_ = gpu_panel;
         flux_component component(nullptr, cfg, "", move(args));
+        component.seed_terminal_size(width, height);
         component.seed_history(values, data, parse_view(view_name));
         tui::headless app(&component, width, height);
         palette colors = palette_from_config(cfg);
@@ -7791,7 +8984,7 @@ namespace neforce::neflux::ui {
                 if (cell.character.empty() || cell.character == " ") {
                     continue;
                 }
-                const string symbol = cell.character;
+                const string symbol(cell.character.view());
                 color foreground = cell.foreground;
                 if (foreground.A() == 0) {
                     foreground = colors.text_;
@@ -7873,6 +9066,67 @@ namespace neforce::neflux::ui {
         const auto& cell = app.frame().fast_cell_at(x, y);
         return (static_cast<uint32_t>(cell.background.A()) << 24) | (static_cast<uint32_t>(cell.background.R()) << 16) |
                (static_cast<uint32_t>(cell.background.G()) << 8) | static_cast<uint32_t>(cell.background.B());
+    }
+
+    uint32_t headless_probe_seeded_background(const snapshot& value, const inventory& data, string_view view_name,
+                                              string_view input, int x, int y) {
+        config cfg;
+        flux_component component(nullptr, cfg, string{}, cli_args{});
+        component.seed(value, data, parse_view(string(view_name)));
+        tui::headless app(&component, 120, 40);
+        app.render();
+        size_t begin = 0;
+        for (size_t index = 0; index <= input.size(); ++index) {
+            if (index != input.size() && input[index] != '|') {
+                continue;
+            }
+            app.feed(input.substr(begin, index - begin));
+            app.tick();
+            begin = index + 1;
+        }
+        if (x < 0 || y < 0 || x >= 120 || y >= 40) {
+            return 0;
+        }
+        const auto& cell = app.frame().fast_cell_at(x, y);
+        return (static_cast<uint32_t>(cell.background.A()) << 24) | (static_cast<uint32_t>(cell.background.R()) << 16) |
+               (static_cast<uint32_t>(cell.background.G()) << 8) | static_cast<uint32_t>(cell.background.B());
+    }
+
+    string headless_probe_sized(const int width, const int height, string_view input) {
+        config cfg;
+        cfg.view_ = 1;
+        flux_component component(nullptr, cfg, string{}, cli_args{});
+        tui::headless app(&component, width, height);
+        app.render();
+        size_t begin = 0;
+        for (size_t index = 0; index <= input.size(); ++index) {
+            if (index != input.size() && input[index] != '|') {
+                continue;
+            }
+            const auto segment = input.substr(begin, index - begin);
+            if (segment == "#esc") {
+                tui::key_event key;
+                key.key = tui::key_event::type::escape;
+                app.feed_key(key);
+                app.tick();
+            } else {
+                app.feed(segment);
+                app.tick();
+            }
+            begin = index + 1;
+        }
+        return app.plaintext();
+    }
+
+    string headless_probe_resized(const int width, const int height, const int new_width, const int new_height) {
+        config cfg;
+        cfg.view_ = 1;
+        flux_component component(nullptr, cfg, string{}, cli_args{});
+        tui::headless app(&component, width, height);
+        app.render();
+        app.resize(new_width, new_height);
+        app.render();
+        return app.plaintext();
     }
 
     string headless_probe(string_view input) {

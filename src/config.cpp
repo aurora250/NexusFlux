@@ -304,13 +304,13 @@ namespace neforce::neflux {
                     end = preset.size();
                 }
                 string_view token = preset.view().substr(begin, end - begin);
-                token.trim();
+                token = token.trim();
                 if (token.empty()) {
                     fail("overview preset contains an empty box");
                 }
                 const string name(token.data(), token.size());
-                if (!(name == "cpu" || name == "memory" || name == "gpu" || name == "storage" ||
-                      name == "network" || name == "processes")) {
+                if (!(name == "cpu" || name == "memory" || name == "gpu" || name == "storage" || name == "network" ||
+                      name == "processes")) {
                     fail(format("Unknown overview box: {}", name));
                 }
                 begin = end + 1;
@@ -364,8 +364,8 @@ namespace neforce::neflux {
                   key == "temp_mid" || key == "temp_end" || key == "proc_start" || key == "proc_mid" ||
                   key == "proc_end" || key == "meter_bg" || key == "graph_text" || key == "followed_bg" ||
                   key == "followed_fg" || key == "pause_bg" || key == "follow_bg" || key == "banner_bg" ||
-                  key == "banner_fg" || key == "proc_pause_bg" || key == "proc_follow_bg" ||
-                  key == "proc_banner_bg" || key == "proc_banner_fg")) {
+                  key == "banner_fg" || key == "proc_pause_bg" || key == "proc_follow_bg" || key == "proc_banner_bg" ||
+                  key == "proc_banner_fg")) {
                 fail(format("Unknown color: {}", key));
             }
             const auto& value = member_entry.second.as_string();

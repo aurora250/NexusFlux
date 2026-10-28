@@ -57,26 +57,26 @@ namespace neforce::neflux::ui {
         color red_;       ///< 危险
         color selection_; ///< 选中行底色
 
-        color cpu_start_;  ///< CPU 渐变起点
-        color cpu_mid_;    ///< CPU 渐变中点
-        color cpu_end_;    ///< CPU 渐变终点
-        color mem_start_;  ///< 内存渐变起点
-        color mem_mid_;    ///< 内存渐变中点
-        color mem_end_;    ///< 内存渐变终点
-        color net_start_;  ///< 网络渐变起点
-        color net_mid_;    ///< 网络渐变中点
-        color net_end_;    ///< 网络渐变终点
-        color gpu_start_;  ///< GPU 渐变起点
-        color gpu_mid_;    ///< GPU 渐变中点
-        color gpu_end_;    ///< GPU 渐变终点
-        color temp_start_; ///< 温度渐变起点
-        color temp_mid_;   ///< 温度渐变中点
-        color temp_end_;   ///< 温度渐变终点
-        color proc_start_; ///< 进程渐变起点
-        color proc_mid_;   ///< 进程渐变中点
-        color proc_end_;   ///< 进程渐变终点
-        color meter_bg_;   ///< 仪表背景
-        color graph_text_; ///< 图表文字
+        color cpu_start_;   ///< CPU 渐变起点
+        color cpu_mid_;     ///< CPU 渐变中点
+        color cpu_end_;     ///< CPU 渐变终点
+        color mem_start_;   ///< 内存渐变起点
+        color mem_mid_;     ///< 内存渐变中点
+        color mem_end_;     ///< 内存渐变终点
+        color net_start_;   ///< 网络渐变起点
+        color net_mid_;     ///< 网络渐变中点
+        color net_end_;     ///< 网络渐变终点
+        color gpu_start_;   ///< GPU 渐变起点
+        color gpu_mid_;     ///< GPU 渐变中点
+        color gpu_end_;     ///< GPU 渐变终点
+        color temp_start_;  ///< 温度渐变起点
+        color temp_mid_;    ///< 温度渐变中点
+        color temp_end_;    ///< 温度渐变终点
+        color proc_start_;  ///< 进程渐变起点
+        color proc_mid_;    ///< 进程渐变中点
+        color proc_end_;    ///< 进程渐变终点
+        color meter_bg_;    ///< 仪表背景
+        color graph_text_;  ///< 图表文字
         color followed_bg_; ///< 跟随进程底色
         color followed_fg_; ///< 跟随进程文字
         color pause_bg_;    ///< 暂停横幅底色
@@ -117,6 +117,94 @@ namespace neforce::neflux::ui {
         color color_;                 ///< 颜色
     };
 
+    /// @cond
+    class painter;
+    /// @endcond
+
+    /**
+     * @brief 内容区单元格
+     */
+    struct grid_cell {
+        codepoint value{U' '};     ///< 字符
+        color fg{0, 0, 0, 0};      ///< 前景色，透明表示沿用终端默认前景
+        color bg{0, 0, 0, 0};      ///< 背景色，透明表示沿用终端默认背景
+        bool bold = false;         ///< 是否加粗
+        bool continuation = false; ///< 是否宽字符占据的续列
+        bool painted = false;      ///< 是否被绘制过
+    };
+
+    /**
+     * @brief 图表画布岛
+     *
+     * 内容区为 DOM 行，图表/仪表/滚动条仍由 canvas 渲染：
+     * 记录屏幕矩形与局部坐标重绘回调，由 DOM 层叠加一个 canvas 元素。
+     */
+    struct plot_island {
+        rect area;                                   ///< 屏幕坐标矩形
+        function<void(painter&, const rect&)> paint; ///< 以局部坐标重绘
+    };
+
+    /**
+     * @brief 内容区单元格缓冲
+     */
+    class cell_grid {
+    public:
+        /**
+         * @brief 重置为新的屏幕区域
+         * @param area 屏幕坐标矩形
+         */
+        void reset(const rect& area);
+
+        /// @brief 宽度
+        NEFORCE_NODISCARD int width() const noexcept { return area_.w_; }
+        /// @brief 高度
+        NEFORCE_NODISCARD int height() const noexcept { return area_.h_; }
+        /// @brief 屏幕区域
+        NEFORCE_NODISCARD const rect& area() const noexcept { return area_; }
+
+        /**
+         * @brief 写入单元格（屏幕坐标）
+         * @param x 列
+         * @param y 行
+         * @param value 字符
+         * @param style 样式
+         */
+        void put(int x, int y, const codepoint& value, const tui::style& style);
+
+        /**
+         * @brief 填充矩形（屏幕坐标）
+         * @param x 列
+         * @param y 行
+         * @param width 宽
+         * @param height 高
+         * @param glyph 字符
+         * @param style 样式
+         */
+        void fill(int x, int y, int width, int height, string_view glyph, const tui::style& style);
+
+        /**
+         * @brief 读取单元格
+         * @param column 局部列
+         * @param row 局部行
+         * @return 单元格
+         */
+        NEFORCE_NODISCARD const grid_cell& at(int column, int row) const noexcept;
+
+        /**
+         * @brief 登记图表画布岛
+         * @param island 画布岛
+         */
+        void add_island(plot_island island);
+
+        /// @brief 图表画布岛列表
+        NEFORCE_NODISCARD const vector<plot_island>& islands() const noexcept { return islands_; }
+
+    private:
+        rect area_{};
+        vector<grid_cell> cells_;
+        vector<plot_island> islands_;
+    };
+
     /**
      * @brief 绘制助手
      */
@@ -132,6 +220,20 @@ namespace neforce::neflux::ui {
          * @param rounded
          */
         painter(tui::canvas_painter& target, const palette& colors, bool ascii = false, bool transparent = false,
+                string graph_symbol = "braille", bool rounded = true, bool graph_gradient = true);
+
+        /**
+         * @brief 构造内容区单元格绘制助手
+         * @param target 单元格缓冲，坐标为屏幕坐标
+         * @param colors 配色
+         * @param ascii 是否使用纯 ASCII 符号
+         * @param transparent 是否使用终端默认背景
+         * @param graph_symbol
+         * @param rounded
+         * @param graph_gradient
+         * @note 图表类调用会登记画布岛，由 DOM 层叠加 canvas 渲染
+         */
+        painter(cell_grid& target, const palette& colors, bool ascii = false, bool transparent = false,
                 string graph_symbol = "braille", bool rounded = true, bool graph_gradient = true);
 
         /**
@@ -163,6 +265,24 @@ namespace neforce::neflux::ui {
         NEFORCE_NODISCARD const rect& area() const noexcept { return area_; }
         /// @brief 配色
         NEFORCE_NODISCARD const palette& colors() const noexcept { return palette_; }
+
+        /**
+         * @brief 面板记录
+         *
+         * `box()` 在绘制的同时登记面板几何与样式，DOM 内容层据此生成
+         * `tui::element::panel`，由组件负责边框、标题与底色。
+         */
+        struct pane {
+            rect area_;           ///< 面板屏幕矩形
+            string title_;        ///< 已截断的标题
+            color accent_;        ///< 标题色
+            color background_;    ///< 面板底色（透明时为 alpha 0）
+            bool ascii_ = false;  ///< ASCII 边框
+            bool rounded_ = true; ///< 圆角边框
+        };
+
+        /// @brief 本次绘制登记的面板
+        NEFORCE_NODISCARD const vector<pane>& panes() const noexcept { return *panes_; }
 
         /**
          * @brief 填充矩形
@@ -268,6 +388,18 @@ namespace neforce::neflux::ui {
                    string_view unit, bool axes, bool logarithmic = false);
 
         /**
+         * @brief 绘制带渐变填充的面积图（用于 MEMORY 五项 sparkline）
+         */
+        void area(const rect& area, const vector<chart_series>& series, double maximum, const plot_window& window,
+                  bool logarithmic = false);
+
+        /**
+         * @brief 在 canvas 上直接绘制面积图（画布岛回调使用）
+         */
+        void area_raster(const rect& area, const vector<chart_series>& series, double maximum,
+                         const plot_window& window, bool logarithmic);
+
+        /**
          * @brief 绘制带标题的趋势图
          * @param area 区域
          * @param title 标题
@@ -310,13 +442,28 @@ namespace neforce::neflux::ui {
         void scrollbar(const rect& area, size_t content, size_t viewport, size_t position);
 
         /**
+         * @brief 只绘制图表光栅（不含标题与坐标轴）
+         * @param area 区域
+         * @param series 序列
+         * @param maximum 上限
+         * @param window 窗口
+         * @param logarithmic 是否对数刻度
+         * @param direction 绘制方向，-1/0/1
+         * @note 供 DOM 内容层的画布岛在渲染阶段重绘使用
+         */
+        void raster(const rect& area, const vector<chart_series>& series, double maximum, const plot_window& window,
+                    bool logarithmic, int direction);
+
+        /**
          * @brief 获取底层画布
          * @return 画布引用
+         * @note 仅在画布模式下有效
          */
-        NEFORCE_NODISCARD tui::canvas_painter& canvas() const noexcept { return target_; }
+        NEFORCE_NODISCARD tui::canvas_painter& canvas() const noexcept { return *canvas_; }
 
     private:
-        tui::canvas_painter& target_;
+        tui::canvas_painter* canvas_ = nullptr;
+        cell_grid* grid_ = nullptr;
         const palette& palette_;
         rect area_;
         bool ascii_ = false;
@@ -324,13 +471,12 @@ namespace neforce::neflux::ui {
         string graph_symbol_ = "braille";
         bool rounded_ = true;
         bool graph_gradient_ = true;
+        shared_ptr<vector<pane>> panes_;
 
         NEFORCE_NODISCARD bool visible(int x, int y) const noexcept {
             return x >= area_.x_ && y >= area_.y_ && x < area_.right() && y < area_.bottom();
         }
         void put(int x, int y, const codepoint& value, const tui::style& style);
-        void raster(const rect& area, const vector<chart_series>& series, double maximum, const plot_window& window,
-                    bool logarithmic, int direction);
     };
 
     /**

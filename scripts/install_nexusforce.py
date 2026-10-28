@@ -101,6 +101,25 @@ def reconfigure(nexusforce_root: Path, build_dir: Path,
     cmd = ["cmake", "-S", str(nexusforce_root), "-B", str(build_dir), "-G", generator]
     if arch:
         cmd += ["-A", arch]
+    # NexusFlux only needs core/TUI/HTTP/regex.  Keep the dependency install
+    # minimal and disable the unused NexusForce backends.
+    manifest = Path(__file__).resolve().parent.parent / "cmake" / "nexusforce-manifest"
+    cmd += [
+        f"-DVCPKG_MANIFEST_DIR={manifest}",
+        "-DNEXUSFORCE_ENABLE_POSTGRESQL=OFF",
+        "-DNEXUSFORCE_ENABLE_MYSQL=OFF",
+        "-DNEXUSFORCE_ENABLE_SQLITE3=OFF",
+        "-DNEXUSFORCE_ENABLE_REDIS=OFF",
+        "-DNEXUSFORCE_ENABLE_ZLIB=OFF",
+        "-DNEXUSFORCE_ENABLE_LZ4=OFF",
+        "-DNEXUSFORCE_ENABLE_ZSTD=OFF",
+        "-DNEXUSFORCE_ENABLE_ICU=OFF",
+        "-DNEXUSFORCE_ENABLE_LOCALE=OFF",
+        "-DNEXUSFORCE_USING_SQLCIPHER=OFF",
+        "-DNEXUSFORCE_BUILD_TESTS=OFF",
+        "-DNEXUSFORCE_BUILD_EXAMPLES=OFF",
+        "-DNEXUSFORCE_BUILD_BENCHMARKS=OFF",
+    ]
     run(cmd)
 
 

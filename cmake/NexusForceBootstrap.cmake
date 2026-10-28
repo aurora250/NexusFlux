@@ -121,12 +121,12 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
-# Install NexusForce's vcpkg.json dependencies into the NexusFlux build tree
-# (not into the NexusForce checkout).  The toolchain caches these before
-# project(), so they must be set here rather than in the source-mode branch
-# after project().
+# Install the minimal NexusForce dependency subset used by NexusFlux into the
+# NexusFlux build tree (not into the NexusForce checkout).  NexusFlux only needs
+# the TUI/core/HTTP/regex parts; database, Redis, ICU/locale and compression
+# backends stay disabled (see NexusForceDependency.cmake).
 set(VCPKG_MANIFEST_MODE ON)
-set(VCPKG_MANIFEST_DIR "${NEXUSFORCE_ROOT}")
+set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_LIST_DIR}/nexusforce-manifest")
 if(NOT VCPKG_INSTALLED_DIR)
     set(VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed")
 endif()

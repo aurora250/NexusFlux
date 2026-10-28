@@ -1,0 +1,119 @@
+name: "Build Verify"
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'benchmark/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-verify.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'benchmark/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-verify.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: "${{ matrix.os }} · ${{ matrix.compiler }} · Release"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            compiler: msvc
+          - os: ubuntu-24.04
+            compiler: gcc
+          - os: ubuntu-24.04
+            compiler: clang
+
+    steps:
+      - name: Checkout NexusFlux
+        uses: actions/checkout@v4
+
+      - name: Checkout NexusForce
+        uses: actions/checkout@v4
+        with:
+          repository: aurora250/NexusForce
+          path: NexusForce
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config curl zip unzip tar
+
+      - name: Install Clang (Linux)
+        if: runner.os == 'Linux' && matrix.compiler == 'clang'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang-18 clang++-18
+          sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-18   100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          clang++ --version
+
+      - name: Setup MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pip install ninja
+
+      - name: Setup vcpkg
+        shell: bash
+        run: |
+          if [ -z "${VCPKG_ROOT:-}" ]; then
+            if [ -n "${VCPKG_INSTALLATION_ROOT:-}" ]; then
+              echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT}" >> "$GITHUB_ENV"
+            else
+              echo "VCPKG_ROOT=C:/vcpkg" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - name: CMake configure
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEXUSFLUX_NEXUSFORCE_MODE=source \
+            -DNEXUSFORCE_ROOT="$GITHUB_WORKSPACE/NexusForce"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --target nexus-flux NeFluxTests -j 4
+
+      - name: Tests
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/NeFluxTests.exe
+          else
+            ./build/NeFluxTests
+          fi
+
+      - name: CLI smoke
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/nexus-flux.exe --version
+            ./build/nexus-flux.exe --help > /dev/null
+          else
+            ./build/nexus-flux --version
+            ./build/nexus-flux --help > /dev/null
+          fi

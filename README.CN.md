@@ -17,6 +17,7 @@ nexus-flux record session.jsonl              # 监控时录制
 nexus-flux replay session.jsonl              # 回放录制
 nexus-flux export csv metrics.csv --samples 10
 nexus-flux export svg screen.svg --samples 30
+nexus-flux export svg screen.svg --input recording.jsonl   # 渲染回放历史
 nexus-flux gpu select --count 1 --min-free-mib 8192
 nexus-flux network connections --filter port:443 --sort download --json
 nexus-flux doctor --json
@@ -199,7 +200,7 @@ ACTIVE，恢复后记录 RECOVERED。
 详情弹窗显示命令行、凭据、状态、CPU/内存/IO、GPU、启动时间、运行时长、历史和
 打开文件。`D` 侧栏在进程表旁保留紧凑版本。
 
-- `d` / `Enter` / `F6` 打开详情。
+- `d` / `Enter` 打开详情；`F6` 打开工具菜单。
 - `D` 在进程页切换侧栏。
 - `e` / `o` 打开环境变量和打开文件。
 
@@ -233,20 +234,28 @@ ACTIVE，恢复后记录 RECOVERED。
 
 ## 通用按键
 
-| 按键                            | 操作                                          |
-|---------------------------------|-----------------------------------------------|
-| `1`–`8`                         | 主页面                                        |
-| `X`、`0`、`E`                   | 系统浏览器、历史、事件                        |
-| `←/→`、`Tab/Shift+Tab`          | 切换页面                                      |
-| `↑/↓`、`PgUp/PgDn`、`Home/End`  | 选择或滚动                                    |
-| `F3`、`f`、`/`                  | 可用页面的行内过滤                            |
-| `F4`、`S`、`r`                  | 排序菜单；下一个排序键；反向                  |
-| `F5`                            | 视图菜单                                      |
-| `F1`、`?`、`:`                  | 帮助、菜单、命令列表                          |
-| `F2`、`c`、`w`                  | 设置、主题选择器、保存配置                    |
-| `Enter`、`d`、`F6`              | 详情                                          |
-| 右键                            | 当前页面的上下文操作                          |
-| `q`、`Ctrl+C`、双击 `Esc`       | 退出                                          |
+| 按键                           | 操作                                                       |
+|--------------------------------|------------------------------------------------------------|
+| `1`–`8`                        | 主页面                                                     |
+| `X`、`0`、`E`                  | 系统浏览器、历史、事件                                     |
+| `←/→`、`Tab/Shift+Tab`         | 切换页面                                                   |
+| `↑/↓`、`PgUp/PgDn`、`Home/End` | 选择或滚动                                                 |
+| `F3`、`f`、`/`                 | 可用页面的行内过滤                                         |
+| `F4`、`S`、`r`                 | 排序菜单；下一个排序键；反向                               |
+| `F5`                           | 视图菜单                                                   |
+| `F6`                           | 当前页面的工具菜单（详情/日志/信号/优先级/容器与服务操作） |
+| `F7`                           | 日志：进程输出、容器日志、服务 journal                     |
+| `Shift+←/→`                    | 进程列窗口横向滚动                                         |
+| `,` / `.`                      | 回放时向前/向后跳一帧                                      |
+| `F1`、`?`、`:`                 | 帮助、菜单、命令列表                                       |
+| `F2`、`c`、`w`                 | 设置、主题选择器、保存配置                                 |
+| `Enter`、`d`                   | 详情                                                       |
+| 右键                           | 当前页面的上下文操作                                       |
+| `Ctrl+C` / `Ctrl+Shift+C`      | 有选区时复制（OSC52/系统剪贴板）；无选区时退出             |
+| `q`、双击 `Esc`                | 退出                                                       |
+
+进程页支持 90 个可选列（`C` 打开列选择器）；`--read-only` 与回放模式下
+所有状态变更都会被拒绝，只保留查看与复制。
 
 过滤表达式支持 `field:value`、`!` 取反、数值比较、`/正则/`、空格 AND 与 ` | ` OR，
 例如 `user:alice cpu:>10 !name:rust` 或 `name:/python|torch/ pid:42 | mem:>1024`。
@@ -277,7 +286,7 @@ NexusForce 是唯一的外部依赖，用 `NEXUSFLUX_NEXUSFORCE_MODE` 选择 CMa
 | `prebuilt`     | 只使用 `.deps/NexusForce` 或 `NEXUSFLUX_NEXUSFORCE_BUILD_DIR`。                      |
 | `package`      | 只使用 `find_package(NexusForce 1.0 CONFIG)`。                                       |
 
-package 模式还要求 NexusForce 自己的依赖（OpenSSL、PCRE2、ICU 等）可被发现；
+package 模式还要求 NexusForce 自己的依赖（OpenSSL、PCRE2）可被发现；
 如果它们在 vcpkg 中，加上 `-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`。
 
 ## 许可证

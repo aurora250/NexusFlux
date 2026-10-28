@@ -17,6 +17,7 @@ nexus-flux record session.jsonl              # record while monitoring
 nexus-flux replay session.jsonl              # replay a recording
 nexus-flux export csv metrics.csv --samples 10
 nexus-flux export svg screen.svg --samples 30
+nexus-flux export svg screen.svg --input recording.jsonl   # renders replay history
 nexus-flux gpu select --count 1 --min-free-mib 8192
 nexus-flux network connections --filter port:443 --sort download --json
 nexus-flux doctor --json
@@ -207,7 +208,7 @@ The details popup shows command line, credentials, state, CPU/RAM/I/O, GPU, star
 time, runtime, history and open files. The `D` side panel keeps a compact version
 visible next to the process table.
 
-- `d` / `Enter` / `F6` opens details.
+- `d` / `Enter` opens details; `F6` opens the tools menu.
 - `D` toggles the side panel on Processes.
 - `e` / `o` open environment and open files.
 
@@ -250,11 +251,20 @@ Themes may override CPU/memory/network/GPU/temperature/process gradient stops,
 | `F3`, `f`, `/`                  | Inline filter where available                                            |
 | `F4`, `S`, `r`                  | Sort chooser; next sort key; reverse                                     |
 | `F5`                            | View chooser                                                             |
+| `F6`                            | Context tools (details/logs/signals/priority/container/service actions)  |
+| `F7`                            | Logs: process output, container logs, service journal                    |
+| `Shift+←/→`                     | Horizontal process-column window                                         |
+| `,` / `.`                       | Replay: previous / next frame                                            |
 | `F1`, `?`, `:`                  | Help, menu, command list                                                 |
 | `F2`, `c`, `w`                  | Settings, theme chooser, save configuration                              |
-| `Enter`, `d`, `F6`              | Details                                                                  |
+| `Enter`, `d`                    | Details                                                                  |
 | `Right click`                   | Context actions on the active page                                       |
-| `q`, `Ctrl+C`, double `Esc`     | Quit                                                                     |
+| `Ctrl+C` / `Ctrl+Shift+C`       | Copy selection (OSC52/clipboard); quit when nothing is selected          |
+| `q`, double `Esc`               | Quit                                                                     |
+
+The process page exposes 90 selectable columns (`C`); `--read-only` and replay reject
+all state changes (signals, nice/affinity, container/service lifecycle) while keeping
+inspection and copy available.
 
 Filters support `field:value`, `!` negation, numeric comparisons, `/regex/`, space-separated
 AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|torch/ pid:42 | mem:>1024`.
@@ -286,8 +296,8 @@ NexusForce is the only external dependency. Let CMake obtain it with `NEXUSFLUX_
 | `prebuilt`       | Only `.deps/NexusForce` or `NEXUSFLUX_NEXUSFORCE_BUILD_DIR`.                                               |
 | `package`        | Only `find_package(NexusForce 1.0 CONFIG)`.                                                                |
 
-Package mode also needs NexusForce's own dependencies (OpenSSL, PCRE2, ICU, ...)
-to be discoverable; when they live in vcpkg, add
+Package mode also needs NexusForce's own dependencies (OpenSSL, PCRE2) to be
+discoverable; when they live in vcpkg, add
 `-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`.
 
 ## License

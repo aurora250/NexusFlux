@@ -42,6 +42,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(NEXUSFLUX_BUILD_TESTS "Build NeFlux unit tests" ON)
+option(NEXUSFLUX_NEXUSFORCE_MINIMAL "Disable unused NexusForce backends and their dependencies" ON)
+option(NEXUSFLUX_BUILD_BENCHMARKS "Build NexusFlux benchmarks" OFF)
 option(NEXUSFLUX_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 include(cmake/NeFluxCompilerOptions.cmake)
@@ -67,7 +69,6 @@ set(NEFLUX_SOURCES
     src/json.cpp
     src/model.cpp
     src/util.cpp
-    src/plot.cpp
     src/history.cpp
     src/filter.cpp
     src/tags.cpp
@@ -131,6 +132,10 @@ if(UNIX)
 endif()
 
 include(cmake/NexusForceClangFormat.cmake)
+
+if(NEXUSFLUX_BUILD_BENCHMARKS)
+    add_subdirectory(benchmark)
+endif()
 
 if(NEXUSFLUX_BUILD_TESTS)
     enable_testing()

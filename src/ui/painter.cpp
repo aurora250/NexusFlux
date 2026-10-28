@@ -2,9 +2,53 @@
 #include <NeFlux/model.hpp>
 #include <NeFlux/ui/painter.hpp>
 #include <NeForce/core/string/format.hpp>
+#include <NeForce/tui/chart/canvas_chart.hpp>
 namespace neforce::neflux::ui {
 
     namespace {
+
+        struct island_raster_data {
+            vector<deque<double>> values;
+            vector<string> names;
+            vector<color> colors;
+            deque<double> timestamps;
+            deque<double> periods;
+            tui::canvas_chart_window window;
+        };
+
+        void paint_island_raster(painter& target, const rect& local, const shared_ptr<island_raster_data>& data,
+                                 double maximum, bool logarithmic, int direction) {
+            vector<chart_series> series;
+            series.reserve(data->values.size());
+            for (size_t index = 0; index < data->values.size(); ++index) {
+                series.push_back({data->names[index], &data->values[index], data->colors[index]});
+            }
+            tui::canvas_chart_window window = data->window;
+            if (window.time.timestamps != nullptr) {
+                window.time.timestamps = &data->timestamps;
+            }
+            if (window.time.periods != nullptr) {
+                window.time.periods = &data->periods;
+            }
+            target.raster(local, series, maximum, window, logarithmic, direction);
+        }
+
+        void paint_island_area(painter& target, const rect& local, const shared_ptr<island_raster_data>& data,
+                               double maximum, bool logarithmic) {
+            vector<chart_series> series;
+            series.reserve(data->values.size());
+            for (size_t index = 0; index < data->values.size(); ++index) {
+                series.push_back({data->names[index], &data->values[index], data->colors[index]});
+            }
+            tui::canvas_chart_window window = data->window;
+            if (window.time.timestamps != nullptr) {
+                window.time.timestamps = &data->timestamps;
+            }
+            if (window.time.periods != nullptr) {
+                window.time.periods = &data->periods;
+            }
+            target.area_raster(local, series, maximum, window, logarithmic);
+        }
 
         tui::style make_style(color fg, optional<color> bg = none, bool bold = false) {
             tui::style value;
@@ -23,64 +67,12 @@ namespace neforce::neflux::ui {
             return color{channel(base.R(), accent.R()), channel(base.G(), accent.G()), channel(base.B(), accent.B())};
         }
 
-        bool light_palette(const palette& p) { return p.panel_.R() + p.panel_.G() + p.panel_.B() > 540; }
-
-        bool is_monochrome(const palette& p) {
-            return p.mint_.R() == p.text_.R() && p.mint_.G() == p.text_.G() && p.mint_.B() == p.text_.B() &&
-                   p.blue_.R() == p.text_.R() && p.blue_.G() == p.text_.G() && p.blue_.B() == p.text_.B();
-        }
-
-        color cpu_color(double level, const palette& p) {
-            if (is_monochrome(p)) {
-                const bool light = light_palette(p);
-                const int base = light ? 40 : 120;
-                const int span = light ? 120 : 120;
-                const int value = base + static_cast<int>(neforce::clamp(level / 100.0, 0.0, 1.0) * span);
-                return color{value, value, value};
-            }
-            const color green = p.cpu_start_;
-            const color yellow = p.cpu_mid_;
-            const color red = p.cpu_end_;
-            level = neforce::clamp(level, 0.0, 1.0);
-            const color start = level <= 0.5 ? green : yellow;
-            const color end = level <= 0.5 ? yellow : red;
-            const double fraction = level <= 0.5 ? level * 2.0 : (level - 0.5) * 2.0;
-            const auto mix = [fraction](int a, int b) {
-                return static_cast<int>(
-                        neforce::round(static_cast<double>(a) + (static_cast<double>(b) - a) * fraction));
-            };
-            return color{mix(start.R(), end.R()), mix(start.G(), end.G()), mix(start.B(), end.B())};
-        }
-
         codepoint first_codepoint(string_view text) {
             if (text.empty()) {
                 return codepoint(U' ');
             }
             size_t index = 0;
             return codepoint::decode_utf8(reinterpret_cast<const byte_t*>(text.data()), index, text.size());
-        }
-
-        void line(int x, int y, int end_x, int end_y, const function<void(int, int)>& dot) {
-            const int dx = neforce::absolute(end_x - x);
-            const int dy = -neforce::absolute(end_y - y);
-            const int sx = x < end_x ? 1 : -1;
-            const int sy = y < end_y ? 1 : -1;
-            int error = dx + dy;
-            for (;;) {
-                dot(x, y);
-                if (x == end_x && y == end_y) {
-                    break;
-                }
-                const int twice = 2 * error;
-                if (twice >= dy) {
-                    error += dy;
-                    x += sx;
-                }
-                if (twice <= dx) {
-                    error += dx;
-                    y += sy;
-                }
-            }
         }
 
         void apply_palette_defaults(palette& p) {
@@ -267,13 +259,13 @@ namespace neforce::neflux::ui {
         colors.amber_ = colors.text_;
         colors.red_ = colors.text_;
         colors.selection_ = gray(source.selection_);
-        for (color* value: {&colors.cpu_start_, &colors.cpu_mid_, &colors.cpu_end_, &colors.mem_start_,
-                            &colors.mem_mid_, &colors.mem_end_, &colors.net_start_, &colors.net_mid_,
-                            &colors.net_end_, &colors.gpu_start_, &colors.gpu_mid_, &colors.gpu_end_,
-                            &colors.temp_start_, &colors.temp_mid_, &colors.temp_end_, &colors.proc_start_,
-                            &colors.proc_mid_, &colors.proc_end_, &colors.meter_bg_, &colors.graph_text_,
-                            &colors.followed_bg_, &colors.followed_fg_, &colors.pause_bg_, &colors.follow_bg_,
-                            &colors.banner_bg_, &colors.banner_fg_}) {
+        for (color* value:
+             {&colors.cpu_start_,   &colors.cpu_mid_,     &colors.cpu_end_,    &colors.mem_start_, &colors.mem_mid_,
+              &colors.mem_end_,     &colors.net_start_,   &colors.net_mid_,    &colors.net_end_,   &colors.gpu_start_,
+              &colors.gpu_mid_,     &colors.gpu_end_,     &colors.temp_start_, &colors.temp_mid_,  &colors.temp_end_,
+              &colors.proc_start_,  &colors.proc_mid_,    &colors.proc_end_,   &colors.meter_bg_,  &colors.graph_text_,
+              &colors.followed_bg_, &colors.followed_fg_, &colors.pause_bg_,   &colors.follow_bg_, &colors.banner_bg_,
+              &colors.banner_fg_}) {
             *value = gray(*value);
         }
         return colors;
@@ -298,16 +290,84 @@ namespace neforce::neflux::ui {
         return p.muted_;
     }
 
+    void cell_grid::reset(const rect& area) {
+        area_ = area;
+        islands_.clear();
+        const size_t columns = static_cast<size_t>(neforce::max(0, area.w_));
+        const size_t rows = static_cast<size_t>(neforce::max(0, area.h_));
+        cells_.assign(columns * rows, grid_cell{});
+    }
+
+    void cell_grid::put(const int x, const int y, const codepoint& value, const tui::style& style) {
+        const int column = x - area_.x_;
+        const int row = y - area_.y_;
+        if (column < 0 || row < 0 || column >= area_.w_ || row >= area_.h_) {
+            return;
+        }
+        const size_t index = static_cast<size_t>(row) * static_cast<size_t>(area_.w_) + static_cast<size_t>(column);
+        auto& cell = cells_[index];
+        cell.value = value;
+        cell.continuation = false;
+        cell.painted = true;
+        cell.fg = style.fg.has_value() ? *style.fg : color{0, 0, 0, 0};
+        cell.bg = style.bg.has_value() ? *style.bg : color{0, 0, 0, 0};
+        cell.bold = style.bold.value_or(false);
+        const int width = value.display_width();
+        for (int extra = 1; extra < width; ++extra) {
+            if (column + extra >= area_.w_) {
+                break;
+            }
+            auto& next = cells_[index + static_cast<size_t>(extra)];
+            next.value = codepoint(U' ');
+            next.continuation = true;
+            next.painted = true;
+            next.bold = false;
+        }
+    }
+
+    void cell_grid::fill(const int x, const int y, const int width, const int height, string_view glyph,
+                         const tui::style& style) {
+        const codepoint value = first_codepoint(glyph);
+        for (int row = 0; row < height; ++row) {
+            for (int column = 0; column < width; ++column) {
+                put(x + column, y + row, value, style);
+            }
+        }
+    }
+
+    const grid_cell& cell_grid::at(const int column, const int row) const noexcept {
+        static const grid_cell blank{};
+        if (column < 0 || row < 0 || column >= area_.w_ || row >= area_.h_) {
+            return blank;
+        }
+        return cells_[static_cast<size_t>(row) * static_cast<size_t>(area_.w_) + static_cast<size_t>(column)];
+    }
+
+    void cell_grid::add_island(plot_island island) { islands_.push_back(move(island)); }
+
     painter::painter(tui::canvas_painter& target, const palette& colors, bool ascii, bool transparent,
                      string graph_symbol, bool rounded, bool graph_gradient) :
-    target_(target),
+    canvas_(&target),
     palette_(colors),
     area_{0, 0, target.width(), target.height()},
     ascii_(ascii),
     transparent_(transparent),
     graph_symbol_(move(graph_symbol)),
     rounded_(rounded),
-    graph_gradient_(graph_gradient) {}
+    graph_gradient_(graph_gradient),
+    panes_(make_shared<vector<pane>>()) {}
+
+    painter::painter(cell_grid& target, const palette& colors, bool ascii, bool transparent, string graph_symbol,
+                     bool rounded, bool graph_gradient) :
+    grid_(&target),
+    palette_(colors),
+    area_{target.area().x_, target.area().y_, target.width(), target.height()},
+    ascii_(ascii),
+    transparent_(transparent),
+    graph_symbol_(move(graph_symbol)),
+    rounded_(rounded),
+    graph_gradient_(graph_gradient),
+    panes_(make_shared<vector<pane>>()) {}
 
     painter painter::with_graph_symbol(string symbol) const {
         painter copy = *this;
@@ -335,7 +395,11 @@ namespace neforce::neflux::ui {
         if (!visible(x, y)) {
             return;
         }
-        target_.put(x, y, value, style);
+        if (grid_ != nullptr) {
+            grid_->put(x, y, value, style);
+            return;
+        }
+        canvas_->put(x, y, value, style);
     }
 
     void painter::fill(const rect& area, string_view glyph, color fg, color bg) {
@@ -351,7 +415,11 @@ namespace neforce::neflux::ui {
                                       value.B() == palette_.panel_.B()));
             return background ? color{0, 0, 0, 0} : move(value);
         };
-        target_.fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(move(fg), base(move(bg))));
+        if (grid_ != nullptr) {
+            grid_->fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(move(fg), base(move(bg))));
+            return;
+        }
+        canvas_->fill(clipped.x_, clipped.y_, clipped.w_, clipped.h_, glyph, make_style(move(fg), base(move(bg))));
     }
 
     void painter::clear(const rect& area, color bg) { fill(area, " ", palette_.text_, move(bg)); }
@@ -404,7 +472,12 @@ namespace neforce::neflux::ui {
                               background.B() == palette_.panel_.B()))) {
             background = color{0, 0, 0, 0};
         }
-        target_.fill(area.x_, area.y_, area.w_, area.h_, " ", make_style(palette_.text_, background));
+        const tui::style background_style = make_style(palette_.text_, background);
+        if (grid_ != nullptr) {
+            grid_->fill(area.x_, area.y_, area.w_, area.h_, " ", background_style);
+        } else {
+            canvas_->fill(area.x_, area.y_, area.w_, area.h_, " ", background_style);
+        }
         const tui::style border = make_style(palette_.border_, background);
         const bool ascii = ascii_;
         const bool rounded = rounded_ && !ascii;
@@ -416,9 +489,18 @@ namespace neforce::neflux::ui {
         hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
         vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
         vline(area.right() - 1, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
-        if (!title.empty()) {
-            const int maximum = neforce::max(0, area.w_ - 6);
-            const string clipped_title = truncate_display(title, maximum);
+        const string clipped_title = title.empty() ? string{} : truncate_display(title, neforce::max(0, area.w_ - 6));
+        if (grid_ != nullptr) {
+            pane entry;
+            entry.area_ = area;
+            entry.title_ = clipped_title;
+            entry.accent_ = accent;
+            entry.background_ = background;
+            entry.ascii_ = ascii_;
+            entry.rounded_ = rounded_ && !ascii_;
+            panes_->push_back(move(entry));
+        }
+        if (!clipped_title.empty()) {
             const int width = display_width(clipped_title.view());
             fill(rect{area.x_ + 2, area.y_, width + 2, 1}, " ", palette_.text_, background);
             text(area.x_ + 3, area.y_, clipped_title.view(), move(accent), background, true);
@@ -457,204 +539,89 @@ namespace neforce::neflux::ui {
         if (y < area_.y_ || y >= area_.bottom() || width <= 0) {
             return;
         }
-        const tui::style border_style = make_style(palette_.border_);
-        const tui::style track_style = make_style(palette_.meter_bg_);
-        if (!value.has_value() || !neforce::is_finite(*value) || !neforce::is_finite(maximum) || maximum <= 0.0) {
-            for (int index = 0; index < width; ++index) {
-                put(x + index, y, codepoint(ascii_ ? U'-' : U'┄'), border_style);
+        if (grid_ != nullptr) {
+            tui::style empty_style;
+            empty_style.fg = palette_.meter_bg_;
+            tui::style fill_style;
+            fill_style.fg = blend(palette_.panel_, accent);
+            if (!value.has_value() || !neforce::is_finite(*value) || !neforce::is_finite(maximum) || maximum <= 0.0) {
+                for (int index = 0; index < width; ++index) {
+                    put(x + index, y, codepoint(ascii_ ? U'-' : U'┄'), empty_style);
+                }
+                return;
+            }
+            const double units = neforce::clamp(*value / maximum, 0.0, 1.0) * static_cast<double>(width);
+            const int whole = static_cast<int>(neforce::floor(units));
+            const int fraction = static_cast<int>(neforce::floor((units - whole) * 8.0));
+            static constexpr const char* partials[] = {"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"};
+            for (int index = 0; index < whole && index < width; ++index) {
+                put(x + index, y, codepoint(ascii_ ? U'#' : U'█'), fill_style);
+            }
+            int used = whole;
+            if (whole < width && fraction > 0) {
+                put(x + whole, y, first_codepoint(ascii_ ? string_view("#") : string_view(partials[fraction])),
+                    fill_style);
+                ++used;
+            }
+            for (int index = used; index < width; ++index) {
+                put(x + index, y, codepoint(ascii_ ? U'-' : U'░'), empty_style);
             }
             return;
         }
-        const color filled = blend(palette_.panel_, accent);
-        const tui::style fill_style = make_style(filled);
-        const double units = neforce::clamp(*value / maximum, 0.0, 1.0) * static_cast<double>(width);
-        const int whole = static_cast<int>(neforce::floor(units));
-        const int fraction = static_cast<int>(neforce::floor((units - whole) * 8.0));
-        static constexpr const char* partials[] = {"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"};
-        for (int index = 0; index < whole && index < width; ++index) {
-            put(x + index, y, codepoint(ascii_ ? U'#' : U'█'), fill_style);
-        }
-        int used = whole;
-        if (whole < width && fraction > 0) {
-            put(x + whole, y, ascii_ ? codepoint(U'#') : first_codepoint(partials[fraction]), fill_style);
-            ++used;
-        }
-        for (int index = used; index < width; ++index) {
-            put(x + index, y, codepoint(ascii_ ? U'-' : U'░'), track_style);
-        }
+        tui::canvas_track(*canvas_, x, y, width, value, maximum, blend(palette_.panel_, accent), palette_.meter_bg_,
+                          ascii_);
     }
 
-    namespace {
-
-        constexpr string_view braille_up[25] = {
-                " ", "⢀", "⢠", "⢰", "⢸", "⡀", "⣀", "⣠", "⣰", "⣸", "⡄", "⣄", "⣤",
-                "⣴", "⣼", "⡆", "⣆", "⣦", "⣶", "⣾", "⡇", "⣇", "⣧", "⣷", "⣿",
-        };
-
-        constexpr string_view braille_down[25] = {
-                " ", "⠈", "⠘", "⠸", "⢸", "⠁", "⠉", "⠙", "⠹", "⢹", "⠃", "⠋", "⠛",
-                "⠻", "⢻", "⠇", "⠏", "⠟", "⠿", "⢿", "⡇", "⡏", "⡟", "⡿", "⣿",
-        };
-
-        constexpr string_view block_up[25] = {
-                " ", "▗", "▗", "▐", "▐", "▖", "▄", "▄", "▟", "▟", "▖", "▄", "▄",
-                "▟", "▟", "▌", "▙", "▙", "█", "█", "▌", "▙", "▙", "█", "█",
-        };
-
-        constexpr string_view block_down[25] = {
-                " ", "▝", "▝", "▐", "▐", "▘", "▀", "▀", "▜", "▜", "▘", "▀", "▀",
-                "▜", "▜", "▌", "▛", "▛", "█", "█", "▌", "▛", "▛", "█", "█",
-        };
-
-        constexpr string_view tty_up[25] = {
-                " ", "░", "░", "▒", "▒", "░", "░", "▒", "▒", "█", "░", "▒", "▒",
-                "▒", "█", "▒", "▒", "▒", "█", "█", "▒", "█", "█", "█", "█",
-        };
-
-        constexpr string_view tty_down[25] = {
-                " ", "░", "░", "▒", "▒", "░", "░", "▒", "▒", "█", "░", "▒", "▒",
-                "▒", "█", "▒", "▒", "▒", "█", "█", "▒", "█", "█", "█", "█",
-        };
-
-        string_view graph_glyph(const string& symbol, const int left, const int right, const bool mirrored) {
-            const int index = neforce::clamp(left, 0, 4) * 5 + neforce::clamp(right, 0, 4);
-            if (symbol == "block") {
-                return mirrored ? block_down[index] : block_up[index];
-            }
-            if (symbol == "tty") {
-                return mirrored ? tty_down[index] : tty_up[index];
-            }
-            return mirrored ? braille_down[index] : braille_up[index];
-        }
-
-    } // namespace
 
     void painter::raster(const rect& area, const vector<chart_series>& series, double maximum,
                          const plot_window& window, bool logarithmic, int direction) {
         if (area.empty()) {
             return;
         }
-        const int width = area.w_ * 2;
-        const int height = area.h_ * 4;
-        vector<uint8_t> bits(static_cast<size_t>(area.w_ * area.h_), 0);
-        vector<color> colors(static_cast<size_t>(area.w_ * area.h_), palette_.panel_);
-        const bool mirrored = direction > 0;
-        const bool cpu_mode = direction != 0;
-        vector<color> row_colors;
-        if (cpu_mode) {
-            row_colors.reserve(static_cast<size_t>(area.h_));
-            for (int row = 0; row < area.h_; ++row) {
-                const int distance = mirrored ? row : area.h_ - 1 - row;
-                row_colors.push_back(cpu_color(
-                        static_cast<double>(distance) / static_cast<double>(neforce::max(1, area.h_ - 1)), palette_));
+        if (grid_ != nullptr) {
+            auto data = make_shared<island_raster_data>();
+            data->window = window;
+            if (window.time.timestamps != nullptr) {
+                data->timestamps = *window.time.timestamps;
             }
+            if (window.time.periods != nullptr) {
+                data->periods = *window.time.periods;
+            }
+            data->values.resize(series.size());
+            data->names.reserve(series.size());
+            data->colors.reserve(series.size());
+            for (size_t index = 0; index < series.size(); ++index) {
+                data->names.push_back(series[index].name_);
+                data->colors.push_back(series[index].color_);
+                if (series[index].values_ != nullptr) {
+                    data->values[index] = *series[index].values_;
+                }
+            }
+            grid_->add_island({area, [data, maximum, logarithmic, direction](painter& target, const rect& local) {
+                                   paint_island_raster(target, local, data, maximum, logarithmic, direction);
+                               }});
+            return;
         }
-        const double max_value = neforce::max(1.0, maximum);
-        const auto y_of = [&](double value) {
-            value = neforce::clamp(value, 0.0, max_value);
-            const double fraction =
-                    logarithmic ? neforce::logarithm_1p(value) / neforce::logarithm_1p(max_value) : value / max_value;
-            const double position = mirrored ? fraction : 1.0 - fraction;
-            return static_cast<int>(neforce::round(position * (height - 1)));
-        };
-        const auto dot = [&](int x, int y, const color& tint) {
-            if (x < 0 || y < 0 || x >= width || y >= height) {
-                return;
-            }
-            const auto index = static_cast<size_t>(y / 4 * area.w_ + x / 2);
-            if (index >= bits.size()) {
-                return;
-            }
-            static constexpr int dots[2][4] = {{0, 1, 2, 6}, {3, 4, 5, 7}};
-            bits[index] |= static_cast<uint8_t>(1U << dots[x % 2][y % 4]);
-            if (cpu_mode) {
-                colors[index] = row_colors[static_cast<size_t>(y / 4)];
-            } else if (graph_gradient_ && area.h_ > 1) {
-                const double fade =
-                        0.55 * static_cast<double>(y / 4) / static_cast<double>(area.h_ - 1);
-                const auto mix_channel = [fade](int base, int accent) {
-                    return static_cast<int>(neforce::round(static_cast<double>(base) +
-                                                           (static_cast<double>(accent) - base) * (1.0 - fade)));
-                };
-                colors[index] = color{mix_channel(palette_.panel_.R(), tint.R()),
-                                      mix_channel(palette_.panel_.G(), tint.G()),
-                                      mix_channel(palette_.panel_.B(), tint.B())};
-            } else {
-                colors[index] = tint;
-            }
-        };
-        vector<plot_range> columns;
+        tui::canvas_chart_style style;
+        style.panel = palette_.panel_;
+        style.graph_text = palette_.graph_text_;
+        style.cpu_start = palette_.cpu_start_;
+        style.cpu_mid = palette_.cpu_mid_;
+        style.cpu_end = palette_.cpu_end_;
+        style.graph_symbol = graph_symbol_;
+        style.ascii = ascii_;
+        style.gradient = graph_gradient_;
+        vector<tui::chart_series> converted;
+        converted.reserve(series.size());
         for (const auto& item: series) {
-            if (item.values_ == nullptr) {
-                continue;
-            }
-            window.project(*item.values_, static_cast<size_t>(width), columns);
-            bool has_previous = false;
-            int previous_x = 0;
-            int previous_y = 0;
-            for (size_t x = 0; x < columns.size(); ++x) {
-                const auto& range = columns[x];
-                if (!range.gap && range.high == 0.0 && range.low == 0.0 && range.last == 0.0) {
-                    has_previous = false;
-                    continue;
-                }
-                const int end = y_of(range.last);
-                if (series.size() == 1) {
-                    const int top = cpu_mode ? y_of(range.high) : end;
-                    if (mirrored) {
-                        for (int row = 0; row <= top; ++row) {
-                            dot(static_cast<int>(x), row, item.color_);
-                        }
-                    } else {
-                        for (int row = top; row < height; ++row) {
-                            dot(static_cast<int>(x), row, item.color_);
-                        }
-                    }
-                }
-                const int high = y_of(range.high);
-                const int low = y_of(range.low);
-                for (int row = high; row <= low; ++row) {
-                    dot(static_cast<int>(x), row, item.color_);
-                }
-                if (has_previous && !range.gap) {
-                    line(previous_x, previous_y, static_cast<int>(x), end,
-                         [&](int px, int py) { dot(px, py, item.color_); });
-                }
-                dot(static_cast<int>(x), end, item.color_);
-                has_previous = !range.gap;
-                previous_x = static_cast<int>(x);
-                previous_y = end;
-            }
+            tui::chart_series value;
+            value.name = item.name_;
+            value.stream = item.values_;
+            value.color = item.color_;
+            converted.push_back(move(value));
         }
-        for (int row = 0; row < area.h_; ++row) {
-            for (int col = 0; col < area.w_; ++col) {
-                const auto index = static_cast<size_t>(row * area.w_ + col);
-                if (bits[index] == 0) {
-                    continue;
-                }
-                int count = 0;
-                for (uint8_t mask = 1; mask != 0; mask = static_cast<uint8_t>(mask << 1)) {
-                    count += (bits[index] & mask) != 0 ? 1 : 0;
-                }
-                if (ascii_ || graph_symbol_ == "ascii") {
-                    const char glyph = count >= 5 ? '#' : (count >= 3 ? '+' : (count >= 2 ? '-' : '.'));
-                    put(area.x_ + col, area.y_ + row, codepoint(static_cast<uint32_t>(glyph)),
-                        make_style(colors[index]));
-                } else {
-                    int left = 0;
-                    int right = 0;
-                    const uint8_t value = bits[index];
-                    for (const int bit: {0, 1, 2, 6}) {
-                        left += (value & static_cast<uint8_t>(1U << bit)) != 0 ? 1 : 0;
-                    }
-                    for (const int bit: {3, 4, 5, 7}) {
-                        right += (value & static_cast<uint8_t>(1U << bit)) != 0 ? 1 : 0;
-                    }
-                    const string_view glyph = graph_glyph(graph_symbol_, left, right, mirrored);
-                    put(area.x_ + col, area.y_ + row, first_codepoint(glyph), make_style(colors[index]));
-                }
-            }
-        }
+        tui::canvas_chart(*canvas_, move(style))
+                .raster(area.x_, area.y_, area.w_, area.h_, converted, maximum, window, logarithmic, direction);
     }
 
     void painter::trend(const rect& area, const vector<chart_series>& series, double maximum, const plot_window& window,
@@ -686,6 +653,69 @@ namespace neforce::neflux::ui {
             }
         }
         raster(body, series, maximum, window, logarithmic, 0);
+    }
+
+    void painter::area(const rect& area, const vector<chart_series>& series, double maximum, const plot_window& window,
+                       bool logarithmic) {
+        if (area.empty() || series.empty()) {
+            return;
+        }
+        if (grid_ != nullptr) {
+            auto data = make_shared<island_raster_data>();
+            data->window = window;
+            if (window.time.timestamps != nullptr) {
+                data->timestamps = *window.time.timestamps;
+            }
+            if (window.time.periods != nullptr) {
+                data->periods = *window.time.periods;
+            }
+            data->values.resize(series.size());
+            data->names.reserve(series.size());
+            data->colors.reserve(series.size());
+            for (size_t index = 0; index < series.size(); ++index) {
+                data->names.push_back(series[index].name_);
+                data->colors.push_back(series[index].color_);
+                if (series[index].values_ != nullptr) {
+                    data->values[index] = *series[index].values_;
+                }
+            }
+            grid_->add_island({area, [data, maximum, logarithmic](painter& target, const rect& local) {
+                                   paint_island_area(target, local, data, maximum, logarithmic);
+                               }});
+            return;
+        }
+        area_raster(area, series, maximum, window, logarithmic);
+    }
+
+    void painter::area_raster(const rect& area, const vector<chart_series>& series, double maximum,
+                              const plot_window& window, bool logarithmic) {
+        if (canvas_ == nullptr || area.empty() || series.empty()) {
+            return;
+        }
+        tui::canvas_chart_style style;
+        style.panel = palette_.panel_;
+        style.graph_text = palette_.graph_text_;
+        const color tint = series.front().color_;
+        const auto mix = [](int from, int to, int weight) { return (from * (10 - weight) + to * weight) / 10; };
+        style.cpu_start = color{mix(palette_.panel_.R(), tint.R(), 4), mix(palette_.panel_.G(), tint.G(), 4),
+                                mix(palette_.panel_.B(), tint.B(), 4)};
+        style.cpu_mid = color{mix(palette_.panel_.R(), tint.R(), 7), mix(palette_.panel_.G(), tint.G(), 7),
+                              mix(palette_.panel_.B(), tint.B(), 7)};
+        style.cpu_end = tint;
+        style.graph_symbol = graph_symbol_;
+        style.ascii = ascii_;
+        style.gradient = true;
+        vector<tui::chart_series> converted;
+        converted.reserve(series.size());
+        for (const auto& item: series) {
+            tui::chart_series value;
+            value.name = item.name_;
+            value.stream = item.values_;
+            value.color = item.color_;
+            converted.push_back(move(value));
+        }
+        tui::canvas_chart(*canvas_, move(style))
+                .raster(area.x_, area.y_, area.w_, area.h_, converted, maximum, window, logarithmic, -1);
     }
 
     void painter::chart(const rect& area, string_view title, const vector<chart_series>& series, double maximum,
@@ -766,23 +796,35 @@ namespace neforce::neflux::ui {
     }
 
     void painter::scrollbar(const rect& area, size_t content, size_t viewport, size_t position) {
-        if (area.empty() || viewport == 0 || content <= viewport) {
+        if (area.empty()) {
             return;
         }
-        const int track = area.h_;
-        const int thumb = neforce::max(1, static_cast<int>(static_cast<double>(viewport) / content * track));
-        const int range = neforce::max(1, track - thumb);
-        const int maximum = static_cast<int>(content - viewport);
-        const int thumb_pos =
-                maximum == 0
-                        ? 0
-                        : static_cast<int>(static_cast<double>(neforce::min(position, static_cast<size_t>(maximum))) /
+        if (grid_ != nullptr) {
+            if (viewport == 0 || content <= viewport) {
+                return;
+            }
+            const int height = area.h_;
+            const int thumb_size = neforce::max(1, static_cast<int>(static_cast<double>(viewport) / content * height));
+            const int range = neforce::max(1, height - thumb_size);
+            const int maximum = static_cast<int>(content - viewport);
+            const int thumb_pos =
+                    maximum == 0 ? 0
+                                 : static_cast<int>(
+                                           static_cast<double>(neforce::min(position, static_cast<size_t>(maximum))) /
                                            maximum * range);
-        for (int row = 0; row < track; ++row) {
-            const bool active = row >= thumb_pos && row < thumb_pos + thumb;
-            put(area.x_, area.y_ + row, codepoint(active ? (ascii_ ? U'#' : U'█') : (ascii_ ? U'-' : U'░')),
-                make_style(active ? palette_.mint_ : palette_.border_));
+            tui::style thumb_style;
+            thumb_style.fg = palette_.mint_;
+            tui::style track_style;
+            track_style.fg = palette_.border_;
+            for (int row = 0; row < height; ++row) {
+                const bool active = row >= thumb_pos && row < thumb_pos + thumb_size;
+                put(area.x_, area.y_ + row, codepoint(active ? (ascii_ ? U'#' : U'█') : (ascii_ ? U'-' : U'░')),
+                    active ? thumb_style : track_style);
+            }
+            return;
         }
+        tui::canvas_scrollbar(*canvas_, area.x_, area.y_, area.h_, content, viewport, position, palette_.mint_,
+                              palette_.border_, ascii_);
     }
 
     string value_label(double value, string_view unit, const display_config& cfg) {

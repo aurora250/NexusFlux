@@ -49,8 +49,8 @@ namespace neforce::neflux {
             }
             if (!crash_directory.empty()) {
                 try {
-                    static_cast<void>(filesystem::create_and_write(
-                            crash_directory / "crash-fallback.log", timestamp_text() + " " + message + "\n", true));
+                    static_cast<void>(filesystem::create_and_write(crash_directory / "crash-fallback.log",
+                                                                   timestamp_text() + " " + message + "\n", true));
                 } catch (...) {
                 }
             }
@@ -99,12 +99,11 @@ namespace neforce::neflux {
                                           : nullptr;
             string detail = format("Unhandled exception code=0x{:08X} address={}", code, address);
             if (!crash_directory.empty()) {
-                const path dump_path =
-                        crash_directory /
-                        (format("nexus-flux-{}-{}.dmp", timestamp_text(), process::current_id()).view());
+                const path dump_path = crash_directory /
+                                       (format("nexus-flux-{}-{}.dmp", timestamp_text(), process::current_id()).view());
                 const auto wide_path = character::to_wstring(dump_path.str().view());
                 const ::HANDLE file = ::CreateFileW(wide_path.data(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+                                                    FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (file != INVALID_HANDLE_VALUE) {
                     ::MINIDUMP_EXCEPTION_INFORMATION exception_info{};
                     exception_info.ThreadId = ::GetCurrentThreadId();
@@ -139,8 +138,8 @@ namespace neforce::neflux {
             auto& registry = logger_registry::instance();
             auto log = registry.get_logger("nexus-flux");
             log->set_level(log_level::INFO);
-            auto sink = make_shared<file_sink>(log_root / "nexus-flux.log",
-                                                                     static_cast<size_t>(8 * 1024 * 1024), true, 5);
+            auto sink =
+                    make_shared<file_sink>(log_root / "nexus-flux.log", static_cast<size_t>(8 * 1024 * 1024), true, 5);
             log->add_sink(sink);
             crash_logger = log;
             string command;
@@ -150,8 +149,7 @@ namespace neforce::neflux {
                 }
                 command.append(argv[index] != nullptr ? argv[index] : "");
             }
-            log->log(log_level::INFO,
-                     format("startup pid={} version=0.1.0 command={}", process::current_id(), command),
+            log->log(log_level::INFO, format("startup pid={} version=0.1.0 command={}", process::current_id(), command),
                      source_location::current());
             log->flush();
             static_cast<void>(set_exit(on_exit));

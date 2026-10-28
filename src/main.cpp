@@ -110,13 +110,17 @@ namespace {
         bool csv_header = true;
 
         const string wanted = args.view_.has_value() ? *args.view_ : "overview";
-        const auto export_svg_file = [&](const snapshot& value, const inventory& data) {
-            if (!args.export_svg_.has_value()) {
+        const auto export_svg_file = [&](const vector<snapshot>& values, const inventory& data) {
+            if (!args.export_svg_.has_value() || values.empty()) {
                 return true;
             }
             string svg;
             try {
-                svg = ui::render_svg(value, data, cfg, wanted, args.gpu_panel_, args.width_, args.height_);
+                if (values.size() > 1) {
+                    svg = ui::render_svg_history(values, data, cfg, wanted, args.gpu_panel_, args.width_, args.height_);
+                } else {
+                    svg = ui::render_svg(values.back(), data, cfg, wanted, args.gpu_panel_, args.width_, args.height_);
+                }
             } catch (const exception& error) {
                 errln(format("SVG render failed: {}", error.what()));
                 return false;
@@ -137,10 +141,13 @@ namespace {
             if (limit > snapshots.size()) {
                 limit = snapshots.size();
             }
+            vector<snapshot> rendered;
+            rendered.reserve(limit);
             snapshot last;
             for (size_t index = 0; index < limit; ++index) {
                 const auto& item = snapshots[index];
                 last = item;
+                rendered.push_back(item);
                 if (writer != nullptr) {
                     writer->write(item);
                 }
@@ -157,7 +164,7 @@ namespace {
                 return 1;
             }
             if (args.export_svg_.has_value() && last.timestamp_ != 0) {
-                return export_svg_file(last, last.inventory_) ? 0 : 1;
+                return export_svg_file(rendered, last.inventory_) ? 0 : 1;
             }
             return 0;
         }
@@ -173,6 +180,8 @@ namespace {
         }
         const uint32_t total = args.samples_.has_value() ? *args.samples_ : 1;
         snapshot last;
+        vector<snapshot> rendered;
+        rendered.reserve(total);
         int64_t deadline = monotonic_ms() + static_cast<int64_t>(cfg.interval_ms_);
         for (uint32_t index = 0; index < total && !stopped(); ++index) {
             wait_until(deadline);
@@ -183,6 +192,7 @@ namespace {
             sample.apply_inventory(discovered);
             annotate(sample);
             last = sample;
+            rendered.push_back(sample);
             if (writer != nullptr) {
                 writer->write(sample);
             }
@@ -201,7 +211,7 @@ namespace {
             return 1;
         }
         if (args.export_svg_.has_value()) {
-            return export_svg_file(last, discovered) ? 0 : 1;
+            return export_svg_file(rendered, discovered) ? 0 : 1;
         }
         return 0;
     }
@@ -364,7 +374,7 @@ namespace {
         if (args.filter_.empty()) {
             return;
         }
-        vector<connection> rows;
+        vector<neforce::neflux::connection> rows;
         for (auto& item: sample.connections_) {
             if (connection_matches(item, args.filter_)) {
                 rows.push_back(move(item));
@@ -380,11 +390,11 @@ namespace {
         auto sample = collector.collect();
         filter_network_sample(sample, args);
         auto rows = move(sample.connections_);
-        const auto metric = [](const connection& item) {
+        const auto metric = [](const neforce::neflux::connection& item) {
             return (item.rx_per_sec_.has_value() ? *item.rx_per_sec_ : 0.0) +
                    (item.tx_per_sec_.has_value() ? *item.tx_per_sec_ : 0.0);
         };
-        const auto before = [&](const connection& left, const connection& right) {
+        const auto before = [&](const neforce::neflux::connection& left, const neforce::neflux::connection& right) {
             bool result = false;
             if (args.sort_ == "process") {
                 result = !left.process_names_.empty() &&
@@ -410,9 +420,10 @@ namespace {
             }
             return result;
         };
-        stable_sort_by_index(rows, [&](const connection& left, const connection& right) {
-            return args.reverse_ ? before(right, left) : before(left, right);
-        });
+        stable_sort_by_index(rows,
+                             [&](const neforce::neflux::connection& left, const neforce::neflux::connection& right) {
+                                 return args.reverse_ ? before(right, left) : before(left, right);
+                             });
         vector<string> lines;
         for (const auto& item: rows) {
             const string process_name = item.process_names_.empty() ? string("—") : item.process_names_[0];

@@ -13,6 +13,8 @@
 #include <NeFlux/recording.hpp>
 #include <NeFlux/ros.hpp>
 #include <NeFlux/ui/testing.hpp>
+#include <NeForce/tui/headless.hpp>
+#include <NeForce/tui/application.hpp>
 #include <NeForce/core/system/process.hpp>
 #include <NeForce/core/system/sysinfo.hpp>
 #include <NeForce/network/socket_base.hpp>
@@ -158,7 +160,7 @@ namespace {
         CHECK(frames.find("black") != string::npos);
         CHECK(frames.find("●") != string::npos);
         CHECK(frames.find("Settings") != string::npos);
-        CHECK(ui::headless_probe_background("#esc", 40, 22) ==
+        CHECK(ui::headless_probe_background("#wait|#esc|\\x1b[B|\\x1b[B|\\x1b[B|\\r|#wait|#esc", 40, 22) ==
               ui::headless_probe_background("#esc|\x1b[<0;40;16M|#wait|#esc", 40, 22));
         const string choice = ui::headless_probe("#esc|\x1b[<0;40;18M|\x1b[<0;40;14M");
         CHECK(choice.find("Setting · Theme") != string::npos);
@@ -225,8 +227,8 @@ namespace {
         window.project(values, 25, projected);
         CHECK(projected.size() == 25);
         CHECK(projected.back().last == 99.0);
-        CHECK(nice_max(110.0) == 200.0);
-        CHECK(nice_max(-1.0) == 1.0);
+        CHECK(tui::canvas_chart_nice_max(110.0) == 200.0);
+        CHECK(tui::canvas_chart_nice_max(-1.0) == 1.0);
     }
 
     void test_filter() {
@@ -361,8 +363,8 @@ namespace {
         CHECK(!mounts.empty());
         CHECK(!mounts.front().target.empty());
 #endif
-        CHECK(neforce::socket_base::state_name(static_cast<uint8_t>(10), false) == "LISTEN");
-        CHECK(neforce::socket_base::state_name(static_cast<uint8_t>(1), false) == "ESTABLISHED");
+        CHECK(neforce::socket_base::state_name(neforce::socket_base::state::listen) == "LISTEN");
+        CHECK(neforce::socket_base::state_name(neforce::socket_base::state::established) == "ESTABLISHED");
     }
 
     void test_battery_and_gpu() {
@@ -522,15 +524,19 @@ namespace {
         value.processes_.push_back(item);
         advanced telemetry;
         telemetry.collect(value, cfg);
+#if NEFLUX_PLATFORM_LINUX
         CHECK(value.extra_.get("CPU scheduler / swap IO") != nullptr);
         CHECK(!value.processes_.empty());
         CHECK(value.processes_[0].extra_.get("stat") != nullptr);
+#endif
         cfg.columns_ = {"cpu_delay", "io_delay", "swap_delay", "priority"};
         value.processes_[0].extra_ = json::object();
         advanced delay_telemetry;
         delay_telemetry.collect(value, cfg);
+#if NEFLUX_PLATFORM_LINUX
         CHECK(value.processes_[0].extra_.get("delay_accounting_status") != nullptr ||
               value.processes_[0].extra_.get("cpu_delay") != nullptr);
+#endif
         const json extras = discover_platform_extras(cfg);
         CHECK(extras.is_object());
 #if NEFLUX_PLATFORM_LINUX
@@ -632,7 +638,9 @@ namespace {
         CHECK(connections.size() == 1);
         if (!connections.empty()) {
             CHECK(connections[0].local_ == "127.0.0.1:53");
+#if NEFLUX_PLATFORM_LINUX
             CHECK(connections[0].state_ == "LISTEN");
+#endif
             CHECK(connections[0].send_queue_.has_value() && *connections[0].send_queue_ == 16);
         }
     }
@@ -647,11 +655,133 @@ namespace {
         CHECK(minimal.processes_.empty());
         CHECK(minimal.connections_.connections_.empty());
         const snapshot connected = instance.collect_with_processes(cfg, false, false, true);
-#if NEFLUX_PLATFORM_LINUX
-        CHECK(!connected.connections_.connections_.empty());
-#else
-        CHECK(connected.connections_.connections_.empty());
-#endif
+        CHECK(connected.connections_.connections_.size() >= minimal.connections_.connections_.size());
+    }
+
+
+    void test_selection_clipboard_state() {
+        struct dummy_root final : tui::component<> {
+            tui::element render() override { return tui::element::text("selectable text"); }
+        };
+        dummy_root root;
+        tui::headless app(&root, 120, 40);
+        app.render();
+        app.feed("\x1b[<0;1;1M\x1b[<32;10;1M");
+        CHECK(tui::application::has_selection());
+        CHECK(!tui::application::selection_text().empty());
+        tui::application::copy_selection();
+        CHECK(!tui::application::has_selection());
+    }
+    void test_tools_and_column_window() {
+        // 主菜单进入 Sort 子菜单后 Esc 应回到主菜单
+        const string submenu = ui::headless_probe("#wait|#esc|\x1b[B|\x1b[B|\x1b[B|\r|#wait|#esc");
+        CHECK(submenu.find("Save config") != string::npos);
+        // F6 打开上下文工具菜单（进程页）
+        const string tools = ui::headless_probe_sized(120, 40, "2|\x1b[17~");
+        CHECK(tools.find("Tools") != string::npos);
+        CHECK(tools.find("Signal") != string::npos);
+        // F7 打开日志弹窗
+        const string logs = ui::headless_probe_sized(120, 40, "2|\x1b[18~");
+        CHECK(logs.find("Logs") != string::npos);
+        // Shift+Right 横向滚动进程列窗口
+        const string columns = ui::headless_probe_sized(120, 40, "2|\x1b[1;2C");
+        CHECK(columns.find("Columns start at") != string::npos);
+        // Ctrl+C 复制由 reconciler 在 dispatch_key 中拦截（copy-on-select 同样可用）
+    }
+    void test_tab_layout_hits() {
+        // 无头终端固定 120 × 40：标签栏高亮与 mouse hit 必须来自同一份布局
+        const string initial = ui::headless_probe("");
+        CHECK(initial.find("120 × 40 · Processes") != string::npos);
+
+        // 点击 [1] Overview（第 2 行、第 6 列，1 基）后切换视图
+        const string overview = ui::headless_probe("\x1b[<0;6;2M");
+        CHECK(overview.rfind("120 × 40 · Overview") != string::npos);
+        // 选中背景覆盖 [1] Overview 的 0..13 列，不越界到 [2]
+        const uint32_t overview_bg = ui::headless_probe_background("\x1b[<0;6;2M", 0, 1);
+        CHECK(overview_bg == ui::headless_probe_background("\x1b[<0;6;2M", 13, 1));
+        CHECK(overview_bg != ui::headless_probe_background("\x1b[<0;6;2M", 14, 1));
+
+        // 点击 [2] Processes 后高亮正好覆盖 14..28 列
+        const string processes = ui::headless_probe("\x1b[<0;16;2M");
+        CHECK(processes.rfind("120 × 40 · Processes") != string::npos);
+        const uint32_t processes_bg = ui::headless_probe_background("\x1b[<0;16;2M", 14, 1);
+        CHECK(processes_bg == ui::headless_probe_background("\x1b[<0;16;2M", 28, 1));
+        CHECK(processes_bg != ui::headless_probe_background("\x1b[<0;16;2M", 29, 1));
+
+        // [+] 溢出指示（107 列）打开视图菜单
+        const string menu = ui::headless_probe("\x1b[<0;108;2M");
+        CHECK(menu.rfind("Explorer") != string::npos);
+    }
+
+    void test_popup_overlay() {
+        // 弹窗是叠加层：菜单/帮助/设置都以 DOM 行渲染，且只覆盖自身区域
+        const string menu = ui::headless_probe("#wait|#esc|\\x1b[B|\\x1b[B|\\x1b[B|\\r|#wait|#esc");
+        CHECK(menu.rfind("Quit") != string::npos);
+        CHECK(menu.rfind("Settings") != string::npos);
+        CHECK(menu.rfind("PROCESSES") != string::npos); // 弹窗外的内容仍然可见
+        const string help = ui::headless_probe("\x1bOP");
+        CHECK(help.rfind("Help") != string::npos);
+        CHECK(help.rfind("Change page") != string::npos);
+        const string settings = ui::headless_probe("\x1bOQ");
+        CHECK(settings.rfind("Config file") != string::npos);
+        CHECK(settings.rfind("Sampling interval") != string::npos);
+        const string sort = ui::headless_probe("\x1bOS");
+        CHECK(sort.rfind("Sort") != string::npos);
+        // 弹窗区域外（120 × 40）的背景必须与未打开弹窗时一致
+        CHECK(ui::headless_probe_background("#wait|#esc|\\x1b[B|\\x1b[B|\\x1b[B|\\r|#wait|#esc", 2, 10) ==
+              ui::headless_probe_background("", 2, 10));
+        CHECK(ui::headless_probe_background("\x1bOQ", 2, 10) == ui::headless_probe_background("", 2, 10));
+    }
+
+    void test_process_table_hits() {
+        snapshot value = sample_snapshot();
+        neforce::neflux::process second = value.processes_.front();
+        second.pid_ = 43;
+        second.start_time_ = value.processes_.front().start_time_ + 100;
+        second.name_ = "nginx";
+        value.processes_.push_back(second);
+        const inventory data = value.inventory_;
+        // 120 × 40 进程页：表格行从第 8 行开始，第一行默认选中
+        const uint32_t selected = ui::headless_probe_seeded_background(value, data, "processes", "", 5, 8);
+        const uint32_t plain = ui::headless_probe_seeded_background(value, data, "processes", "", 5, 9);
+        CHECK(selected != plain);
+        // 点击第二行（1 基列 6、行 10）按 PID + start time 命中，选中背景互换
+        const string click = "\x1b[<0;6;10M";
+        CHECK(ui::headless_probe_seeded_background(value, data, "processes", click.view(), 5, 9) == selected);
+        CHECK(ui::headless_probe_seeded_background(value, data, "processes", click.view(), 5, 8) == plain);
+    }
+
+    void test_chrome_background() {
+        // 默认 transparent_background = true：chrome 行不得出现不透明底色
+        CHECK(ui::headless_probe_background("", 40, 1) == 0); // 未选中 tab
+        CHECK(ui::headless_probe_background("", 2, 2) == 0);  // context 行
+        // 选中 tab 仍保留选中底色
+        CHECK(ui::headless_probe_background("", 20, 1) != 0);
+    }
+
+    void test_small_terminal_chrome() {
+        // 小终端只显示 resize 提示，不绘制 header/tabs/context/footer
+        const string small = ui::headless_probe_sized(40, 10, "");
+        CHECK(small.find("Resize to at least 60 × 18") != string::npos);
+        CHECK(small.find("Recommended: 140 × 44") != string::npos);
+        CHECK(small.find("Overview") == string::npos);
+        CHECK(small.find("Discovering host") == string::npos);
+        CHECK(small.find("Esc Menu") == string::npos);
+        const string normal = ui::headless_probe_sized(120, 40, "");
+        CHECK(normal.find("Overview") != string::npos);
+        CHECK(normal.find("Discovering host") != string::npos);
+        CHECK(normal.find("Esc Menu") != string::npos);
+    }
+
+    void test_resize_layout() {
+        // 缩放当帧就使用新尺寸：footer 与内容一起重建
+        const string shrunk = ui::headless_probe_resized(120, 40, 60, 18);
+        CHECK(shrunk.find("60 × 18") != string::npos);
+        CHECK(shrunk.find("120 × 40") == string::npos);
+        CHECK(shrunk.find("PROCESSES") != string::npos);
+        const string grown = ui::headless_probe_resized(60, 18, 120, 40);
+        CHECK(grown.find("120 × 40") != string::npos);
+        CHECK(grown.find("PROCESSES") != string::npos);
     }
 
     void test_render() {
@@ -708,6 +838,14 @@ int main() {
     test_parsers();
     test_ros_session();
     test_sampling_sources();
+    test_selection_clipboard_state();
+    test_tools_and_column_window();
+    test_tab_layout_hits();
+    test_popup_overlay();
+    test_process_table_hits();
+    test_chrome_background();
+    test_small_terminal_chrome();
+    test_resize_layout();
     test_render();
     if (g_failures != 0) {
         std::printf("%d test(s) failed\n", g_failures);

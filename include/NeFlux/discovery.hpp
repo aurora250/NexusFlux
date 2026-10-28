@@ -43,8 +43,7 @@ namespace neforce::neflux {
      * @return 标准输出
      * @throws process_exception 启动失败或超时时抛出
      */
-    NEFORCE_NODISCARD string run_command(const string& program, const vector<string>& args, int timeout_ms,
-                                         bool include_stderr = false);
+    string run_command(const string& program, const vector<string>& args, int timeout_ms, bool include_stderr = false);
 
     /**
      * @brief 执行本地发现
