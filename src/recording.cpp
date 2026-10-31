@@ -56,39 +56,18 @@ namespace neforce::neflux {
     } // namespace
 
     recorder::recorder(const string& file_path, uint64_t max_mib) :
-    path_(file_path),
-    max_bytes_(max_mib * 1024ULL * 1024ULL) {
-        if (::neforce::path(file_path).exists()) {
-            size_ = filesystem::size(::neforce::path(file_path)).bytes();
-        }
-        if (!append_text_file(file_path, "")) {
-            throw file_exception("Cannot open recording file");
-        }
-    }
+    file_(::neforce::path(file_path),
+          {.max_bytes = max_mib * 1024ULL * 1024ULL,
+           .max_files = 3,
+           .naming = rotating_file::naming::rollover,
+           .append = true}) {}
 
     void recorder::write(const snapshot& value) {
         string data = to_json(value).dump();
         data.push_back('\n');
-        if (size_ > 0 && size_ + data.size() > max_bytes_) {
-            for (int index = 3; index >= 1; --index) {
-                const string from = index == 1 ? path_ : format("{}.{}", path_, index - 1);
-                const string to = format("{}.{}", path_, index);
-                if (::neforce::path(from).exists()) {
-                    if (::neforce::path(to).exists()) {
-                        filesystem::remove(::neforce::path(to));
-                    }
-                    filesystem::rename(::neforce::path(from), ::neforce::path(to));
-                }
-            }
-            if (!write_text_file(path_, "")) {
-                throw file_exception("Cannot rotate recording file");
-            }
-            size_ = 0;
-        }
-        if (!append_text_file(path_, data)) {
+        if (!file_.write(data.view())) {
             throw file_exception("Cannot write recording");
         }
-        size_ += data.size();
     }
 
     vector<snapshot> replay(const string& file_path) {

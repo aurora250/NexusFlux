@@ -17,6 +17,7 @@ namespace neforce::neflux {
     json to_json_value(const connection_sample& value);
     json to_json_value(const container& value);
     json to_json_value(const service& value);
+    json to_json_value(const virtual_machine& value);
     json to_json_value(const listener& value);
     json to_json_value(const inventory& value);
 
@@ -34,6 +35,7 @@ namespace neforce::neflux {
     void from_json_value(const json& value, connection_sample& out);
     void from_json_value(const json& value, container& out);
     void from_json_value(const json& value, service& out);
+    void from_json_value(const json& value, virtual_machine& out);
     void from_json_value(const json& value, listener& out);
 
     string tag::display() const { return inferred_ ? label_ + "?" : label_; }
@@ -307,6 +309,25 @@ namespace neforce::neflux {
         return o;
     }
 
+    json to_json_value(const virtual_machine& value) {
+        json o = json::object();
+        o.set("tags", to_json_value(value.tags_));
+        o.set("name", value.name_);
+        o.set("id", value.id_);
+        o.set("uuid", value.uuid_);
+        o.set("backend", value.backend_);
+        o.set("state", value.state_);
+        o.set("autostart", value.autostart_);
+        o.set("description", value.description_);
+        o.set("pid", to_json_value(value.pid_));
+        o.set("vcpus", to_json_value(value.vcpus_));
+        o.set("memory", to_json_value(value.memory_));
+        o.set("max_memory", to_json_value(value.max_memory_));
+        o.set("cpu_percent", to_json_value(value.cpu_percent_));
+        o.set("extra", value.extra_);
+        return o;
+    }
+
     json to_json_value(const listener& value) {
         json o = json::object();
         o.set("protocol", value.protocol_);
@@ -323,6 +344,8 @@ namespace neforce::neflux {
         o.set("runtimes", to_json_value(value.runtimes_));
         o.set("services", to_json_value(value.services_));
         o.set("service_managers", to_json_value(value.service_managers_));
+        o.set("virtual_machines", to_json_value(value.virtual_machines_));
+        o.set("vm_managers", to_json_value(value.vm_managers_));
         o.set("listeners", to_json_value(value.listeners_));
         o.set("notes", to_json_value(value.notes_));
         o.set("extra", value.extra_);
@@ -568,6 +591,23 @@ namespace neforce::neflux {
         read_field(value, "extra", out.extra_);
     }
 
+    void from_json_value(const json& value, virtual_machine& out) {
+        read_field(value, "tags", out.tags_);
+        read_field(value, "name", out.name_);
+        read_field(value, "id", out.id_);
+        read_field(value, "uuid", out.uuid_);
+        read_field(value, "backend", out.backend_);
+        read_field(value, "state", out.state_);
+        read_field(value, "autostart", out.autostart_);
+        read_field(value, "description", out.description_);
+        read_field(value, "pid", out.pid_);
+        read_field(value, "vcpus", out.vcpus_);
+        read_field(value, "memory", out.memory_);
+        read_field(value, "max_memory", out.max_memory_);
+        read_field(value, "cpu_percent", out.cpu_percent_);
+        read_field(value, "extra", out.extra_);
+    }
+
     void from_json_value(const json& value, listener& out) {
         out = listener{};
         read_field(value, "protocol", out.protocol_);
@@ -715,6 +755,8 @@ namespace neforce::neflux {
         read_field(value, "runtimes", out.runtimes_);
         read_field(value, "services", out.services_);
         read_field(value, "service_managers", out.service_managers_);
+        read_field(value, "virtual_machines", out.virtual_machines_);
+        read_field(value, "vm_managers", out.vm_managers_);
         read_field(value, "listeners", out.listeners_);
         read_field(value, "notes", out.notes_);
         read_field(value, "extra", out.extra_);
@@ -735,6 +777,8 @@ namespace neforce::neflux {
         o.set("cpu_mhz", value.cpu_mhz_);
         o.set("cpu_breakdown", value.cpu_breakdown_);
         o.set("cores", to_json_value(value.cores_));
+        o.set("pcore_count", value.pcore_count_);
+        o.set("ecore_count", value.ecore_count_);
         o.set("core_temperatures", to_json_value(value.core_temperatures_));
         json load = json::array();
         load.push(json(value.load_[0]));
@@ -772,6 +816,8 @@ namespace neforce::neflux {
         read_field(value, "cpu_mhz", s.cpu_mhz_);
         read_field(value, "cpu_breakdown", s.cpu_breakdown_);
         read_field(value, "cores", s.cores_);
+        read_field(value, "pcore_count", s.pcore_count_);
+        read_field(value, "ecore_count", s.ecore_count_);
         read_field(value, "core_temperatures", s.core_temperatures_);
         if (const json* load = value.get("load"); load != nullptr && load->is_array()) {
             const auto& values = load->as_array();

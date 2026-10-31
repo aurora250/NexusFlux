@@ -9,6 +9,7 @@
  */
 
 #include <NeForce/core/container/map.hpp>
+#include <NeForce/core/system/sysinfo.hpp>
 #include <NeForce/core/memory/unique_ptr.hpp>
 #include <NeForce/core/utility/tuple.hpp>
 #include <NeFlux/config.hpp>
@@ -38,6 +39,14 @@ namespace neforce::neflux {
      * @return 各分项百分比
      */
     NEFORCE_NODISCARD json cpu_breakdown(const vector<uint64_t>& previous, const vector<uint64_t>& current);
+
+    /**
+     * @brief 生成 CPU 硬件信息 JSON
+     * @param cpu CPU 信息
+     * @param architecture 系统架构
+     * @return CPU 信息 JSON
+     */
+    NEFORCE_NODISCARD json cpu_info_json(const sysinfo::cpu_info& cpu, sysinfo::architecture architecture);
 
     /**
      * @brief 采集首帧轻量信息

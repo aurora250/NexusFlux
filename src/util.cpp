@@ -37,67 +37,9 @@ namespace neforce::neflux {
             if (!handle.open(path(file_path), false, file_access::read)) {
                 return none;
             }
-            string content = handle.read();
-            if (!content.empty()) {
-                return content;
-            }
-            // Procfs and sysfs report a size of zero; read them incrementally instead.
-            constexpr size_t chunk = 65536;
-            for (;;) {
-                const string part = handle.read(chunk);
-                if (part.empty()) {
-                    break;
-                }
-                content.append(part);
-                if (content.size() > 16 * 1024 * 1024) {
-                    break;
-                }
-                if (part.size() < chunk) {
-                    break;
-                }
-            }
-            return content;
+            return handle.read();
         } catch (...) {
             return none;
-        }
-    }
-
-    bool write_text_file(const string& file_path, const string& content) {
-        try {
-            const path target(file_path);
-            if (const auto parent = target.parent_path(); !parent.empty()) {
-                filesystem::create_directories(parent);
-            }
-            file handle;
-            if (!handle.open(path(file_path), false, file_access::write, file_shared::share_read_write,
-                             file_creation::create_force)) {
-                return false;
-            }
-            handle.write(content);
-            handle.flush();
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    bool append_text_file(const string& file_path, const string& content) {
-        try {
-            const path target(file_path);
-            if (const auto parent = target.parent_path(); !parent.empty()) {
-                filesystem::create_directories(parent);
-            }
-            file handle;
-            if (!handle.open(path(file_path), false, file_access::read_write, file_shared::share_read_write,
-                             file_creation::open_force)) {
-                return false;
-            }
-            ignore = handle.seek(0, file_pointer::end);
-            handle.write(content);
-            handle.flush();
-            return true;
-        } catch (...) {
-            return false;
         }
     }
 

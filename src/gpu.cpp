@@ -383,7 +383,7 @@ namespace neforce::neflux {
             for (auto& item: by_pid) {
                 processes.push_back(move(item.second));
             }
-            stable_sort_by_index(processes, [](const gpu_process& a, const gpu_process& b) {
+            neforce::tim_sort(processes.begin(), processes.end(), [](const gpu_process& a, const gpu_process& b) {
                 return a.memory_.has_value() ? (!b.memory_.has_value() || *a.memory_ > *b.memory_) : false;
             });
             entry.uuid = uuid;
@@ -698,7 +698,7 @@ namespace neforce::neflux {
                     }
                 }
             }
-            stable_sort_by_index(cards, [](const string& a, const string& b) { return a < b; });
+            neforce::tim_sort(cards.begin(), cards.end(), [](const string& a, const string& b) { return a < b; });
             set<string> known_pci;
             for (const auto& card: cards) {
                 const auto canonical = ::neforce::path(card + "/device").canonical().str();
@@ -1030,7 +1030,7 @@ namespace neforce::neflux {
             }
             candidates.push_back(device);
         }
-        stable_sort_by_index(candidates, [](const gpu& a, const gpu& b) {
+        neforce::tim_sort(candidates.begin(), candidates.end(), [](const gpu& a, const gpu& b) {
             const uint32_t left = a.utilization_.has_value() ? *a.utilization_ : 101;
             const uint32_t right = b.utilization_.has_value() ? *b.utilization_ : 101;
             if (left != right) {

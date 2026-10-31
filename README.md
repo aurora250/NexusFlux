@@ -2,7 +2,7 @@
 
 English | [简体中文](README.CN.md)
 
-A NexusForce-based local CPU, GPU, process, storage, network, container and service monitoring.
+A NexusForce-based local CPU, GPU, process, storage, network, container, service and virtual-machine monitor.
 
 The executable is `nexus-flux` with the short alias `neflux`.
 
@@ -111,11 +111,20 @@ Download/upload history, interface counters, connections and socket ownership.
 ![System](docs/images/system.png)
 
 Host identity, load average, CPU/GPU sensors, pressure stall information and listening
-ports. `HOST & POWER` also shows the hardware inventory: CPU family/model/stepping,
-extended family/model, package, core name, instructions and SIMD extensions, L1/L2/L3
-caches, BIOS brand/version/date/microcode, motherboard vendor/model/chipset/southbridge,
-and memory type/channel/size/controller speed/LLC/timings. The values come from
-`neforce::sysinfo`; unsupported fields are shown as `—`.
+ports. `HOST & POWER` also shows the hardware inventory: CPU architecture, vendor,
+brand, clocks, core/thread counts, L1/L2/L3 caches, instructions and SIMD extensions.
+Architecture-specific details change with the CPU:
+
+- x86: family/model/stepping, extended family/model, revision, core voltage,
+  technology, socket, code name, bus speed, multiplier and TDP.
+- ARM: implementer, part, variant, revision and core name.
+- RISC-V: ISA, MMU, microarchitecture and vendor/architecture/implementation IDs.
+- LoongArch: family, revision, FPU revision, ISA, address sizes, machine, system
+  type, watchpoint support and TLB entries.
+
+The panel also shows BIOS brand/version/date/microcode, motherboard
+vendor/model/chipset/southbridge, and memory type/channel/size/controller
+speed/LLC/timings. CPU detail fields without a value are omitted.
 
 - `6` opens System.
 - `↑/↓` scrolls sensors and listeners.
@@ -143,7 +152,20 @@ Linux uses systemd; Windows uses SCM.
 - `8` opens Services.
 - `F3` / `f` filters.
 - `↑/↓` selects; `Enter` opens details.
-- Click a row to select it.
+- `D` toggles the service detail side panel.
+- Right-click a service for details, logs, start/stop/restart and open-main-process actions.
+
+### Virtual machines
+
+![Virtual machines](docs/images/vms.png)
+
+libvirt domains and unmanaged `qemu-system-*` processes, with state, vCPU count,
+memory and host PID.
+
+- `9` opens VMs.
+- `↑/↓` selects; `Enter` / `d` opens VM details.
+- Right-click or `F6` provides start, shutdown, reboot, force-off, pause/resume and
+  open-QEMU-process actions.
 
 ### System Explorer
 
@@ -281,9 +303,16 @@ At startup NexusFlux initializes `neforce::logger` with a rotating file sink:
 - Linux: `~/.config/neflux/logs/nexus-flux.log.<date>`
 - Windows: `%APPDATA%\neflux\logs\nexus-flux.log.<date>`
 
-Windows writes a minidump next to the log on an unhandled exception; fatal signals
-on Linux are also recorded. A small `crash-fallback.log` is written if the logger
-itself cannot flush during a crash.
+Windows writes a minidump next to the log on an unhandled exception.
+On Linux x86-64/AArch64 an uncaught C++ exception, `terminate`, or
+a fatal `SIGABRT`, `SIGSEGV`, `SIGILL`, `SIGFPE` or `SIGBUS` writes an ELF core next to the log:
+
+```text
+nexus-flux-YYYYMMDD-HHMMSS-<pid>.core
+```
+
+The fatal log entry and `crash-fallback.log` record `core=<path> bytes=<size>`.
+If the ELF writer cannot create the file, NexusFlux restores the default action and falls back to the kernel `core_pattern`.
 
 ## Building
 

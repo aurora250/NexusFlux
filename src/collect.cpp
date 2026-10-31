@@ -13,9 +13,6 @@
 #include <NeForce/core/system/sysinfo.hpp>
 #if NEFLUX_PLATFORM_LINUX
 #    include <sys/statvfs.h>
-#    include <sys/utsname.h>
-#    include <unistd.h>
-#    include <cstdio>
 #endif
 namespace neforce::neflux {
 
@@ -33,88 +30,6 @@ namespace neforce::neflux {
                 text->resize(limit);
             }
             return *text;
-        }
-        string host_name() {
-            const auto text = trim(read_file("/proc/sys/kernel/hostname"));
-            return text.empty() ? "localhost" : text;
-        }
-        string kernel_version() {
-            ::utsname info{};
-            if (::uname(&info) == 0) {
-                return info.release;
-            }
-            return {};
-        }
-        string os_name() {
-            string name;
-            string version;
-            const auto text = read_file("/etc/os-release");
-            for (const auto& line: split_lines(text)) {
-                if (starts_with(line.view(), "NAME=")) {
-                    name = line.substr(5);
-                } else if (starts_with(line.view(), "VERSION_ID=")) {
-                    version = line.substr(11);
-                }
-                if (!name.empty() && !version.empty()) {
-                    break;
-                }
-            }
-            for (auto* value: {&name, &version}) {
-                if (value->size() >= 2 && (*value)[0] == '"' && (*value)[value->size() - 1] == '"') {
-                    *value = value->substr(1, value->size() - 2);
-                }
-            }
-            if (name.empty()) {
-                return kernel_version();
-            }
-            return version.empty() ? format("Linux ({})", name) : format("Linux ({} {})", name, version);
-        }
-        uint64_t uptime_seconds() {
-            const auto text = read_file("/proc/uptime");
-            const auto first = text.substr(0, text.find(' '));
-            const auto value = parse_f64(first.view());
-            return value.has_value() ? static_cast<uint64_t>(*value) : 0;
-        }
-        string cpu_brand() {
-            const auto text = read_file("/proc/cpuinfo");
-            for (const auto& line: split_lines(text)) {
-                if (starts_with(line.view(), "model name")) {
-                    const auto colon = line.find(':');
-                    if (colon != string::npos) {
-                        return trim(line.view().substr(colon + 1));
-                    }
-                }
-                if (starts_with(line.view(), "Hardware")) {
-                    const auto colon = line.find(':');
-                    if (colon != string::npos) {
-                        return trim(line.view().substr(colon + 1));
-                    }
-                }
-            }
-            return {};
-        }
-        uint64_t physical_core_count() {
-            const auto text = read_file("/proc/cpuinfo");
-            set<string> seen;
-            string package;
-            string core;
-            for (const auto& line: split_lines(text)) {
-                if (starts_with(line.view(), "physical id")) {
-                    package = trim(line.view().substr(line.find(':') + 1));
-                } else if (starts_with(line.view(), "core id")) {
-                    core = trim(line.view().substr(line.find(':') + 1));
-                } else if (line.empty()) {
-                    if (!package.empty() || !core.empty()) {
-                        seen.insert(package + ":" + core);
-                    }
-                    package.clear();
-                    core.clear();
-                }
-            }
-            if (!package.empty() || !core.empty()) {
-                seen.insert(package + ":" + core);
-            }
-            return seen.empty() ? 0 : seen.size();
         }
         uint64_t cpu_frequency_mhz() {
             uint64_t total = 0;
@@ -346,7 +261,7 @@ namespace neforce::neflux {
                 item.extra_ = statvfs_fields(item.mount_);
                 out.push_back(move(item));
             }
-            stable_sort_by_index(out, [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
+            neforce::tim_sort(out.begin(), out.end(), [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
             return out;
         }
         vector<sensor> read_sensors() {
@@ -553,53 +468,20 @@ namespace neforce::neflux {
             }
         }
 
-        string system_host_name() {
-#if NEFLUX_PLATFORM_LINUX
-            return host_name();
-#else
-            return sysinfo::instance().host_name();
-#endif
-        }
+        string system_host_name() { return sysinfo::instance().host_name(); }
 
         string system_os_name() {
-#if NEFLUX_PLATFORM_LINUX
-            return os_name();
-#else
-            return sysinfo::instance().os_version().product_name;
-#endif
+            const auto& os = sysinfo::instance().os_version();
+            return os.product_name.empty() ? os.version() : os.product_name;
         }
 
-        string system_kernel_version() {
-#if NEFLUX_PLATFORM_LINUX
-            return kernel_version();
-#else
-            return sysinfo::instance().os_version().version();
-#endif
-        }
+        string system_kernel_version() { return sysinfo::instance().os_version().version(); }
 
-        uint64_t system_uptime_seconds() {
-#if NEFLUX_PLATFORM_LINUX
-            return uptime_seconds();
-#else
-            return sysinfo::uptime_seconds();
-#endif
-        }
+        uint64_t system_uptime_seconds() { return sysinfo::uptime_seconds(); }
 
-        string system_cpu_brand() {
-#if NEFLUX_PLATFORM_LINUX
-            return cpu_brand();
-#else
-            return sysinfo::instance().get_cpu_info().brand;
-#endif
-        }
+        string system_cpu_brand() { return sysinfo::instance().get_cpu_info().brand; }
 
-        uint64_t system_physical_cores() {
-#if NEFLUX_PLATFORM_LINUX
-            return physical_core_count();
-#else
-            return sysinfo::instance().get_cpu_info().cores;
-#endif
-        }
+        uint64_t system_physical_cores() { return sysinfo::instance().get_cpu_info().cores; }
 
     } // namespace
 
@@ -728,42 +610,128 @@ namespace neforce::neflux {
         return instances > 1 ? format("{} ×{}", size, instances) : size;
     }
 
+    string architecture_name(const sysinfo::architecture architecture) {
+        switch (architecture) {
+            case sysinfo::architecture::x86:
+                return "x86";
+            case sysinfo::architecture::x64:
+                return "x86_64";
+            case sysinfo::architecture::arm:
+                return "ARM";
+            case sysinfo::architecture::arm64:
+                return "ARM64";
+            case sysinfo::architecture::riscv32:
+                return "RISC-V 32";
+            case sysinfo::architecture::riscv64:
+                return "RISC-V 64";
+            case sysinfo::architecture::loongarch32:
+                return "LoongArch 32";
+            case sysinfo::architecture::loongarch64:
+                return "LoongArch 64";
+            case sysinfo::architecture::unknown:
+                break;
+        }
+        return "Unknown";
+    }
+
+    json cpu_info_json(const sysinfo::cpu_info& cpu, const sysinfo::architecture architecture) {
+        json result = json::object();
+        json details = json::array();
+        const auto detail = [&result, &details](const char* label, const string& value) {
+            const string shown = or_dash(value);
+            result.set(label, json(shown));
+            json item = json::object();
+            item.set("Label", json(label));
+            item.set("Value", json(shown));
+            details.push(move(item));
+        };
+
+        result.set("Architecture", json(architecture_name(architecture)));
+        result.set("Vendor", json(or_dash(cpu.vendor)));
+        result.set("Brand", json(or_dash(cpu.brand)));
+        result.set("Max clock", json(cpu.max_mhz != 0 ? format("{} MHz", cpu.max_mhz) : string("—")));
+        result.set("Current clock", json(cpu.current_mhz != 0 ? format("{} MHz", cpu.current_mhz) : string("—")));
+        result.set("Cores / Threads",
+                   json(cpu.ecore_count != 0
+                                ? format("{}P + {}E / {}T", cpu.pcore_count, cpu.ecore_count, cpu.logical_processors)
+                                : format("{} / {}", cpu.cores, cpu.logical_processors)));
+        result.set("Instructions", json(or_dash(cpu.features)));
+        result.set("SIMD", json(or_dash(simd_extensions(cpu.simd))));
+        result.set("L1", json(cache_label(cpu.l1_kib, cpu.l1_instances)));
+        result.set("L1 data", json(cache_label(cpu.l1_data_kib, cpu.l1_data_instances)));
+        result.set("L1 inst", json(cache_label(cpu.l1_instruction_kib, cpu.l1_instruction_instances)));
+        result.set("L2", json(cache_label(cpu.l2_kib, cpu.l2_instances)));
+        result.set("L3", json(cache_label(cpu.l3_kib, cpu.l3_instances)));
+
+        switch (architecture) {
+            case sysinfo::architecture::x86:
+            case sysinfo::architecture::x64: {
+                detail("Family", cpu.x86.family);
+                detail("Model", cpu.x86.model);
+                detail("Stepping", cpu.x86.stepping);
+                detail("Ext family", cpu.x86.ext_family);
+                detail("Ext model", cpu.x86.ext_model);
+                detail("Revision", cpu.x86.revision);
+                detail("Core VID", cpu.x86.core_vid);
+                detail("Technology", cpu.x86.technology);
+                detail("Socket", cpu.x86.socket);
+                detail("Code name", cpu.x86.code_name);
+                detail("Bus speed", cpu.x86.bus_speed_mhz != 0 ? format("{} MHz", cpu.x86.bus_speed_mhz) : string());
+                detail("Multiplier", cpu.x86.bus_speed_mhz != 0 && cpu.current_mhz != 0
+                                             ? format("{:.2f}", static_cast<double>(cpu.current_mhz) /
+                                                                        static_cast<double>(cpu.x86.bus_speed_mhz))
+                                             : string());
+                detail("Max TDP", cpu.x86.max_tdp_watts != 0 ? format("{} W", cpu.x86.max_tdp_watts) : string());
+                break;
+            }
+            case sysinfo::architecture::arm:
+            case sysinfo::architecture::arm64: {
+                detail("ARM arch", cpu.arm.architecture);
+                detail("Implementer", cpu.arm.implementer);
+                detail("Part", cpu.arm.part);
+                detail("Variant", cpu.arm.variant);
+                detail("Revision", cpu.arm.revision);
+                detail("Core name", cpu.arm.core_name);
+                break;
+            }
+            case sysinfo::architecture::riscv32:
+            case sysinfo::architecture::riscv64: {
+                detail("ISA", cpu.riscv.isa);
+                detail("MMU", cpu.riscv.mmu);
+                detail("Uarch", cpu.riscv.uarch);
+                detail("MVendor ID", cpu.riscv.mvendorid);
+                detail("March ID", cpu.riscv.marchid);
+                detail("MImp ID", cpu.riscv.mimpid);
+                break;
+            }
+            case sysinfo::architecture::loongarch32:
+            case sysinfo::architecture::loongarch64: {
+                detail("Family", cpu.loongarch.family);
+                detail("Revision", cpu.loongarch.revision);
+                detail("FPU revision", cpu.loongarch.fpu_revision);
+                detail("ISA", cpu.loongarch.isa);
+                detail("Address size", cpu.loongarch.address_sizes);
+                detail("Machine", cpu.loongarch.machine);
+                detail("System type", cpu.loongarch.system_type);
+                detail("Watchpoint", cpu.loongarch.watchpoint);
+                detail("TLB entries",
+                       cpu.loongarch.tlb_entries != 0 ? format("{}", cpu.loongarch.tlb_entries) : string());
+                break;
+            }
+            case sysinfo::architecture::unknown:
+                break;
+        }
+        result.set("Details", move(details));
+        return result;
+    }
+
     json hardware_snapshot(uint64_t memory_total) {
         const auto& info = sysinfo::instance();
         const auto& cpu = info.get_cpu_info();
         const auto& hardware = info.get_hardware_info();
+        const auto architecture = info.get_architecture();
         json root = json::object();
-        json cpu_json = json::object();
-        cpu_json.set("Family", or_dash(cpu.family));
-        cpu_json.set("Model", or_dash(cpu.model));
-        cpu_json.set("Stepping", or_dash(cpu.stepping));
-        cpu_json.set("Ext family", or_dash(cpu.ext_family));
-        cpu_json.set("Ext model", or_dash(cpu.ext_model));
-        cpu_json.set("Revision", or_dash(cpu.revision));
-        cpu_json.set("Core VID", or_dash(cpu.core_vid));
-        cpu_json.set("Technology", or_dash(cpu.technology));
-        cpu_json.set("Package", or_dash(cpu.package));
-        cpu_json.set("Code name", or_dash(cpu.code_name));
-        cpu_json.set("Core name", or_dash(cpu.brand));
-        cpu_json.set("Bus speed", cpu.bus_speed_mhz != 0 ? format("{} MHz", cpu.bus_speed_mhz) : string("—"));
-        cpu_json.set("Multiplier", cpu.bus_speed_mhz != 0 && cpu.current_mhz != 0
-                                           ? format("{:.2f}", static_cast<double>(cpu.current_mhz) /
-                                                                      static_cast<double>(cpu.bus_speed_mhz))
-                                           : string("—"));
-        cpu_json.set("Max TDP", cpu.max_tdp_watts != 0 ? format("{} W", cpu.max_tdp_watts) : string("—"));
-        cpu_json.set("Clocks (P-core)",
-                     cpu.max_mhz != 0 ? format("{} / {} MHz", cpu.max_mhz, cpu.current_mhz) : string("—"));
-        cpu_json.set("Cores / Threads", cpu.ecore_count != 0 ? format("{}P + {}E / {}T", cpu.pcore_count,
-                                                                      cpu.ecore_count, cpu.logical_processors)
-                                                             : format("{} / {}", cpu.cores, cpu.logical_processors));
-        cpu_json.set("Instructions", or_dash(cpu.features));
-        cpu_json.set("SIMD", or_dash(simd_extensions(cpu.simd)));
-        cpu_json.set("L1", cache_label(cpu.l1_kib, cpu.l1_instances));
-        cpu_json.set("L1 data", cache_label(cpu.l1_data_kib, cpu.l1_data_instances));
-        cpu_json.set("L1 inst", cache_label(cpu.l1_instruction_kib, cpu.l1_instruction_instances));
-        cpu_json.set("L2", cache_label(cpu.l2_kib, cpu.l2_instances));
-        cpu_json.set("L3", cache_label(cpu.l3_kib, cpu.l3_instances));
-        root.set("CPU", move(cpu_json));
+        root.set("CPU", cpu_info_json(cpu, architecture));
 
         json bios = json::object();
         bios.set("Brand", or_dash(hardware.bios.brand));
@@ -790,9 +758,11 @@ namespace neforce::neflux {
                            : string("—"));
         const double dram_mhz = static_cast<double>(hardware.memory.configured_mts) / 2.0;
         memory.set("DRAM freq", dram_mhz > 0.0 ? format("{:.1f} MHz", dram_mhz) : string("—"));
-        memory.set("FSB:DRAM", dram_mhz > 0.0 && cpu.bus_speed_mhz != 0
+        const bool x86_architecture =
+                architecture == sysinfo::architecture::x86 || architecture == sysinfo::architecture::x64;
+        memory.set("FSB:DRAM", x86_architecture && dram_mhz > 0.0 && cpu.x86.bus_speed_mhz != 0
                                        ? format("1:{}", static_cast<uint64_t>(neforce::round(
-                                                                dram_mhz / static_cast<double>(cpu.bus_speed_mhz))))
+                                                                dram_mhz / static_cast<double>(cpu.x86.bus_speed_mhz))))
                                        : string("—"));
         memory.set("LLC / Ring", or_dash(hardware.memory.llc_ring));
         memory.set("Timings", or_dash(hardware.memory.timings));
@@ -991,7 +961,7 @@ namespace neforce::neflux {
                 item.gpu_percent_ = get<1>(found->second);
                 item.gpu_ids_ = get<2>(found->second);
             }
-            stable_sort_by_index(processes, [](const process& a, const process& b) {
+            neforce::tim_sort(processes.begin(), processes.end(), [](const process& a, const process& b) {
                 if (a.cpu_ != b.cpu_) {
                     return a.cpu_ > b.cpu_;
                 }
@@ -1011,6 +981,8 @@ namespace neforce::neflux {
             result.cpu_mhz_ = cpu_mhz;
             result.cpu_breakdown_ = move(breakdown);
             result.cores_ = move(cores);
+            result.pcore_count_ = cpu.pcore_count;
+            result.ecore_count_ = cpu.ecore_count;
             result.core_temperatures_ = move(core_temperatures_value);
             for (size_t i = 0; i < 3; ++i) {
                 result.load_[i] = load[i];
@@ -1076,8 +1048,8 @@ namespace neforce::neflux {
             json topology_json = json::object();
             topology_json.set("logical_cores", json(result.cores_.size()));
             topology_json.set("physical_cores", json(system_physical_cores()));
+            topology_json.set("architecture", json(architecture_name(sysinfo::instance().get_architecture())));
 #if NEFLUX_PLATFORM_LINUX
-            topology_json.set("architecture", json("x86_64"));
             json frequencies = json::array();
             for (uint32_t index = 0; index < result.cores_.size(); ++index) {
                 const auto value = parse_u64(
@@ -1234,7 +1206,7 @@ namespace neforce::neflux {
                 out.push_back(move(value));
             }
             previous_networks = move(current);
-            stable_sort_by_index(out, [](const network& a, const network& b) {
+            neforce::tim_sort(out.begin(), out.end(), [](const network& a, const network& b) {
                 if (a.rx_per_sec_ != b.rx_per_sec_) {
                     return a.rx_per_sec_ > b.rx_per_sec_;
                 }
@@ -1259,7 +1231,7 @@ namespace neforce::neflux {
                 item.extra_ = json::object();
                 out.push_back(move(item));
             }
-            stable_sort_by_index(out, [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
+            neforce::tim_sort(out.begin(), out.end(), [](const disk& a, const disk& b) { return a.mount_ < b.mount_; });
             return out;
 #endif
         }
@@ -1323,7 +1295,12 @@ namespace neforce::neflux {
         result.memory_.swap_used_ = memory.total_page_file > memory.available_page_file
                                             ? memory.total_page_file - memory.available_page_file
                                             : 0;
-        result.cores_.assign(sysinfo::instance().get_cpu_info().logical_processors, 0.0F);
+        const auto& initial_cpu = sysinfo::instance().get_cpu_info();
+        result.cpu_name_ = initial_cpu.brand;
+        result.cpu_mhz_ = initial_cpu.current_mhz;
+        result.cores_.assign(initial_cpu.logical_processors, 0.0F);
+        result.pcore_count_ = initial_cpu.pcore_count;
+        result.ecore_count_ = initial_cpu.ecore_count;
         return result;
     }
 

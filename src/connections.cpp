@@ -9,8 +9,6 @@
 #include <NeForce/network/socket_base.hpp>
 #if NEFLUX_PLATFORM_LINUX
 #    include <arpa/inet.h>
-#    include <dirent.h>
-#    include <unistd.h>
 #elif NEFLUX_PLATFORM_WINDOWS
 #    include <winsock2.h>
 #    include <ws2tcpip.h>
@@ -23,96 +21,14 @@ namespace neforce::neflux {
             return string(socket_base::state_name(state, protocol == "UDP"));
         }
 
-#if NEFLUX_PLATFORM_LINUX
-        struct owners {
-            flat_unordered_map<uint64_t, vector<uint32_t>> pids;
-            bool complete = true;
-            uint64_t unreadable = 0;
-        };
-
-        owners scan_owners() {
-            owners result;
-            ::DIR* proc = ::opendir("/proc");
-            if (proc == nullptr) {
-                result.complete = false;
-                return result;
-            }
-            const int64_t deadline = monotonic_ms() + 700;
-            while (::dirent* entry = ::readdir(proc)) {
-                uint32_t pid = 0;
-                bool numeric = true;
-                for (const char* cursor = entry->d_name; *cursor != '\0'; ++cursor) {
-                    if (*cursor < '0' || *cursor > '9') {
-                        numeric = false;
-                        break;
-                    }
-                    pid = pid * 10 + static_cast<uint32_t>(*cursor - '0');
-                }
-                if (!numeric || entry->d_name[0] == '\0' || pid == 0) {
-                    continue;
-                }
-                const string fd_directory = format("/proc/{}/fd", pid);
-                ::DIR* descriptors = ::opendir(fd_directory.data());
-                if (descriptors == nullptr) {
-                    ++result.unreadable;
-                    continue;
-                }
-                while (::dirent* descriptor = ::readdir(descriptors)) {
-                    if (monotonic_ms() > deadline) {
-                        result.complete = false;
-                        break;
-                    }
-                    if (descriptor->d_name[0] == '.') {
-                        continue;
-                    }
-                    const string link_path = fd_directory + "/" + descriptor->d_name;
-                    char target[512] = {};
-                    const ::ssize_t length = ::readlink(link_path.data(), target, sizeof(target) - 1);
-                    if (length <= 0) {
-                        continue;
-                    }
-                    const string_view text(target, static_cast<size_t>(length));
-                    if (!starts_with(text, "socket:[")) {
-                        continue;
-                    }
-                    const auto close = text.find(']', 8);
-                    if (close == string_view::npos) {
-                        continue;
-                    }
-                    const auto inode = parse_u64(text.substr(8, close - 8));
-                    if (!inode.has_value()) {
-                        continue;
-                    }
-                    auto& list = result.pids[*inode];
-                    bool present = false;
-                    for (const uint32_t existing: list) {
-                        if (existing == pid) {
-                            present = true;
-                            break;
-                        }
-                    }
-                    if (!present) {
-                        list.push_back(pid);
-                    }
-                }
-                ::closedir(descriptors);
-                if (!result.complete) {
-                    break;
-                }
-            }
-            ::closedir(proc);
-            return result;
-        }
-#endif
-
         vector<connection> collect_netlink() {
             vector<connection> rows;
             const int64_t deadline = monotonic_ms() + 1000;
             for (const auto& item: vector<tuple<ip_family, socket_base::protocol, string_view>>{
-                         {ip_family::INET4, socket_base::protocol::TCP, "tcp"},
-                         {ip_family::INET6, socket_base::protocol::TCP, "tcp6"},
-                         {ip_family::INET4, socket_base::protocol::UDP, "udp"},
-                         {ip_family::INET6, socket_base::protocol::UDP, "udp6"}}) {
+                         {ip_family::inet4, socket_base::protocol::tcp, "tcp"},
+                         {ip_family::inet6, socket_base::protocol::tcp, "tcp6"},
+                         {ip_family::inet4, socket_base::protocol::udp, "udp"},
+                         {ip_family::inet6, socket_base::protocol::udp, "udp6"}}) {
                 if (monotonic_ms() > deadline) {
                     throw value_exception("socket dump deadline");
                 }
@@ -359,7 +275,7 @@ namespace neforce::neflux {
         string status;
 #if NEFLUX_PLATFORM_LINUX
         int64_t owners_at = -1;
-        owners owner_data;
+        ::neforce::process::socket_owner_scan owner_data;
         uint64_t owners_sampled_at = 0;
 #endif
     };
@@ -374,13 +290,13 @@ namespace neforce::neflux {
         sample.sampled_at_ = unix_time();
 #if NEFLUX_PLATFORM_LINUX
         if (impl_->owners_at < 0 || monotonic_ms() - impl_->owners_at >= 5000) {
-            impl_->owner_data = scan_owners();
+            impl_->owner_data = ::neforce::process::scan_socket_owners(700);
             impl_->owners_at = monotonic_ms();
             impl_->owners_sampled_at = sample.sampled_at_;
         }
         sample.owners_sampled_at_ = impl_->owners_sampled_at;
         sample.owner_scan_complete_ = impl_->owner_data.complete;
-        sample.unreadable_processes_ = impl_->owner_data.unreadable;
+        sample.unreadable_processes_ = impl_->owner_data.unreadable_processes;
 #else
         sample.owner_scan_complete_ = true;
         sample.owners_sampled_at_ = sample.sampled_at_;
@@ -421,9 +337,13 @@ namespace neforce::neflux {
         }
         sample.status_ = sample.notes_.empty() ? "Current network namespace" : "Partial socket sample";
         for (auto& row: sample.connections_) {
-            const auto found = impl_->owner_data.pids.find(row.inode_);
-            if (found != impl_->owner_data.pids.end()) {
-                row.pids_ = found->second;
+            const auto found = impl_->owner_data.owners.find(row.inode_);
+            if (found != impl_->owner_data.owners.end()) {
+                row.pids_.clear();
+                row.pids_.reserve(found->second.size());
+                for (const auto pid: found->second) {
+                    row.pids_.push_back(static_cast<uint32_t>(pid));
+                }
             }
         }
 #else

@@ -14,6 +14,7 @@ Recommended capture: 160×48 terminal cells, same theme as the README examples.
 | system.png          | System                                           |
 | containers.png      | Containers                                       |
 | services.png        | Services                                         |
+| vms.png             | Virtual machines (`9`)                           |
 | explorer.png        | System Explorer (`X`)                            |
 | history.png         | History (`0`)                                    |
 | events.png          | Events (`E`)                                     |

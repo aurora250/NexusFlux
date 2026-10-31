@@ -7,6 +7,7 @@
  */
 
 #include <NeFlux/model.hpp>
+#include <NeForce/core/file/rotating_file.hpp>
 namespace neforce::neflux {
 
     /**
@@ -35,12 +36,10 @@ namespace neforce::neflux {
          * @brief 获取已写字节数
          * @return 当前文件大小
          */
-        NEFORCE_NODISCARD uint64_t size() const noexcept { return size_; }
+        NEFORCE_NODISCARD uint64_t size() const noexcept { return file_.size(); }
 
     private:
-        string path_;
-        uint64_t max_bytes_ = 0;
-        uint64_t size_ = 0;
+        rotating_file file_;
     };
 
     /**

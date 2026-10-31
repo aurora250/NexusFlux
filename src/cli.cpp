@@ -2,6 +2,7 @@
 #include <NeFlux/cli.hpp>
 #include <NeFlux/util.hpp>
 #include <NeForce/core/exception/exception.hpp>
+#include <NeForce/core/system/cmdline.hpp>
 namespace neforce::neflux {
 
     namespace {
@@ -14,31 +15,6 @@ namespace neforce::neflux {
             const size_t count = message.size() < sizeof(buffer) - 1 ? message.size() : sizeof(buffer) - 1;
             memory_copy(buffer, message.data(), count);
             throw value_exception(buffer);
-        }
-
-        optional<string> after_equals(const string& token) {
-            const auto equals = token.find('=');
-            if (equals == string::npos) {
-                return none;
-            }
-            return token.substr(equals + 1);
-        }
-
-        string option_name(const string& token) {
-            const auto equals = token.find('=');
-            return equals == string::npos ? token : token.substr(0, equals);
-        }
-
-        void need_value(int argc, char** argv, int& index, const string& token, optional<string>& inline_value,
-                        string& out) {
-            if (inline_value.has_value()) {
-                out = *inline_value;
-                return;
-            }
-            if (index + 1 >= argc) {
-                invalid(format("Missing value for {}", token));
-            }
-            out = argv[++index];
         }
 
         uint64_t to_u64(const string& text, const string& option) {
@@ -69,142 +45,168 @@ namespace neforce::neflux {
         g_help = false;
         g_version = false;
         cli_args result;
-        vector<string> positionals;
-        for (int index = 1; index < argc; ++index) {
-            string token = argv[index];
-            if (token == "-h" || token == "--help") {
-                g_help = true;
-                continue;
-            }
-            if (token == "-V" || token == "--version") {
-                g_version = true;
-                continue;
-            }
-            if (!starts_with(token.view(), "-")) {
-                positionals.push_back(move(token));
-                continue;
-            }
-            const string name = option_name(token);
-            optional<string> inline_value = after_equals(token);
-            string value;
-            if (name == "-i" || name == "--interval") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.interval_ = to_u64(value, name);
-                if (*result.interval_ < 250 || *result.interval_ > 10000) {
-                    invalid("interval must be 250..=10000");
-                }
-            } else if (name == "--theme") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.theme_ = value;
-            } else if (name == "--view") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.view_ = value;
-            } else if (name == "--gpu-panel") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.gpu_panel_ = value;
-            } else if (name == "--config") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.config_path_ = value;
-            } else if (name == "--no-gpu") {
-                result.no_gpu_ = true;
-            } else if (name == "--snapshot") {
-                result.snapshot_ = true;
-            } else if (name == "--samples") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.samples_ = static_cast<uint32_t>(to_u64(value, name));
-                if (*result.samples_ < 1 || *result.samples_ > 86400) {
-                    invalid("samples must be 1..=86400");
-                }
-            } else if (name == "--export-svg") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.export_svg_ = value;
-            } else if (name == "--width") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.width_ = static_cast<uint16_t>(to_u64(value, name));
-                if (result.width_ < 60 || result.width_ > 300) {
-                    invalid("width must be 60..=300");
-                }
-            } else if (name == "--height") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.height_ = static_cast<uint16_t>(to_u64(value, name));
-                if (result.height_ < 18 || result.height_ > 120) {
-                    invalid("height must be 18..=120");
-                }
-            } else if (name == "--write-config") {
-                result.write_config_ = true;
-            } else if (name == "--record") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.record_ = value;
-            } else if (name == "--csv") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.csv_ = value;
-            } else if (name == "--replay") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.replay_ = value;
-            } else if (name == "--ascii") {
-                result.ascii_ = true;
-            } else if (name == "--no-color") {
-                result.no_color_ = true;
-            } else if (name == "--threads") {
-                result.threads_ = true;
-            } else if (name == "--process-network") {
-                result.process_network_ = true;
-            } else if (name == "--read-only") {
-                result.read_only_ = true;
-            } else if (name == "--full-sampling") {
-                result.full_sampling_ = true;
-            } else if (name == "--layout") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.layout_ = value;
-            } else if (name == "--select-gpu") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.select_gpu_ = static_cast<uint32_t>(to_u64(value, name));
-            } else if (name == "--min-free-mib") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.min_free_mib_ = to_u64(value, name);
-            } else if (name == "--min-total-mib") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.min_total_mib_ = to_u64(value, name);
-            } else if (name == "--max-gpu-utilization") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.max_gpu_utilization_ = static_cast<uint32_t>(to_u64(value, name));
-            } else if (name == "--max-memory-utilization") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.max_memory_utilization_ = static_cast<uint32_t>(to_u64(value, name));
-            } else if (name == "--no-config-exec") {
-                result.no_config_exec_ = true;
-            } else if (name == "--json") {
-                result.json_ = true;
-            } else if (name == "--reverse") {
-                result.reverse_ = true;
-            } else if (name == "--sort") {
-                need_value(argc, argv, index, token, inline_value, value);
-                parse_connection_sort(value, result);
-            } else if (name == "--filter") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.filter_ = value;
-            } else if (name == "--interface") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.interface_ = value;
-            } else if (name == "--packets") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.packets_ = static_cast<uint32_t>(to_u64(value, name));
-            } else if (name == "--seconds") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.seconds_ = to_u64(value, name);
-            } else if (name == "--count") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.select_gpu_ = static_cast<uint32_t>(to_u64(value, name));
-            } else if (name == "--check") {
-                result.update_check_ = true;
-            } else if (name == "--input") {
-                need_value(argc, argv, index, token, inline_value, value);
-                result.replay_ = value;
-            } else {
-                invalid(format("Unknown option: {}", name));
+
+        cmdline parser;
+        const auto add = [&parser](const char* name, const char short_name, const bool value = false) {
+            parser.add_option(name, short_name, "", value);
+        };
+        add("interval", 'i', true);
+        add("theme", 0, true);
+        add("view", 0, true);
+        add("gpu-panel", 0, true);
+        add("config", 0, true);
+        add("no-gpu", 0);
+        add("snapshot", 0);
+        add("samples", 0, true);
+        add("export-svg", 0, true);
+        add("width", 0, true);
+        add("height", 0, true);
+        add("write-config", 0);
+        add("record", 0, true);
+        add("csv", 0, true);
+        add("replay", 0, true);
+        add("ascii", 0);
+        add("no-color", 0);
+        add("threads", 0);
+        add("process-network", 0);
+        add("read-only", 0);
+        add("full-sampling", 0);
+        add("layout", 0, true);
+        add("select-gpu", 0, true);
+        add("min-free-mib", 0, true);
+        add("min-total-mib", 0, true);
+        add("max-gpu-utilization", 0, true);
+        add("max-memory-utilization", 0, true);
+        add("no-config-exec", 0);
+        add("json", 0);
+        add("reverse", 0);
+        add("sort", 0, true);
+        add("filter", 0, true);
+        add("interface", 0, true);
+        add("packets", 0, true);
+        add("seconds", 0, true);
+        add("count", 0, true);
+        add("check", 0);
+        add("input", 0, true);
+        add("help", 'h');
+        add("version", 'V');
+        vector<string> arguments;
+        arguments.reserve(static_cast<size_t>(argc));
+        for (int index = 0; index < argc; ++index) {
+            arguments.push_back(argv[index]);
+        }
+        parser.parse(arguments);
+
+        g_help = parser.has("help");
+        g_version = parser.has("version");
+
+        if (parser.has("interval")) {
+            result.interval_ = to_u64(parser.get("interval"), "--interval");
+            if (*result.interval_ < 250 || *result.interval_ > 10000) {
+                invalid("interval must be 250..=10000");
             }
         }
+        if (parser.has("theme")) {
+            result.theme_ = parser.get("theme");
+        }
+        if (parser.has("view")) {
+            result.view_ = parser.get("view");
+        }
+        if (parser.has("gpu-panel")) {
+            result.gpu_panel_ = parser.get("gpu-panel");
+        }
+        if (parser.has("config")) {
+            result.config_path_ = parser.get("config");
+        }
+        result.no_gpu_ = parser.has("no-gpu");
+        result.snapshot_ = parser.has("snapshot");
+        if (parser.has("samples")) {
+            const uint64_t value = to_u64(parser.get("samples"), "--samples");
+            if (value < 1 || value > 86400) {
+                invalid("samples must be 1..=86400");
+            }
+            result.samples_ = static_cast<uint32_t>(value);
+        }
+        if (parser.has("export-svg")) {
+            result.export_svg_ = parser.get("export-svg");
+        }
+        if (parser.has("width")) {
+            const uint64_t value = to_u64(parser.get("width"), "--width");
+            if (value < 60 || value > 300) {
+                invalid("width must be 60..=300");
+            }
+            result.width_ = static_cast<uint16_t>(value);
+        }
+        if (parser.has("height")) {
+            const uint64_t value = to_u64(parser.get("height"), "--height");
+            if (value < 18 || value > 120) {
+                invalid("height must be 18..=120");
+            }
+            result.height_ = static_cast<uint16_t>(value);
+        }
+        result.write_config_ = parser.has("write-config");
+        if (parser.has("record")) {
+            result.record_ = parser.get("record");
+        }
+        if (parser.has("csv")) {
+            result.csv_ = parser.get("csv");
+        }
+        if (parser.has("replay")) {
+            result.replay_ = parser.get("replay");
+        }
+        if (parser.has("input")) {
+            result.replay_ = parser.get("input");
+        }
+        result.ascii_ = parser.has("ascii");
+        result.no_color_ = parser.has("no-color");
+        result.threads_ = parser.has("threads");
+        result.process_network_ = parser.has("process-network");
+        result.read_only_ = parser.has("read-only");
+        result.full_sampling_ = parser.has("full-sampling");
+        if (parser.has("layout")) {
+            result.layout_ = parser.get("layout");
+        }
+        if (parser.has("select-gpu")) {
+            result.select_gpu_ = static_cast<uint32_t>(to_u64(parser.get("select-gpu"), "--select-gpu"));
+        }
+        if (parser.has("count")) {
+            result.select_gpu_ = static_cast<uint32_t>(to_u64(parser.get("count"), "--count"));
+        }
+        if (parser.has("min-free-mib")) {
+            result.min_free_mib_ = to_u64(parser.get("min-free-mib"), "--min-free-mib");
+        }
+        if (parser.has("min-total-mib")) {
+            result.min_total_mib_ = to_u64(parser.get("min-total-mib"), "--min-total-mib");
+        }
+        if (parser.has("max-gpu-utilization")) {
+            result.max_gpu_utilization_ =
+                    static_cast<uint32_t>(to_u64(parser.get("max-gpu-utilization"), "--max-gpu-utilization"));
+        }
+        if (parser.has("max-memory-utilization")) {
+            result.max_memory_utilization_ =
+                    static_cast<uint32_t>(to_u64(parser.get("max-memory-utilization"), "--max-memory-utilization"));
+        }
+        result.no_config_exec_ = parser.has("no-config-exec");
+        result.json_ = parser.has("json");
+        result.reverse_ = parser.has("reverse");
+        if (parser.has("sort")) {
+            parse_connection_sort(parser.get("sort"), result);
+        }
+        if (parser.has("filter")) {
+            result.filter_ = parser.get("filter");
+        }
+        if (parser.has("interface")) {
+            result.interface_ = parser.get("interface");
+        }
+        if (parser.has("packets")) {
+            result.packets_ = static_cast<uint32_t>(to_u64(parser.get("packets"), "--packets"));
+        }
+        if (parser.has("seconds")) {
+            result.seconds_ = to_u64(parser.get("seconds"), "--seconds");
+        }
+        result.update_check_ = parser.has("check");
 
+        const auto& positionals = parser.positional_args();
         if (positionals.empty()) {
             return result;
         }

@@ -7,6 +7,7 @@
 #include <NeForce/core/file/filesystem.hpp>
 #include <NeForce/core/file/path.hpp>
 #include <NeForce/core/system/sysinfo.hpp>
+#include <NeForce/core/system/process.hpp>
 #if NEFLUX_PLATFORM_LINUX
 #    include <unistd.h>
 #endif
@@ -557,15 +558,12 @@ namespace neforce::neflux {
                     values.set("wchan", json(read_field(format("/proc/{}/wchan", item.pid_))));
                 }
                 if (any_column(cfg, {"exe", "exe_deleted", "cwd"})) {
-                    char target[4096] = {};
-                    const auto exe_length =
-                            ::readlink(format("/proc/{}/exe", item.pid_).data(), target, sizeof(target) - 1);
-                    if (exe_length > 0) {
-                        target[exe_length] = '\0';
-                        values.set("exe", json(target));
-                        values.set("exe_deleted",
-                                   json(ends_with(string_view(target, static_cast<size_t>(exe_length)), " (deleted)")));
+                    const string exe = ::neforce::process::get_executable_path(item.pid_);
+                    if (!exe.empty()) {
+                        values.set("exe", json(exe));
+                        values.set("exe_deleted", json(ends_with(exe.view(), " (deleted)")));
                     }
+                    char target[4096] = {};
                     const auto cwd_length =
                             ::readlink(format("/proc/{}/cwd", item.pid_).data(), target, sizeof(target) - 1);
                     if (cwd_length > 0) {

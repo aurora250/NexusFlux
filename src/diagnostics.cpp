@@ -260,7 +260,7 @@ namespace neforce::neflux {
                     "The service manager reports a failed unit; this does not identify the underlying error.",
                     "Services: inspect logs and exit status before choosing restart."));
         }
-        stable_sort_by_index(out, [](const finding& left, const finding& right) {
+        neforce::tim_sort(out.begin(), out.end(), [](const finding& left, const finding& right) {
             return severity_rank(left.severity_) < severity_rank(right.severity_);
         });
         if (out.size() > 100) {

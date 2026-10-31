@@ -12,38 +12,16 @@
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/painter.hpp>
 #include <NeFlux/ui/app.hpp>
-
 #include <NeFlux/platform.hpp>
 #include <NeFlux/util.hpp>
-
+#include <NeForce/core/async/atomic.hpp>
 #include <NeForce/core/exception/exception.hpp>
-
-#if NEFLUX_PLATFORM_WINDOWS
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    ifndef WIN32_LEAN_AND_MEAN
-#        define WIN32_LEAN_AND_MEAN
-#    endif
-#    include <winsock2.h>
-#    include <ws2tcpip.h>
-#    ifndef gai_strerror
-#        define gai_strerror gai_strerrorA
-#    endif
-#else
-#    include <arpa/inet.h>
-#    include <csignal>
-#    include <netdb.h>
-#    include <sys/socket.h>
-#    include <unistd.h>
-#endif
-#include <cerrno>
-#include <csignal>
-
+#include <NeForce/core/file/filesystem.hpp>
 #include <NeForce/core/system/console.hpp>
+#include <NeForce/core/system/signal.hpp>
+#include <NeForce/network/tcp/tcp_client.hpp>
 #include <NeForce/core/system/process.hpp>
 #include <NeForce/network/http/http_client.hpp>
-
 namespace {
 
     using namespace neforce;
@@ -79,16 +57,24 @@ namespace {
         sys_console::instance().print_error("\n");
     }
 
-    volatile sig_atomic_t g_stop = 0;
-
-    void on_signal(int) { g_stop = 1; }
+    neforce::signal_guard g_signal_guard;
+    neforce::atomic<int> g_stop{0};
 
     void install_signals() {
-        ::signal(SIGINT, on_signal);
-        ::signal(SIGTERM, on_signal);
+        auto& signals = neforce::system_signal::instance();
+        signals.register_handler(neforce::system_signal::event::interrupt,
+                                 [](neforce::system_signal::event, void*) {
+                                     g_stop.store(1, neforce::memory_order_relaxed);
+                                     return true;
+                                 });
+        signals.register_handler(neforce::system_signal::event::terminate,
+                                 [](neforce::system_signal::event, void*) {
+                                     g_stop.store(1, neforce::memory_order_relaxed);
+                                     return true;
+                                 });
     }
 
-    bool stopped() { return g_stop != 0; }
+    bool stopped() { return g_stop.load(neforce::memory_order_relaxed) != 0; }
 
     void wait_until(int64_t deadline) {
         while (!stopped() && neforce::neflux::monotonic_ms() < deadline) {
@@ -128,7 +114,7 @@ namespace {
                 errln("SVG render failed: unknown exception");
                 return false;
             }
-            if (!write_text_file(*args.export_svg_, svg)) {
+            if (!filesystem::create_and_write(::neforce::path(*args.export_svg_), svg)) {
                 errln(format("Cannot write SVG: {}", *args.export_svg_));
                 return false;
             }
@@ -159,7 +145,7 @@ namespace {
                     outln(text);
                 }
             }
-            if (args.csv_.has_value() && !write_text_file(*args.csv_, csv_text)) {
+            if (args.csv_.has_value() && !filesystem::create_and_write(::neforce::path(*args.csv_), csv_text)) {
                 errln(format("Cannot write CSV: {}", *args.csv_));
                 return 1;
             }
@@ -206,7 +192,7 @@ namespace {
             }
             deadline = monotonic_ms() + static_cast<int64_t>(cfg.interval_ms_);
         }
-        if (args.csv_.has_value() && !write_text_file(*args.csv_, csv_text)) {
+        if (args.csv_.has_value() && !filesystem::create_and_write(::neforce::path(*args.csv_), csv_text)) {
             errln(format("Cannot write CSV: {}", *args.csv_));
             return 1;
         }
@@ -232,89 +218,42 @@ namespace {
                 return format("HTTP check failed: {}", error.what());
             }
         }
-        string host;
-        string port = "443";
-        bool https = false;
-        if (starts_with(target.view(), "http://")) {
-            host = target.substr(7);
-        } else if (starts_with(target.view(), "https://")) {
-            host = target.substr(8);
-            https = true;
-        } else {
-            host = target;
-        }
+
+        string host = target;
         const auto slash = host.find('/');
         if (slash != string::npos) {
             host = host.substr(0, slash);
         }
+        uint16_t port = 80;
         const auto colon = host.rfind(':');
         if (colon != string::npos) {
-            port = host.substr(colon + 1);
+            const auto value = parse_u64(host.view().substr(colon + 1));
+            if (!value.has_value() || *value == 0 || *value > 65535) {
+                return format("Invalid TCP port in {}", target);
+            }
+            port = static_cast<uint16_t>(*value);
             host = host.substr(0, colon);
-        } else if (!https) {
-            port = "80";
         }
         if (host.empty()) {
             return "Target must be a URL or host:port";
         }
-#if NEFLUX_PLATFORM_WINDOWS
-        WSADATA wsa{};
-        WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-        addrinfo hints{};
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        addrinfo* results = nullptr;
-        const int resolved = getaddrinfo(host.view().data(), port.view().data(), &hints, &results);
-        if (resolved != 0 || results == nullptr) {
-            return format("DNS failed for {}: {}", host, gai_strerror(resolved));
-        }
-        int descriptor = -1;
-        int code = -1;
+
         const int64_t began = monotonic_ms();
-        for (addrinfo* item = results; item != nullptr; item = item->ai_next) {
-#if NEFLUX_PLATFORM_WINDOWS
-            descriptor = static_cast<int>(socket(item->ai_family, item->ai_socktype, item->ai_protocol));
-#else
-            descriptor = socket(item->ai_family, item->ai_socktype | SOCK_CLOEXEC, item->ai_protocol);
-#endif
-            if (descriptor < 0) {
-                continue;
+        try {
+            neforce::io_context context;
+            neforce::tcp_client client(context);
+            client.set_connect_timeout(neforce::milliseconds(4000));
+            const bool connected = client.connect(host, neforce::ports(port));
+            const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
+            if (!connected) {
+                return format("TCP {}:{} failed ({:.2f}s)", host, static_cast<uint64_t>(port), elapsed);
             }
-            timeval timeout{};
-            timeout.tv_sec = 4;
-            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-            setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-#if NEFLUX_PLATFORM_WINDOWS
-            code = connect(static_cast<SOCKET>(descriptor), item->ai_addr, static_cast<int>(item->ai_addrlen));
-#else
-            code = connect(descriptor, item->ai_addr, item->ai_addrlen);
-#endif
-            if (code == 0) {
-                break;
-            }
-#if NEFLUX_PLATFORM_WINDOWS
-            closesocket(static_cast<SOCKET>(descriptor));
-#else
-            close(descriptor);
-#endif
-            descriptor = -1;
+            client.disconnect();
+            return format("TCP {}:{} connected in {:.2f}s", host, static_cast<uint64_t>(port), elapsed);
+        } catch (const exception& error) {
+            const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
+            return format("TCP {}:{} failed: {} ({:.2f}s)", host, static_cast<uint64_t>(port), error.what(), elapsed);
         }
-        freeaddrinfo(results);
-        const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
-        if (descriptor >= 0) {
-#if NEFLUX_PLATFORM_WINDOWS
-            closesocket(static_cast<SOCKET>(descriptor));
-            WSACleanup();
-#else
-            close(descriptor);
-#endif
-        }
-        if (code != 0) {
-            return format("TCP {}:{} failed: {} ({:.2f}s)", host, port, format("errno {}", errno), elapsed);
-        }
-        return format("TCP {}:{} connected in {:.2f}s{}", host, port, elapsed,
-                      https ? " (TLS not verified by this TCP check)" : "");
     }
 
     string read_capture(const string& file_path) {
@@ -420,7 +359,7 @@ namespace {
             }
             return result;
         };
-        stable_sort_by_index(rows,
+        neforce::tim_sort(rows.begin(), rows.end(),
                              [&](const neforce::neflux::connection& left, const neforce::neflux::connection& right) {
                                  return args.reverse_ ? before(right, left) : before(left, right);
                              });

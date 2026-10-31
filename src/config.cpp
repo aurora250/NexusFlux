@@ -5,6 +5,7 @@
 #include <NeForce/core/exception/exception.hpp>
 #include <NeForce/core/file/filesystem.hpp>
 #include <NeForce/core/file/path.hpp>
+#include <NeForce/core/file/toml/toml_builder.hpp>
 #include <NeForce/core/file/toml/toml_parser.hpp>
 #include <NeForce/core/file/toml/toml_value.hpp>
 #include <NeForce/core/system/environment.hpp>
@@ -21,30 +22,6 @@ namespace neforce::neflux {
             buffer[count] = '\0';
             throw value_exception(buffer);
         }
-
-        string quote(const string& value) {
-            string out = "\"";
-            for (const char c: value) {
-                if (c == '"' || c == '\\') {
-                    out.push_back('\\');
-                }
-                out.push_back(c);
-            }
-            out.push_back('"');
-            return out;
-        }
-
-        string toml_bool(bool value) { return value ? "true" : "false"; }
-
-        string format_double(double value) {
-            string out = format_number(value, 15);
-            if (!out.contains('.') && out.find('e') == string::npos && out.find('E') == string::npos) {
-                out.append(".0");
-            }
-            return out;
-        }
-
-        string format_float(float value) { return format_double(value); }
 
         const toml_value* member(const toml_table& table, const char* key) { return table.get_member(key); }
 
@@ -187,38 +164,28 @@ namespace neforce::neflux {
             return node;
         }
 
-        void write_layout_node(string& out, const layout_node& node, const string& prefix) {
+        void write_layout_builder(toml_builder& builder, const layout_node& node) {
             if (node.kind_ == layout_node::kind::panel) {
-                out.append(prefix).append("panel = ").append(quote(node.panel_)).append("\n");
+                builder.key("panel").value(node.panel_);
                 return;
             }
-            out.append(prefix).append("direction = ").append(quote(node.direction_)).append("\n");
+            builder.key("direction").value(node.direction_);
             if (!node.weights_.empty()) {
-                out.append(prefix).append("weights = [");
-                for (size_t i = 0; i < node.weights_.size(); ++i) {
-                    if (i != 0) {
-                        out.append(", ");
-                    }
-                    out.append(format("{}", node.weights_[i]));
+                builder.key("weights").begin_array();
+                for (const uint16_t weight: node.weights_) {
+                    builder.value(static_cast<int64_t>(weight));
                 }
-                out.append("]\n");
+                builder.end_array();
             }
-            for (const auto& child: node.children_) {
-                out.append(prefix).append("[[custom_layout.children]]\n");
-                write_layout_node(out, child, prefix + "  ");
-            }
-        }
-
-        void write_string_array(string& out, const char* key, const vector<string>& values) {
-            out.append(key);
-            out.append(" = [");
-            for (size_t i = 0; i < values.size(); ++i) {
-                if (i != 0) {
-                    out.append(", ");
+            if (!node.children_.empty()) {
+                builder.key("children").begin_array();
+                for (const auto& child: node.children_) {
+                    builder.begin_inline_table();
+                    write_layout_builder(builder, child);
+                    builder.end_inline_table();
                 }
-                out.append(quote(values[i]));
+                builder.end_array();
             }
-            out.append("]\n");
         }
 
     } // namespace
@@ -383,114 +350,123 @@ namespace neforce::neflux {
     }
 
     string config::to_toml() const {
-        string out;
-        out.append("interval_ms = ").append(format("{}", interval_ms_)).append("\n");
-        out.append("collect_gpu = ").append(toml_bool(collect_gpu_)).append("\n");
-        out.append("theme = ").append(quote(theme_)).append("\n");
-        if (!theme_file_.empty()) {
-            out.append("theme_file = ").append(quote(theme_file_)).append("\n");
-        }
-        out.append("view = ").append(format("{}", view_)).append("\n");
-        out.append("sort_index = ").append(format("{}", sort_index_)).append("\n");
-        out.append("reverse_sort = ").append(toml_bool(reverse_sort_)).append("\n");
-        out.append("tree = ").append(toml_bool(tree_)).append("\n");
-        out.append("tree_auto_collapse = ").append(format("{}", tree_auto_collapse_)).append("\n");
-        out.append("tree_aggregate = ").append(toml_bool(tree_aggregate_)).append("\n");
-        out.append("history = ").append(format("{}", history_)).append("\n");
-        out.append("time_window_seconds = ").append(format("{}", time_window_seconds_)).append("\n");
-        out.append("show_loopback = ").append(toml_bool(show_loopback_)).append("\n");
-        out.append("cpu_warning = ").append(format_float(cpu_warning_)).append("\n");
-        out.append("memory_warning = ").append(format_double(memory_warning_)).append("\n");
-        out.append("gpu_temperature_warning = ").append(format("{}", gpu_temperature_warning_)).append("\n");
-        out.append("show_threads = ").append(toml_bool(show_threads_)).append("\n");
-        out.append("show_kernel_threads = ").append(toml_bool(show_kernel_threads_)).append("\n");
-        out.append("ascii = ").append(toml_bool(ascii_)).append("\n");
-        out.append("no_color = ").append(toml_bool(no_color_)).append("\n");
-        out.append("layout = ").append(quote(layout_)).append("\n");
-        out.append("overview_preset = ").append(format("{}", overview_preset_)).append("\n");
-        write_string_array(out, "overview_presets", overview_presets_);
-        write_string_array(out, "columns", columns_);
-        out.append("custom_colors = {");
-        bool first_color = true;
-        for (const auto& entry: custom_colors_.as_object()) {
-            if (!first_color) {
-                out.append(", ");
+        toml_builder builder;
+        const auto string_array = [&builder](const char* key, const vector<string>& values) {
+            builder.key(key).begin_array();
+            for (const auto& value: values) {
+                builder.value(value);
             }
-            first_color = false;
-            out.append(entry.first).append(" = ").append(quote(entry.second.as_string()));
-        }
-        out.append("}\n");
-        write_string_array(out, "monitored_folders", monitored_folders_);
-        out.append("process_network = ").append(toml_bool(process_network_)).append("\n");
-        out.append("alert_hold_seconds = ").append(format("{}", alert_hold_seconds_)).append("\n");
-        out.append("alert_history = ").append(format("{}", alert_history_)).append("\n");
-        out.append("alert_commands = [");
-        for (size_t i = 0; i < alert_commands_.size(); ++i) {
-            if (i != 0) {
-                out.append(", ");
-            }
-            out.append("[");
-            for (size_t j = 0; j < alert_commands_[i].size(); ++j) {
-                if (j != 0) {
-                    out.append(", ");
-                }
-                out.append(quote(alert_commands_[i][j]));
-            }
-            out.append("]");
-        }
-        out.append("]\n");
-        out.append("log_lines = ").append(format("{}", log_lines_)).append("\n");
-        out.append("record_max_mib = ").append(format("{}", record_max_mib_)).append("\n");
+            builder.end_array();
+        };
 
-        for (const auto& probe: probes_) {
-            out.append("\n[[probes]]\n");
-            out.append("name = ").append(quote(probe.name_)).append("\n");
-            write_string_array(out, "command", probe.command_);
-            out.append("timeout_seconds = ").append(format("{}", probe.timeout_seconds_)).append("\n");
+        builder.key("interval_ms").value(static_cast<int64_t>(interval_ms_));
+        builder.key("collect_gpu").value(collect_gpu_);
+        builder.key("theme").value(theme_);
+        if (!theme_file_.empty()) {
+            builder.key("theme_file").value(theme_file_);
+        }
+        builder.key("view").value(static_cast<int64_t>(view_));
+        builder.key("sort_index").value(static_cast<int64_t>(sort_index_));
+        builder.key("reverse_sort").value(reverse_sort_);
+        builder.key("tree").value(tree_);
+        builder.key("tree_auto_collapse").value(static_cast<int64_t>(tree_auto_collapse_));
+        builder.key("tree_aggregate").value(tree_aggregate_);
+        builder.key("history").value(static_cast<int64_t>(history_));
+        builder.key("time_window_seconds").value(static_cast<int64_t>(time_window_seconds_));
+        builder.key("show_loopback").value(show_loopback_);
+        builder.key("cpu_warning").value(static_cast<double>(cpu_warning_));
+        builder.key("memory_warning").value(memory_warning_);
+        builder.key("gpu_temperature_warning").value(static_cast<int64_t>(gpu_temperature_warning_));
+        builder.key("show_threads").value(show_threads_);
+        builder.key("show_kernel_threads").value(show_kernel_threads_);
+        builder.key("ascii").value(ascii_);
+        builder.key("no_color").value(no_color_);
+        builder.key("layout").value(layout_);
+        builder.key("overview_preset").value(static_cast<int64_t>(overview_preset_));
+        string_array("overview_presets", overview_presets_);
+        string_array("columns", columns_);
+
+        builder.key("custom_colors").begin_inline_table();
+        for (const auto& entry: custom_colors_.as_object()) {
+            builder.key(entry.first).value(entry.second.as_string());
+        }
+        builder.end_inline_table();
+
+        string_array("monitored_folders", monitored_folders_);
+        builder.key("process_network").value(process_network_);
+        builder.key("alert_hold_seconds").value(static_cast<int64_t>(alert_hold_seconds_));
+        builder.key("alert_history").value(static_cast<int64_t>(alert_history_));
+        builder.key("alert_commands").begin_array();
+        for (const auto& command: alert_commands_) {
+            builder.begin_array();
+            for (const auto& argument: command) {
+                builder.value(argument);
+            }
+            builder.end_array();
+        }
+        builder.end_array();
+        builder.key("log_lines").value(static_cast<int64_t>(log_lines_));
+        builder.key("record_max_mib").value(static_cast<int64_t>(record_max_mib_));
+
+        if (!probes_.empty()) {
+            builder.key("probes").begin_array();
+            for (const auto& probe: probes_) {
+                builder.begin_inline_table();
+                builder.key("name").value(probe.name_);
+                string_array("command", probe.command_);
+                builder.key("timeout_seconds").value(static_cast<int64_t>(probe.timeout_seconds_));
+                builder.end_inline_table();
+            }
+            builder.end_array();
         }
 
         if (custom_layout_.has_value()) {
-            out.append("\n[custom_layout]\n");
-            write_layout_node(out, *custom_layout_, "");
+            builder.key("custom_layout").value_table(
+                    [this](toml_builder& table) { write_layout_builder(table, *custom_layout_); });
         }
-        out.append("\ncheck_updates = ").append(toml_bool(check_updates_)).append("\n");
+
+        builder.key("check_updates").value(check_updates_);
         if (ignored_update_version_.has_value()) {
-            out.append("ignored_update_version = ").append(quote(*ignored_update_version_)).append("\n");
+            builder.key("ignored_update_version").value(*ignored_update_version_);
         }
-        out.append("\n[display]\n");
-        out.append("cpu_graph = ").append(quote(display_.cpu_graph_)).append("\n");
-        out.append("cpu_graph_lower = ").append(quote(display_.cpu_graph_lower_)).append("\n");
-        out.append("temperature_unit = ").append(quote(display_.temperature_unit_)).append("\n");
-        out.append("cpu_sensor = ").append(quote(display_.cpu_sensor_)).append("\n");
-        out.append("network_interface = ").append(quote(display_.network_interface_)).append("\n");
-        out.append("network_bits = ").append(toml_bool(display_.network_bits_)).append("\n");
-        out.append("network_binary = ").append(toml_bool(display_.network_binary_)).append("\n");
-        out.append("network_logarithmic = ").append(toml_bool(display_.network_logarithmic_)).append("\n");
-        out.append("network_start_zero = ").append(toml_bool(display_.network_start_zero_)).append("\n");
-        out.append("network_sync_scale = ").append(toml_bool(display_.network_sync_scale_)).append("\n");
-        out.append("network_scale = ").append(format("{}", display_.network_scale_)).append("\n");
-        out.append("network_swap = ").append(toml_bool(display_.network_swap_)).append("\n");
-        out.append("memory_graphs = ").append(toml_bool(display_.memory_graphs_)).append("\n");
-        out.append("show_swap = ").append(toml_bool(display_.show_swap_)).append("\n");
-        out.append("show_battery = ").append(toml_bool(display_.show_battery_)).append("\n");
-        out.append("process_basename = ").append(toml_bool(display_.process_basename_)).append("\n");
-        out.append("group_processes = ").append(toml_bool(display_.group_processes_)).append("\n");
-        out.append("overview_panel = ").append(quote(display_.overview_panel_)).append("\n");
-        out.append("transparent_background = ").append(toml_bool(display_.transparent_background_)).append("\n");
-        out.append("graph_symbol = ").append(quote(display_.graph_symbol_)).append("\n");
-        out.append("cpu_lazy_sort = ").append(toml_bool(display_.cpu_lazy_sort_)).append("\n");
-        out.append("rounded_corners = ").append(toml_bool(display_.rounded_corners_)).append("\n");
-        out.append("process_colors = ").append(toml_bool(display_.process_colors_)).append("\n");
-        out.append("process_gradient = ").append(toml_bool(display_.process_gradient_)).append("\n");
-        out.append("graph_gradient = ").append(toml_bool(display_.graph_gradient_)).append("\n");
-        out.append("gpu_in_cpu_box = ").append(toml_bool(display_.gpu_in_cpu_box_)).append("\n");
-        out.append("multi_gpu_overview = ").append(toml_bool(display_.multi_gpu_overview_)).append("\n");
-        out.append("graph_symbol_cpu = ").append(quote(display_.graph_symbol_cpu_)).append("\n");
-        out.append("graph_symbol_mem = ").append(quote(display_.graph_symbol_mem_)).append("\n");
-        out.append("graph_symbol_net = ").append(quote(display_.graph_symbol_net_)).append("\n");
-        out.append("graph_symbol_proc = ").append(quote(display_.graph_symbol_proc_)).append("\n");
-        out.append("graph_symbol_gpu = ").append(quote(display_.graph_symbol_gpu_)).append("\n");
-        return out;
+
+        builder.begin_table("display");
+        builder.key("cpu_graph").value(display_.cpu_graph_);
+        builder.key("cpu_graph_lower").value(display_.cpu_graph_lower_);
+        builder.key("temperature_unit").value(display_.temperature_unit_);
+        builder.key("cpu_sensor").value(display_.cpu_sensor_);
+        builder.key("network_interface").value(display_.network_interface_);
+        builder.key("network_bits").value(display_.network_bits_);
+        builder.key("network_binary").value(display_.network_binary_);
+        builder.key("network_logarithmic").value(display_.network_logarithmic_);
+        builder.key("network_start_zero").value(display_.network_start_zero_);
+        builder.key("network_sync_scale").value(display_.network_sync_scale_);
+        builder.key("network_scale").value(static_cast<int64_t>(display_.network_scale_));
+        builder.key("network_swap").value(display_.network_swap_);
+        builder.key("memory_graphs").value(display_.memory_graphs_);
+        builder.key("show_swap").value(display_.show_swap_);
+        builder.key("show_battery").value(display_.show_battery_);
+        builder.key("process_basename").value(display_.process_basename_);
+        builder.key("group_processes").value(display_.group_processes_);
+        builder.key("overview_panel").value(display_.overview_panel_);
+        builder.key("transparent_background").value(display_.transparent_background_);
+        builder.key("graph_symbol").value(display_.graph_symbol_);
+        builder.key("cpu_lazy_sort").value(display_.cpu_lazy_sort_);
+        builder.key("rounded_corners").value(display_.rounded_corners_);
+        builder.key("process_colors").value(display_.process_colors_);
+        builder.key("process_gradient").value(display_.process_gradient_);
+        builder.key("graph_gradient").value(display_.graph_gradient_);
+        builder.key("gpu_in_cpu_box").value(display_.gpu_in_cpu_box_);
+        builder.key("multi_gpu_overview").value(display_.multi_gpu_overview_);
+        builder.key("graph_symbol_cpu").value(display_.graph_symbol_cpu_);
+        builder.key("graph_symbol_mem").value(display_.graph_symbol_mem_);
+        builder.key("graph_symbol_net").value(display_.graph_symbol_net_);
+        builder.key("graph_symbol_proc").value(display_.graph_symbol_proc_);
+        builder.key("graph_symbol_gpu").value(display_.graph_symbol_gpu_);
+        builder.end_table();
+
+        const auto root = builder.build();
+        return root->to_document();
     }
 
     config config::from_toml(const string& text) {
@@ -709,7 +685,7 @@ namespace neforce::neflux {
             filesystem::create_directories(parent);
         }
         const string temporary = format("{}.{}.tmp", config_path, process::current_id());
-        if (!write_text_file(temporary, to_toml())) {
+        if (!filesystem::create_and_write(::neforce::path(temporary), to_toml())) {
             throw file_exception("Cannot write configuration");
         }
         if (!filesystem::rename(::neforce::path(temporary), ::neforce::path(config_path))) {

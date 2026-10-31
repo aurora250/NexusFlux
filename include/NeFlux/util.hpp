@@ -41,22 +41,6 @@ namespace neforce::neflux {
      */
     NEFORCE_NODISCARD optional<string> read_text_file(const string& file_path);
 
-    /**
-     * @brief 写入整个文本文件
-     * @param file_path 路径
-     * @param content 内容
-     * @return 成功返回 true
-     */
-    bool write_text_file(const string& file_path, const string& content);
-
-    /**
-     * @brief 追加文本文件
-     * @param file_path 路径
-     * @param content 内容
-     * @return 成功返回 true
-     */
-    bool append_text_file(const string& file_path, const string& content);
-
     // TODO: most of these functions down there have neforce API as its helper function or member function
 
     /**
@@ -246,59 +230,6 @@ namespace neforce::neflux {
      * @return 可打印文本
      */
     NEFORCE_NODISCARD string sanitize_text(string_view text);
-
-    /**
-     * @brief 按下标稳定排序，避免对 NexusForce 容器元素做 swap
-     * @tparam T 元素类型
-     * @tparam Compare 比较函数类型
-     * @param items 待排序容器
-     * @param compare 比较函数
-     * @note NexusForce 的 `sort` 在逆序输入时会越界；此实现先排序下标再重排元素
-     */
-    template <typename T, typename Compare>
-    void stable_sort_by_index(vector<T>& items, Compare compare) {
-        if (items.size() < 2) {
-            return;
-        }
-        vector<size_t> order;
-        order.reserve(items.size());
-        for (size_t index = 0; index < items.size(); ++index) {
-            order.push_back(index);
-        }
-        vector<size_t> buffer;
-        buffer.resize(order.size());
-        for (size_t width = 1; width < order.size(); width *= 2) {
-            for (size_t begin = 0; begin < order.size(); begin += width * 2) {
-                const size_t middle = min(begin + width, order.size());
-                const size_t end = min(begin + width * 2, order.size());
-                size_t left = begin;
-                size_t right = middle;
-                size_t out = begin;
-                while (left < middle && right < end) {
-                    if (compare(items[order[right]], items[order[left]])) {
-                        buffer[out++] = order[right++];
-                    } else {
-                        buffer[out++] = order[left++];
-                    }
-                }
-                while (left < middle) {
-                    buffer[out++] = order[left++];
-                }
-                while (right < end) {
-                    buffer[out++] = order[right++];
-                }
-            }
-            for (size_t index = 0; index < order.size(); ++index) {
-                order[index] = buffer[index];
-            }
-        }
-        vector<T> sorted;
-        sorted.reserve(items.size());
-        for (const size_t index: order) {
-            sorted.push_back(_NEFORCE move(items[index]));
-        }
-        items = _NEFORCE move(sorted);
-    }
 
     /**
      * @brief 格式化 JSON/TOML 数值

@@ -336,6 +336,26 @@ namespace neforce::neflux {
     };
 
     /**
+     * @brief 虚拟机采样
+     */
+    struct virtual_machine {
+        vector<tag> tags_;              ///< 工作负载标签
+        string name_;                   ///< 域名或 QEMU 进程名
+        string id_;                     ///< libvirt ID 或进程号
+        string uuid_;                   ///< 虚拟机 UUID
+        string backend_;                ///< libvirt / QEMU
+        string state_;                  ///< running / paused / shut off
+        string autostart_;              ///< 自动启动状态
+        string description_;            ///< 描述或命令行摘要
+        optional<uint32_t> pid_;        ///< QEMU 进程号
+        optional<uint32_t> vcpus_;      ///< 虚拟 CPU 数
+        optional<uint64_t> memory_;     ///< 当前内存（字节）
+        optional<uint64_t> max_memory_; ///< 最大内存（字节）
+        optional<double> cpu_percent_;  ///< 宿主机 CPU 占用
+        json extra_;                    ///< 扩展字段
+    };
+
+    /**
      * @brief 监听端口采样
      */
     struct listener {
@@ -349,14 +369,16 @@ namespace neforce::neflux {
      * @brief 本机发现清单
      */
     struct inventory {
-        uint64_t updated_at_ = 0;         ///< 更新时间
-        vector<container> containers_;    ///< 容器
-        vector<string> runtimes_;         ///< 发现的运行时
-        vector<service> services_;        ///< 服务
-        vector<string> service_managers_; ///< 服务管理器
-        vector<listener> listeners_;      ///< 监听端口
-        vector<string> notes_;            ///< 提示
-        json extra_;                      ///< 扩展字段
+        uint64_t updated_at_ = 0;                  ///< 更新时间
+        vector<container> containers_;             ///< 容器
+        vector<string> runtimes_;                  ///< 发现的运行时
+        vector<service> services_;                 ///< 服务
+        vector<string> service_managers_;          ///< 服务管理器
+        vector<virtual_machine> virtual_machines_; ///< 虚拟机
+        vector<string> vm_managers_;               ///< 虚拟机管理器
+        vector<listener> listeners_;               ///< 监听端口
+        vector<string> notes_;                     ///< 提示
+        json extra_;                               ///< 扩展字段
     };
 
     /**
@@ -375,6 +397,8 @@ namespace neforce::neflux {
         uint64_t cpu_mhz_ = 0;                      ///< CPU 平均频率
         json cpu_breakdown_;                        ///< CPU 时间构成
         vector<float> cores_;                       ///< 每逻辑核占用
+        uint32_t pcore_count_ = 0;                  ///< 性能核数量
+        uint32_t ecore_count_ = 0;                  ///< 能效核数量
         vector<optional<float>> core_temperatures_; ///< 每逻辑核温度
         float load_[3] = {0.0F, 0.0F, 0.0F};        ///< 1/5/15 分钟负载
         memory memory_;                             ///< 内存

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-本地 CPU、GPU、进程、存储、网络、容器与服务监控，基于 NexusForce 实现。
+本地 CPU、GPU、进程、存储、网络、容器、服务与虚拟机监控，基于 NexusForce 实现。
 
 可执行文件为 `nexus-flux`，别名 `neflux`。
 
@@ -108,9 +108,18 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 ![系统](docs/images/system.png)
 
 主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。`HOST & POWER` 同时显示硬件档案：
-CPU 的 Family/Model/Stepping、扩展 Family/Model、封装、核心名、指令集和 SIMD 扩展、
-L1/L2/L3 缓存；BIOS 厂商/版本/日期/微码；主板厂商/型号/芯片组/南桥；以及内存类型、
-通道、容量、控制器频率、LLC 和时序。数据来自 `neforce::sysinfo`，平台不支持的字段 显示为 `—`。
+CPU 架构、厂商、型号、频率、核心/线程数、L1/L2/L3 缓存、指令集和 SIMD 扩展。
+架构专有信息会随 CPU 类型变化：
+
+- x86：Family/Model/Stepping、扩展 Family/Model、Revision、核心电压、制程、
+  插槽、核心代号、总线频率、倍频和 TDP。
+- ARM：implementer、part、variant、revision 和核心名。
+- RISC-V：ISA、MMU、微架构以及厂商/架构/实现 ID。
+- LoongArch：Family、Revision、FPU Revision、ISA、地址位宽、机器型号、
+  系统类型、硬件观察点和 TLB 条目数。
+
+面板还会显示 BIOS 厂商/版本/日期/微码；主板厂商/型号/芯片组/南桥；以及内存类型、
+通道、容量、控制器频率、LLC 和时序。没有数据的 CPU 专有字段不会显示。
 
 - `6` 打开系统页。
 - `↑/↓` 滚动传感器和监听列表。
@@ -137,7 +146,18 @@ Linux 使用 systemd，Windows 使用 SCM。
 - `8` 打开服务页。
 - `F3` / `f` 过滤。
 - `↑/↓` 选择；`Enter` 打开详情。
-- 点击行选中。
+- `D` 切换服务详情侧边栏。
+- 右键服务可打开详情、日志、启动/停止/重启和跳转主进程。
+
+### 虚拟机
+
+![虚拟机](docs/images/vms.png)
+
+显示 libvirt 域和未托管的 `qemu-system-*` 进程，包括状态、vCPU、内存和宿主 PID。
+
+- `9` 打开虚拟机页。
+- `↑/↓` 选择；`Enter` / `d` 打开虚拟机详情。
+- 右键或 `F6` 提供启动、关机、重启、强制关闭、暂停/恢复和打开 QEMU 进程。
 
 ### 系统浏览器
 
@@ -272,8 +292,16 @@ Windows 下为 `%APPDATA%\neflux\config.toml`。
 - Linux：`~/.config/neflux/logs/nexus-flux.log.<date>`
 - Windows：`%APPDATA%\neflux\logs\nexus-flux.log.<date>`
 
-Windows 未处理异常会另存 minidump；Linux 的致命信号也会记录。如果崩溃时
-logger 本身无法刷新，还会写一个 `crash-fallback.log`。
+Windows 未处理异常会另存 minidump。
+Linux x86-64/AArch64 遇到未捕获的 C++ 异常、`terminate`，或收到
+致命 `SIGABRT`、`SIGSEGV`、`SIGILL`、`SIGFPE`、`SIGBUS` 时，会在日志目录写入 ELF core：
+
+```text
+nexus-flux-YYYYMMDD-HHMMSS-<pid>.core
+```
+
+致命日志和 `crash-fallback.log` 会记录 `core=<路径> bytes=<大小>`。
+如果 ELF core 写入失败，NexusFlux 会恢复默认信号动作，回退到内核 `core_pattern`。
 
 ## 构建
 

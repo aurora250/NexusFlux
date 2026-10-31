@@ -462,25 +462,14 @@ namespace neforce::neflux {
 
 
     string run_command(const string& program, const vector<string>& args, int timeout_ms, bool include_stderr) {
-        ::neforce::process handle;
-        handle.set_capture_stdout(true).set_capture_stderr(true);
-        handle.start(program, args);
-        const int code = handle.wait(timeout_ms);
-        if (code == -1) {
-            handle.terminate();
-            throw process_exception("query timed out or shutting down");
+        const auto result = ::neforce::process::run_capture(program, args, timeout_ms);
+        string output = result.output;
+        if (include_stderr && !result.error.empty()) {
+            output.append("\n[stderr]\n");
+            output.append(result.error);
         }
-        string output = handle.stdout_output();
-        if (include_stderr) {
-            const auto& error = handle.stderr_output();
-            if (!error.empty()) {
-                output.append("\n[stderr]\n");
-                output.append(error);
-            }
-        }
-        if (code != 0 && output.empty()) {
-            const auto& error = handle.stderr_output();
-            throw process_exception(error.empty() ? "query failed" : error.data());
+        if (result.exit_code != 0 && output.empty()) {
+            throw process_exception(result.error.empty() ? "query failed" : result.error.data());
         }
         return output;
     }
@@ -526,6 +515,231 @@ namespace neforce::neflux {
         return discover_selected(cfg, sources.containers_, sources.services_, sources.extras_);
     }
 
+    namespace {
+
+        string vm_join_state(const vector<string>& parts, size_t start) {
+            string state;
+            for (size_t index = start; index < parts.size(); ++index) {
+                if (!state.empty()) {
+                    state.push_back(' ');
+                }
+                state.append(parts[index]);
+            }
+            return state;
+        }
+
+        optional<uint64_t> vm_kib_value(const string& text) {
+            const auto parts = split_whitespace(text.view());
+            if (parts.empty()) {
+                return none;
+            }
+            const auto value = parse_u64(parts[0].view());
+            return value.has_value() ? optional<uint64_t>(*value * 1024ULL) : none;
+        }
+
+        string vm_process_name(const vector<string>& arguments) {
+            string name;
+            for (size_t index = 1; index + 1 < arguments.size(); ++index) {
+                if (arguments[index] != "-name") {
+                    continue;
+                }
+                name = arguments[index + 1];
+                if (starts_with(name.view(), "guest=")) {
+                    name = name.substr(6);
+                }
+                const auto comma = name.find(',');
+                if (comma != string::npos) {
+                    name = name.substr(0, comma);
+                }
+                break;
+            }
+            return name;
+        }
+
+        optional<uint64_t> vm_process_memory(const vector<string>& arguments) {
+            for (size_t index = 1; index + 1 < arguments.size(); ++index) {
+                if (arguments[index] != "-m" && arguments[index] != "--memory") {
+                    continue;
+                }
+                string value = arguments[index + 1];
+                value.trim();
+                if (value.empty()) {
+                    return none;
+                }
+                uint64_t multiplier = 1024ULL * 1024ULL;
+                if (const char suffix = value.back(); suffix == 'G' || suffix == 'g') {
+                    multiplier = 1024ULL * 1024ULL * 1024ULL;
+                    value = value.substr(0, value.size() - 1);
+                } else if (suffix == 'M' || suffix == 'm') {
+                    value = value.substr(0, value.size() - 1);
+                }
+                const auto number = parse_u64(value.view());
+                return number.has_value() ? optional<uint64_t>(*number * multiplier) : none;
+            }
+            return none;
+        }
+
+        optional<uint32_t> vm_process_vcpus(const vector<string>& arguments) {
+            for (size_t index = 1; index + 1 < arguments.size(); ++index) {
+                if (arguments[index] != "-smp" && arguments[index] != "--smp") {
+                    continue;
+                }
+                string value = arguments[index + 1];
+                const auto comma = value.find(',');
+                if (comma != string::npos) {
+                    value = value.substr(0, comma);
+                }
+                const auto number = parse_u64(value.view());
+                return number.has_value() ? optional<uint32_t>(static_cast<uint32_t>(*number)) : none;
+            }
+            return none;
+        }
+
+        void discover_virtual_machines(inventory& data) {
+#if NEFLUX_PLATFORM_LINUX
+            set<string> libvirt_names;
+            const bool has_virsh = path("/usr/bin/virsh").exists() || path("/bin/virsh").exists() ||
+                                   path("/usr/local/bin/virsh").exists();
+            if (has_virsh) {
+                try {
+                    const string listing = run_command("virsh", {"-r", "list", "--all"}, 3000);
+                    data.vm_managers_.push_back("libvirt");
+                    for (const auto& line: split_lines(listing)) {
+                        const auto parts = split_whitespace(line.view());
+                        if (parts.size() < 3 || parts[0] == "Id" ||
+                            parts[0].find_first_not_of('-') == string::npos) {
+                            continue;
+                        }
+                        virtual_machine vm;
+                        vm.backend_ = "libvirt";
+                        vm.id_ = parts[0] == "-" ? string() : parts[0];
+                        vm.name_ = parts[1];
+                        vm.state_ = vm_join_state(parts, 2);
+                        libvirt_names.insert(vm.name_);
+                        data.virtual_machines_.push_back(move(vm));
+                    }
+                    for (auto& vm: data.virtual_machines_) {
+                        try {
+                            const string details = run_command("virsh", {"-r", "dominfo", vm.name_}, 2500);
+                            string state;
+                            for (const auto& line: split_lines(details)) {
+                                const auto colon = line.find(':');
+                                if (colon == string::npos) {
+                                    continue;
+                                }
+                                const string key = trim(line.view().substr(0, colon));
+                                const string value = trim(line.view().substr(colon + 1));
+                                if (key == "UUID") {
+                                    vm.uuid_ = value;
+                                } else if (key == "State") {
+                                    state = value;
+                                } else if (key == "CPU(s)") {
+                                    const auto count = parse_u64(value.view());
+                                    if (count.has_value()) {
+                                        vm.vcpus_ = static_cast<uint32_t>(*count);
+                                    }
+                                } else if (key == "Max memory") {
+                                    vm.max_memory_ = vm_kib_value(value);
+                                } else if (key == "Used memory") {
+                                    vm.memory_ = vm_kib_value(value);
+                                } else if (key == "Autostart") {
+                                    vm.autostart_ = value;
+                                }
+                            }
+                            if (!state.empty()) {
+                                vm.state_ = state;
+                            }
+                            vm.description_ = "libvirt domain";
+                        } catch (const exception& error) {
+                            data.notes_.push_back(format("libvirt {}: {}", vm.name_, trim(error.what())));
+                        }
+                    }
+                } catch (const exception& error) {
+                    data.notes_.push_back(format("libvirt: {}", trim(error.what())));
+                }
+            }
+
+            set<string> seen_names = libvirt_names;
+            for (const auto& entry: path("/proc").children()) {
+                const string directory = entry.str();
+                const auto slash = directory.rfind('/');
+                const string pid_text = slash == string::npos ? directory : directory.substr(slash + 1);
+                const auto pid = parse_u64(pid_text.view());
+                if (!pid.has_value()) {
+                    continue;
+                }
+                string command = read_text_file(directory + "/cmdline").value_or(string());
+                if (command.empty()) {
+                    continue;
+                }
+                vector<string> arguments;
+                size_t begin = 0;
+                while (begin <= command.size()) {
+                    const auto end = command.find('\0', begin);
+                    arguments.push_back(command.substr(begin, end == string::npos ? string::npos : end - begin));
+                    if (end == string::npos) {
+                        break;
+                    }
+                    begin = end + 1;
+                }
+                if (arguments.empty()) {
+                    continue;
+                }
+                const auto argv0_slash = arguments[0].rfind('/');
+                const string executable =
+                        argv0_slash == string::npos ? arguments[0] : arguments[0].substr(argv0_slash + 1);
+                if (!executable.starts_with("qemu-system") && !executable.starts_with("qemu-kvm")) {
+                    continue;
+                }
+                string name = vm_process_name(arguments);
+                if (name.empty()) {
+                    name = format("{} ({})", executable, pid_text);
+                }
+                if (seen_names.count(name) != 0) {
+                    continue;
+                }
+                virtual_machine vm;
+                vm.name_ = name;
+                vm.id_ = pid_text;
+                vm.backend_ = "QEMU";
+                vm.state_ = "running";
+                vm.pid_ = static_cast<uint32_t>(*pid);
+                vm.max_memory_ = vm_process_memory(arguments);
+                vm.memory_ = vm.max_memory_;
+                vm.vcpus_ = vm_process_vcpus(arguments);
+                vm.description_ = executable;
+                string command_line;
+                for (const auto& argument: arguments) {
+                    if (!command_line.empty()) {
+                        command_line.push_back(' ');
+                    }
+                    command_line.append(argument);
+                }
+                vm.extra_ = json::object();
+                vm.extra_.set("command", json(command_line));
+                data.virtual_machines_.push_back(move(vm));
+                seen_names.insert(name);
+            }
+            bool qemu_process = false;
+            for (const auto& vm: data.virtual_machines_) {
+                qemu_process = qemu_process || vm.backend_ == "QEMU";
+            }
+            if (qemu_process) {
+                bool has_qemu_manager = false;
+                for (const auto& manager: data.vm_managers_) {
+                    has_qemu_manager = has_qemu_manager || manager == "QEMU";
+                }
+                if (!has_qemu_manager) {
+                    data.vm_managers_.push_back("QEMU");
+                }
+            }
+            neforce::tim_sort(data.virtual_machines_.begin(), data.virtual_machines_.end(),
+                                 [](const virtual_machine& a, const virtual_machine& b) { return a.name_ < b.name_; });
+#endif
+        }
+
+    } // namespace
+
     inventory discover_selected(const config& cfg, bool containers, bool services, bool extras) {
         inventory data;
         data.updated_at_ = unix_time();
@@ -533,13 +747,14 @@ namespace neforce::neflux {
             for (const char* runtime: {"docker", "podman"}) {
                 discover_runtime(data, runtime);
             }
+            discover_virtual_machines(data);
         }
         if (services) {
             discover_systemd(data);
         }
-        stable_sort_by_index(data.containers_,
+        neforce::tim_sort(data.containers_.begin(), data.containers_.end(),
                              [](const container& a, const container& b) { return a.name_ < b.name_; });
-        stable_sort_by_index(data.services_, [](const service& a, const service& b) {
+        neforce::tim_sort(data.services_.begin(), data.services_.end(), [](const service& a, const service& b) {
             const bool left_failed = a.active_ == "failed";
             const bool right_failed = b.active_ == "failed";
             if (left_failed != right_failed) {
@@ -803,10 +1018,10 @@ namespace neforce::neflux {
     vector<listener> discover_listeners() {
         vector<listener> out;
         for (const auto& item: vector<tuple<ip_family, socket_base::protocol, const char*>>{
-                     {ip_family::INET4, socket_base::protocol::TCP, "TCP"},
-                     {ip_family::INET6, socket_base::protocol::TCP, "TCP6"},
-                     {ip_family::INET4, socket_base::protocol::UDP, "UDP"},
-                     {ip_family::INET6, socket_base::protocol::UDP, "UDP6"}}) {
+                     {ip_family::inet4, socket_base::protocol::tcp, "TCP"},
+                     {ip_family::inet6, socket_base::protocol::tcp, "TCP6"},
+                     {ip_family::inet4, socket_base::protocol::udp, "UDP"},
+                     {ip_family::inet6, socket_base::protocol::udp, "UDP6"}}) {
             const auto entries = socket_base::enumerate_sockets(get<0>(item), get<1>(item));
             if (!entries.has_value()) {
                 continue;
@@ -835,7 +1050,7 @@ namespace neforce::neflux {
                 out.push_back(move(value));
             }
         }
-        stable_sort_by_index(out, [](const listener& a, const listener& b) {
+        neforce::tim_sort(out.begin(), out.end(), [](const listener& a, const listener& b) {
             if (a.port_ != b.port_) {
                 return a.port_ < b.port_;
             }

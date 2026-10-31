@@ -81,6 +81,18 @@ def find_shared_lib(prefix: Path) -> bool:
     return False
 
 
+def reset_prefix(prefix: Path) -> None:
+    """Drop a previous install tree, tolerating files still mapped by a running process."""
+    if not prefix.exists():
+        return
+    try:
+        shutil.rmtree(prefix)
+    except OSError as e:
+        # Some filesystems (for example FUSE) keep unlinked-but-mapped libraries
+        # visible as hidden entries; overwriting the tree is still safe.
+        print(f"warning: could not remove {prefix}: {e}; installing over it", file=sys.stderr)
+
+
 def resolve_build_dir(args: argparse.Namespace, nexusforce_root: Path) -> Path | None:
     if args.build_dir:
         return Path(args.build_dir)
@@ -182,8 +194,7 @@ def main(argv: list[str]) -> int:
              "--parallel", jobs])
 
         # --- Install ---------------------------------------------------------
-        if prefix.exists():
-            shutil.rmtree(prefix)
+        reset_prefix(prefix)
         run(["cmake", "--install", str(build_dir),
              "--prefix", str(prefix), "--config", args.config],
             stdout=subprocess.DEVNULL)

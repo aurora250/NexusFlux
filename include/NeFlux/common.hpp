@@ -9,6 +9,7 @@
  */
 
 #include <NeForce/core/algorithm/compare.hpp>
+#include <NeForce/core/algorithm/sort.hpp>
 #include <NeForce/core/container/deque.hpp>
 #include <NeForce/core/container/map.hpp>
 #include <NeForce/core/container/set.hpp>

@@ -1,7 +1,9 @@
 #include <NeFlux/advanced.hpp>
 #include <NeFlux/platform.hpp>
+#include <NeFlux/cli.hpp>
 #include <NeFlux/config.hpp>
 #include <NeFlux/collect.hpp>
+#include <NeFlux/crash.hpp>
 #include <NeFlux/connections.hpp>
 #include <NeFlux/diagnostics.hpp>
 #include <NeFlux/discovery.hpp>
@@ -15,13 +17,22 @@
 #include <NeFlux/ui/testing.hpp>
 #include <NeForce/tui/headless.hpp>
 #include <NeForce/tui/application.hpp>
+#include <NeForce/tui/chart/canvas_chart.hpp>
+#include <NeForce/tui/dom/element.hpp>
+#include <NeForce/core/file/filesystem.hpp>
+#include <NeForce/core/file/path.hpp>
 #include <NeForce/core/system/process.hpp>
 #include <NeForce/core/system/sysinfo.hpp>
 #include <NeForce/network/socket_base.hpp>
 #include <NeFlux/platform.hpp>
 #if NEFLUX_PLATFORM_LINUX
+#    include <dirent.h>
+#    include <elf.h>
 #    include <sys/wait.h>
 #    include <unistd.h>
+#    include <csignal>
+#    include <cstdlib>
+#    include <cstring>
 #endif
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/app.hpp>
@@ -49,6 +60,20 @@ namespace {
     using namespace neforce::neflux;
 
     snapshot sample_snapshot();
+
+    bool cpu_has_detail(const json& cpu, const char* label) {
+        const json* details = cpu.get("Details");
+        if (details == nullptr || !details->is_array()) {
+            return false;
+        }
+        for (const auto& item: details->as_array()) {
+            const json* value = item.get("Label");
+            if (value != nullptr && value->is_string() && value->as_string() == label) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     void test_json() {
         json value = json::object();
@@ -93,6 +118,19 @@ namespace {
         cfg.display_.process_gradient_ = false;
         cfg.display_.graph_symbol_cpu_ = "block";
         cfg.display_.graph_symbol_net_ = "tty";
+        cfg.alert_commands_ = {{"echo", "alert"}};
+        cfg.probes_.push_back(probe_config{"probe", {"true"}, 2});
+        layout_node layout;
+        layout.kind_ = layout_node::kind::split;
+        layout.direction_ = "horizontal";
+        layout.weights_ = {1, 1};
+        layout_node first;
+        first.panel_ = "cpu";
+        layout_node second;
+        second.panel_ = "processes";
+        layout.children_.push_back(first);
+        layout.children_.push_back(second);
+        cfg.custom_layout_ = layout;
         const string text = cfg.to_toml();
         const config parsed = config::from_toml(text);
         CHECK(parsed.theme_ == "nord");
@@ -111,6 +149,14 @@ namespace {
         CHECK(!parsed.display_.process_gradient_);
         CHECK(parsed.display_.graph_symbol_cpu_ == "block");
         CHECK(parsed.display_.graph_symbol_net_ == "tty");
+        CHECK(parsed.alert_commands_.size() == 1);
+        CHECK(parsed.probes_.size() == 1);
+        CHECK(parsed.probes_[0].timeout_seconds_ == 2);
+        CHECK(parsed.custom_layout_.has_value());
+        if (parsed.custom_layout_.has_value()) {
+            CHECK(parsed.custom_layout_->children_.size() == 2);
+            CHECK(parsed.custom_layout_->children_[1].panel_ == "processes");
+        }
         bool rejected = false;
         try {
             ignore = config::from_toml("unknown_key = 1");
@@ -118,6 +164,233 @@ namespace {
             rejected = true;
         }
         CHECK(rejected);
+    }
+
+    void test_cli() {
+        char program[] = "nexus-flux";
+        char interval[] = "--interval=500";
+        char snapshot[] = "snapshot";
+        char* args[] = {program, interval, snapshot};
+        const cli_args parsed = parse_cli(3, args);
+        CHECK(parsed.interval_.has_value() && *parsed.interval_ == 500);
+        CHECK(parsed.snapshot_);
+        CHECK(!help_requested());
+
+        char short_interval[] = "-i";
+        char short_value[] = "250";
+        char record[] = "record";
+        char file[] = "session.jsonl";
+        char* record_args[] = {program, short_interval, short_value, record, file};
+        const cli_args recorded = parse_cli(5, record_args);
+        CHECK(recorded.interval_.has_value() && *recorded.interval_ == 250);
+        CHECK(recorded.command_ == cli_command::record);
+        CHECK(recorded.record_.has_value() && *recorded.record_ == "session.jsonl");
+
+        char network[] = "network";
+        char check[] = "check";
+        char target[] = "127.0.0.1:80";
+        char* network_args[] = {program, network, check, target};
+        const cli_args checked = parse_cli(4, network_args);
+        CHECK(checked.command_ == cli_command::network_check);
+        CHECK(checked.target_ == "127.0.0.1:80");
+
+        char help[] = "--help";
+        char* help_args[] = {program, help};
+        static_cast<void>(parse_cli(2, help_args));
+        CHECK(help_requested());
+
+        char unknown[] = "--unknown";
+        char* unknown_args[] = {program, unknown};
+        bool rejected = false;
+        try {
+            static_cast<void>(parse_cli(2, unknown_args));
+        } catch (const exception&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+    }
+
+    void test_crash_core_dump() {
+#if NEFLUX_PLATFORM_LINUX && (defined(__x86_64__) || defined(__aarch64__)) && !defined(__SANITIZE_ADDRESS__)
+        char directory[] = "/tmp/neflux-crash-test-XXXXXX";
+        char* created = ::mkdtemp(directory);
+        CHECK(created != nullptr);
+        if (created == nullptr) {
+            return;
+        }
+        const pid_t child = ::fork();
+        CHECK(child >= 0);
+        if (child < 0) {
+            static_cast<void>(filesystem::remove_all(path(directory)));
+            return;
+        }
+        if (child == 0) {
+            static_cast<void>(::setenv("XDG_CONFIG_HOME", directory, 1));
+            char argument[] = "nexus-flux-test";
+            char* arguments[] = {argument, nullptr};
+            initialize_crash_logging(1, arguments);
+            ::raise(SIGSEGV);
+            ::_exit(99);
+        }
+        int status = 0;
+        CHECK(::waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status));
+        CHECK(WEXITSTATUS(status) == 128 + SIGSEGV);
+
+        char log_directory[512]{};
+        std::snprintf(log_directory, sizeof(log_directory), "%s/neflux/logs", directory);
+        bool found_core = false;
+        DIR* handle = ::opendir(log_directory);
+        CHECK(handle != nullptr);
+        if (handle != nullptr) {
+            while (const dirent* entry = ::readdir(handle)) {
+                const std::size_t length = std::strlen(entry->d_name);
+                if (length < 5 || std::strcmp(entry->d_name + length - 5, ".core") != 0) {
+                    continue;
+                }
+                char core_path[1024]{};
+                std::snprintf(core_path, sizeof(core_path), "%s/%s", log_directory, entry->d_name);
+                FILE* file = std::fopen(core_path, "rb");
+                CHECK(file != nullptr);
+                if (file != nullptr) {
+                    Elf64_Ehdr header{};
+                    const std::size_t read = std::fread(&header, 1, sizeof(header), file);
+                    CHECK(read == sizeof(header));
+                    CHECK(std::memcmp(header.e_ident, ELFMAG, SELFMAG) == 0);
+                    CHECK(header.e_ident[EI_CLASS] == ELFCLASS64 && header.e_ident[EI_DATA] == ELFDATA2LSB);
+                    CHECK(header.e_type == ET_CORE);
+                    CHECK(header.e_machine == EM_X86_64 || header.e_machine == EM_AARCH64);
+                    CHECK(header.e_phnum >= 2 && header.e_phentsize == sizeof(Elf64_Phdr));
+                    Elf64_Phdr note_phdr{};
+                    CHECK(std::fseek(file, static_cast<long>(header.e_phoff), SEEK_SET) == 0);
+                    CHECK(std::fread(&note_phdr, 1, sizeof(note_phdr), file) == sizeof(note_phdr));
+                    CHECK(note_phdr.p_type == PT_NOTE);
+                    Elf64_Nhdr note_header{};
+                    CHECK(std::fseek(file, static_cast<long>(note_phdr.p_offset), SEEK_SET) == 0);
+                    CHECK(std::fread(&note_header, 1, sizeof(note_header), file) == sizeof(note_header));
+                    CHECK(note_header.n_type == NT_PRSTATUS);
+                    std::fclose(file);
+                    found_core = true;
+                }
+                break;
+            }
+            ::closedir(handle);
+        }
+        CHECK(found_core);
+
+        string crash_log_text;
+        DIR* log_handle = ::opendir(log_directory);
+        CHECK(log_handle != nullptr);
+        if (log_handle != nullptr) {
+            while (const dirent* entry = ::readdir(log_handle)) {
+                if (std::strncmp(entry->d_name, "nexus-flux.log", 14) != 0) {
+                    continue;
+                }
+                string candidate(log_directory);
+                candidate.append("/");
+                candidate.append(entry->d_name);
+                const auto text = read_text_file(candidate);
+                if (text.has_value()) {
+                    crash_log_text = *text;
+                }
+            }
+            ::closedir(log_handle);
+        }
+        CHECK(!crash_log_text.empty());
+        CHECK(crash_log_text.find("fatal signal") != string::npos);
+        CHECK(crash_log_text.find("SIGSEGV") != string::npos);
+        CHECK(crash_log_text.find("dump=") != string::npos);
+        static_cast<void>(filesystem::remove_all(path(directory)));
+#endif
+    }
+
+    void test_cpu_info() {
+        sysinfo::cpu_info x86_cpu;
+        x86_cpu.vendor = "GenuineIntel";
+        x86_cpu.brand = "Test x86 CPU";
+        x86_cpu.max_mhz = 5400;
+        x86_cpu.current_mhz = 4200;
+        x86_cpu.cores = 8;
+        x86_cpu.logical_processors = 16;
+        x86_cpu.features = "sse sse2 avx2";
+        x86_cpu.x86.family = "6";
+        x86_cpu.x86.model = "183";
+        x86_cpu.x86.stepping = "1";
+        x86_cpu.x86.ext_family = "6";
+        x86_cpu.x86.ext_model = "B7";
+        x86_cpu.x86.revision = "1";
+        x86_cpu.x86.core_vid = "1.20 V";
+        x86_cpu.x86.technology = "10 nm";
+        x86_cpu.x86.socket = "LGA1700";
+        x86_cpu.x86.code_name = "Raptor Lake";
+        x86_cpu.x86.bus_speed_mhz = 100;
+        x86_cpu.x86.max_tdp_watts = 55;
+        const json x86 = cpu_info_json(x86_cpu, sysinfo::architecture::x64);
+        CHECK(x86.get("Architecture") != nullptr && x86.get("Architecture")->as_string() == "x86_64");
+        CHECK(x86.get("Vendor") != nullptr && x86.get("Vendor")->as_string() == "GenuineIntel");
+        CHECK(x86.get("Cores / Threads") != nullptr && x86.get("Cores / Threads")->as_string() == "8 / 16");
+        CHECK(x86.get("Max clock") != nullptr && x86.get("Max clock")->as_string() == "5400 MHz");
+        CHECK(x86.get("Family") != nullptr && x86.get("Family")->as_string() == "6");
+        CHECK(x86.get("Socket") != nullptr && x86.get("Socket")->as_string() == "LGA1700");
+        CHECK(x86.get("Multiplier") != nullptr && x86.get("Multiplier")->as_string() == "42.00");
+        CHECK(x86.get("Package") == nullptr);
+        CHECK(cpu_has_detail(x86, "Stepping"));
+        CHECK(cpu_has_detail(x86, "Max TDP"));
+        CHECK(!cpu_has_detail(x86, "MMU"));
+
+        sysinfo::cpu_info arm_cpu;
+        arm_cpu.vendor = "ARM";
+        arm_cpu.brand = "Cortex-A76";
+        arm_cpu.cores = 8;
+        arm_cpu.logical_processors = 8;
+        arm_cpu.arm.architecture = "8";
+        arm_cpu.arm.implementer = "0x41";
+        arm_cpu.arm.part = "0xd0b";
+        arm_cpu.arm.variant = "0x1";
+        arm_cpu.arm.revision = "1";
+        arm_cpu.arm.core_name = "Cortex-A76";
+        const json arm = cpu_info_json(arm_cpu, sysinfo::architecture::arm64);
+        CHECK(arm.get("Architecture") != nullptr && arm.get("Architecture")->as_string() == "ARM64");
+        CHECK(arm.get("Implementer") != nullptr && arm.get("Implementer")->as_string() == "0x41");
+        CHECK(arm.get("Family") == nullptr);
+        CHECK(cpu_has_detail(arm, "ARM arch"));
+        CHECK(cpu_has_detail(arm, "Core name"));
+        CHECK(!cpu_has_detail(arm, "Stepping"));
+
+        sysinfo::cpu_info riscv_cpu;
+        riscv_cpu.riscv.isa = "rv64imafdc";
+        riscv_cpu.riscv.mmu = "svpbmt";
+        riscv_cpu.riscv.uarch = "sifive,u74";
+        riscv_cpu.riscv.mvendorid = "0x489";
+        riscv_cpu.riscv.marchid = "0x8000000000000007";
+        riscv_cpu.riscv.mimpid = "0x0";
+        const json riscv = cpu_info_json(riscv_cpu, sysinfo::architecture::riscv64);
+        CHECK(riscv.get("Architecture") != nullptr && riscv.get("Architecture")->as_string() == "RISC-V 64");
+        CHECK(riscv.get("ISA") != nullptr && riscv.get("ISA")->as_string() == "rv64imafdc");
+        CHECK(riscv.get("MMU") != nullptr && riscv.get("MMU")->as_string() == "svpbmt");
+        CHECK(riscv.get("MVendor ID") != nullptr && riscv.get("MVendor ID")->as_string() == "0x489");
+        CHECK(riscv.get("Family") == nullptr);
+
+        sysinfo::cpu_info loong_cpu;
+        loong_cpu.loongarch.family = "Loongson-3A6000";
+        loong_cpu.loongarch.revision = "0x01";
+        loong_cpu.loongarch.fpu_revision = "0x01";
+        loong_cpu.loongarch.isa = "loongarch64";
+        loong_cpu.loongarch.address_sizes = "48/48";
+        loong_cpu.loongarch.machine = "Loongson-3A6000";
+        loong_cpu.loongarch.system_type = "desktop";
+        loong_cpu.loongarch.watchpoint = "8";
+        loong_cpu.loongarch.tlb_entries = 64;
+        const json loong = cpu_info_json(loong_cpu, sysinfo::architecture::loongarch64);
+        CHECK(loong.get("Architecture") != nullptr && loong.get("Architecture")->as_string() == "LoongArch 64");
+        CHECK(loong.get("Family") != nullptr && loong.get("Family")->as_string() == "Loongson-3A6000");
+        CHECK(loong.get("TLB entries") != nullptr && loong.get("TLB entries")->as_string() == "64");
+        CHECK(loong.get("ISA") != nullptr && loong.get("ISA")->as_string() == "loongarch64");
+
+        const json unknown = cpu_info_json(sysinfo::cpu_info{}, sysinfo::architecture::unknown);
+        CHECK(unknown.get("Architecture") != nullptr && unknown.get("Architecture")->as_string() == "Unknown");
+        CHECK(unknown.get("Details") != nullptr && unknown.get("Details")->is_array() &&
+              unknown.get("Details")->as_array().empty());
     }
 
     void test_tui_headless() {
@@ -213,6 +486,49 @@ namespace {
         CHECK(!parse_u64("42x").has_value());
         CHECK(parse_i64("-7").value() == -7);
         CHECK(parse_f64("1.5%").value() == 1.5);
+    }
+
+    void test_chart_zero_and_missing() {
+        struct chart_root final : tui::component<> {
+            deque<double> values;
+            tui::chart_series series;
+            chart_root() {
+                series.name = "series";
+                series.stream = &values;
+            }
+            tui::element render() override {
+                auto* stream = &series;
+                const size_t samples = values.size();
+                return tui::element::canvas([stream, samples](tui::canvas_painter& canvas) {
+                    tui::canvas_chart_window window;
+                    window.samples = samples;
+                    window.end = samples;
+                    tui::canvas_chart(canvas, tui::canvas_chart_style::from_theme(tui::dark_theme, "braille", false))
+                            .raster(0, 0, canvas.width(), canvas.height(), {*stream}, 100.0, window, false, 0);
+                });
+            }
+        };
+        const auto glyph_count = [](const string& text) {
+            size_t count = 0;
+            for (const char character: text) {
+                if (character != ' ' && character != '\n' && character != '\r') {
+                    ++count;
+                }
+            }
+            return count;
+        };
+        chart_root zero;
+        zero.values = {0.0, 0.0, 0.0, 0.0};
+        tui::headless zero_app(&zero, 20, 6);
+        zero_app.render();
+        CHECK(glyph_count(zero_app.plaintext()) > 0);
+
+        chart_root missing;
+        missing.values = {numeric_traits<double>::quiet_nan(), numeric_traits<double>::quiet_nan(),
+                          numeric_traits<double>::quiet_nan(), numeric_traits<double>::quiet_nan()};
+        tui::headless missing_app(&missing, 20, 6);
+        missing_app.render();
+        CHECK(glyph_count(missing_app.plaintext()) == 0);
     }
 
     void test_plot() {
@@ -475,6 +791,16 @@ namespace {
         unit.sub_ = "running";
         unit.description_ = "Demo";
         value.inventory_.services_.push_back(unit);
+        virtual_machine vm;
+        vm.name_ = "test-vm";
+        vm.backend_ = "libvirt";
+        vm.state_ = "running";
+        vm.vcpus_ = 4;
+        vm.memory_ = 2ULL * 1024 * 1024 * 1024;
+        vm.max_memory_ = 4ULL * 1024 * 1024 * 1024;
+        vm.pid_ = 4242;
+        value.inventory_.virtual_machines_.push_back(vm);
+        value.inventory_.vm_managers_.push_back("libvirt");
         annotate(value);
         return value;
     }
@@ -654,6 +980,30 @@ namespace {
         const snapshot minimal = instance.collect_with_processes(cfg, false, false, false);
         CHECK(minimal.processes_.empty());
         CHECK(minimal.connections_.connections_.empty());
+        const json* hardware = minimal.extra_.get("Hardware");
+        CHECK(hardware != nullptr);
+        const json* cpu = hardware != nullptr ? hardware->get("CPU") : nullptr;
+        CHECK(cpu != nullptr);
+        CHECK(cpu != nullptr && cpu->get("Architecture") != nullptr);
+        CHECK(cpu != nullptr && cpu->get("Details") != nullptr && cpu->get("Details")->is_array());
+        if (cpu != nullptr && cpu->get("Architecture") != nullptr) {
+            const string system_page = ui::render_plaintext(minimal, minimal.inventory_, cfg, "system", 160, 48);
+            CHECK(system_page.find("Architecture") != string::npos);
+            CHECK(system_page.find(cpu->get("Architecture")->as_string()) != string::npos);
+            const json* details = cpu->get("Details");
+            if (details != nullptr) {
+                for (const auto& item: details->as_array()) {
+                    const json* label = item.get("Label");
+                    const json* value = item.get("Value");
+                    if (label == nullptr || value == nullptr || !label->is_string() || !value->is_string() ||
+                        value->as_string() == "—") {
+                        continue;
+                    }
+                    CHECK(system_page.find(label->as_string()) != string::npos);
+                    break;
+                }
+            }
+        }
         const snapshot connected = instance.collect_with_processes(cfg, false, false, true);
         CHECK(connected.connections_.connections_.size() >= minimal.connections_.connections_.size());
     }
@@ -806,8 +1156,69 @@ namespace {
         CHECK(history.find("SERIES") != string::npos);
         const string events = ui::render_plaintext(value, data, cfg, "events", 120, 36);
         CHECK(events.find("EVENTS") != string::npos);
+        const string vms_page = ui::headless_probe("9");
+        CHECK(vms_page.find("VIRTUAL MACHINES") != string::npos);
+        const string vms = ui::render_plaintext(value, data, cfg, "vms", 120, 36);
+        CHECK(vms.find("VIRTUAL MACHINES") != string::npos);
+        CHECK(vms.find("test-vm") != string::npos);
+        CHECK(vms.find("libvirt") != string::npos);
+        const string vm_menu = ui::headless_probe_seeded(value, data, "vms", "\x1b[<2;10;9M", 120, 40);
+        CHECK(vm_menu.find("VM · test-vm") != string::npos);
+        CHECK(vm_menu.find("Shutdown") != string::npos);
+        const string service_panel = ui::headless_probe_seeded(value, data, "services", "D", 120, 40);
+        CHECK(service_panel.find("SERVICE · demo.service") != string::npos);
+        const string service_menu = ui::headless_probe_seeded(value, data, "services", "\x1b[<2;10;9M", 120, 40);
+        CHECK(service_menu.find("SERVICE · demo.service") != string::npos);
+        CHECK(service_menu.find("Restart service") != string::npos);
+        const string service_menu_click =
+                ui::headless_probe_seeded(value, data, "services", "\x1b[<2;10;9M|\x1b[<0;60;16M", 120, 40);
+        CHECK(service_menu_click.find("Main PID") != string::npos);
+        inventory reordered = data;
+        service other = data.services_.front();
+        other.name_ = "other.service";
+        reordered.services_.clear();
+        reordered.services_.push_back(other);
+        reordered.services_.push_back(data.services_.front());
+        const string tracked_service =
+                ui::headless_probe_service_refresh(value, data, reordered, "\x1b[<0;10;9M", "\r", 120, 40);
+        CHECK(tracked_service.find("Name          demo.service") != string::npos);
+        inventory many_listeners = data;
+        many_listeners.listeners_.clear();
+        for (uint32_t index = 0; index < 30; ++index) {
+            listener item;
+            item.protocol_ = "TCP";
+            item.address_ = format("10.0.0.{}", index);
+            item.port_ = static_cast<uint16_t>(8000 + index);
+            many_listeners.listeners_.push_back(item);
+        }
+        const string listener_page = ui::headless_probe_seeded(value, many_listeners, "system", "", 120, 40);
+        CHECK(listener_page.find("LISTENERS · 30") != string::npos);
+        const string listener_scrolled =
+                ui::headless_probe_seeded(value, many_listeners, "system", "\x1b[6~|\x1b[6~|\x1b[6~", 120, 40);
+        CHECK(listener_scrolled.find("LISTENERS · 30") != string::npos);
+        CHECK(listener_scrolled.find("10.0.0.25") != string::npos);
+        snapshot many_cores = value;
+        many_cores.cores_.assign(32, 12.5F);
+        many_cores.pcore_count_ = 8;
+        many_cores.ecore_count_ = 16;
+        const string overview_many = ui::render_plaintext(many_cores, data, cfg, "overview", 140, 44);
+        CHECK(overview_many.find("8P + 16E / 32T") != string::npos);
+        CHECK(overview_many.find("Per-core history · 8P + 16E / 32T") != string::npos);
+        CHECK(overview_many.find("C00") != string::npos);
+        CHECK(overview_many.find("C15") != string::npos);
+        CHECK(overview_many.find("C16") != string::npos);
+        CHECK(overview_many.find("C31") != string::npos);
+        snapshot missing_gpu = value;
+        missing_gpu.gpus_[0].utilization_.reset();
+        missing_gpu.gpus_[0].memory_used_.reset();
+        missing_gpu.gpus_[0].memory_total_.reset();
+        missing_gpu.gpus_[0].temperature_.reset();
+        missing_gpu.gpus_[0].process_status_ = "Driver not loaded; telemetry unavailable";
+        const string gpu_page = ui::render_plaintext(missing_gpu, data, cfg, "gpu", 140, 40);
+        CHECK(gpu_page.find("Driver not loaded") != string::npos);
         const string theme_file = "/tmp/neflux-theme-unit.theme";
-        CHECK(write_text_file(theme_file, "theme[main_bg]=\"#102030\"\ntheme[main_fg]=\"#ffffff\"\n"));
+        CHECK(::neforce::filesystem::create_and_write(::neforce::path(theme_file),
+                                                        "theme[main_bg]=\"#102030\"\ntheme[main_fg]=\"#ffffff\"\n"));
         config theme_cfg = cfg;
         theme_cfg.theme_file_ = theme_file;
         const string themed_svg = ui::render_svg(value, data, theme_cfg, "processes", "summary", 100, 30);
@@ -822,9 +1233,13 @@ namespace {
 int main() {
     test_json();
     test_config();
+    test_cli();
+    test_cpu_info();
+    test_crash_core_dump();
     test_tui_headless();
     test_util();
     test_plot();
+    test_chart_zero_and_missing();
     test_filter();
     test_tags();
     test_network_attribution();

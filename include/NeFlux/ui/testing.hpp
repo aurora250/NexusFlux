@@ -73,6 +73,34 @@ namespace neforce::neflux::ui {
                                                                 string_view view_name, string_view input, int x, int y);
 
     /**
+     * @brief 在给定快照上运行无头 TUI，并返回渲染文本
+     * @param value 快照
+     * @param data 清单
+     * @param view_name 视图名
+     * @param input 键盘/鼠标输入字节流，使用 `|` 分隔逐帧输入
+     * @param width 终端列数
+     * @param height 终端行数
+     * @return 最后一帧的纯文本
+     */
+    NEFORCE_NODISCARD string headless_probe_seeded(const snapshot& value, const inventory& data, string_view view_name,
+                                                   string_view input, int width = 120, int height = 40);
+
+    /**
+     * @brief 在 Services 页切换库存后继续无头运行，用于验证选中项跟踪
+     * @param value 快照
+     * @param first 第一次库存
+     * @param second 刷新后的库存
+     * @param before 刷新前输入
+     * @param after 刷新后输入
+     * @param width 终端列数
+     * @param height 终端行数
+     * @return 最后一帧的纯文本
+     */
+    NEFORCE_NODISCARD string headless_probe_service_refresh(const snapshot& value, const inventory& first,
+                                                            const inventory& second, string_view before,
+                                                            string_view after, int width = 120, int height = 40);
+
+    /**
      * @brief 获取无头 TUI 最后一次 ANSI 输出
      * @param input 键盘/鼠标输入字节流，使用 `|` 分隔逐帧输入
      * @return ANSI 转义序列
