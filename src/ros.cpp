@@ -1,15 +1,11 @@
 #include <NeFlux/ros.hpp>
-
 #include <NeFlux/common.hpp>
 #include <NeFlux/platform.hpp>
 #include <NeFlux/util.hpp>
-
 #include <NeForce/core/system/process.hpp>
-
 #if NEFLUX_PLATFORM_LINUX
 #    include <unistd.h>
 #endif
-
 namespace neforce::neflux {
 
     namespace {

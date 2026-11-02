@@ -477,20 +477,12 @@ namespace neforce::neflux {
             impl_->engines = move(next_engines);
         }
 
-        const bool need_status =
-                any_column(cfg, {"uid", "tgid", "data", "code", "lib", "swap", "context_switches", "uid_effective",
-                                 "uid_saved", "gid", "gid_effective", "nspid", "seccomp", "capabilities",
-                                 "voluntary_context_switches", "nonvoluntary_context_switches"});
-        const bool need_io = any_column(cfg, {"rchar", "wchar", "syscr", "syscw", "cancelled_write"});
-        const bool need_smaps = any_column(cfg, {"pss", "pss_swap", "epss", "uss"});
-        const bool need_statm = any_column(cfg, {"shared", "private"});
-        const bool need_stat =
-                any_column(cfg, {"priority", "processor", "threads", "pgrp", "session", "tty", "minor_faults",
-                                 "major_faults", "utime", "stime", "cutime", "cstime", "tpgid", "minor_faults_children",
-                                 "major_faults_children", "rt_priority", "scheduling", "cpu_time_children"});
-        const bool need_extra =
-                any_column(cfg, {"oom", "io_priority", "cgroup", "autogroup", "autogroup_nice", "comm", "exe", "cwd",
-                                 "security", "wchan", "exe_deleted", "fd_count", "autogroup_id"});
+        const bool need_status = true;
+        const bool need_io = true;
+        const bool need_smaps = true;
+        const bool need_statm = true;
+        const bool need_stat = true;
+        const bool need_extra = true;
         set<string> identities;
         for (const auto& item: value.processes_) {
             identities.insert(format("{}:{}", item.pid_, item.start_time_));
@@ -539,25 +531,25 @@ namespace neforce::neflux {
                     values.set("stat", parse_process_stat(
                                                read_text_file(format("/proc/{}/stat", item.pid_)).value_or(string())));
                 }
-                if (any_column(cfg, {"oom"})) {
+                if (need_extra) {
                     values.set("oom", json(read_field(format("/proc/{}/oom_score", item.pid_))));
                 }
-                if (any_column(cfg, {"cgroup"})) {
+                if (need_extra) {
                     values.set("cgroup", json(read_field(format("/proc/{}/cgroup", item.pid_))));
                 }
-                if (any_column(cfg, {"autogroup", "autogroup_nice", "autogroup_id"})) {
+                if (need_extra) {
                     values.set("autogroup", json(read_field(format("/proc/{}/autogroup", item.pid_))));
                 }
-                if (any_column(cfg, {"comm"})) {
+                if (need_extra) {
                     values.set("comm", json(read_field(format("/proc/{}/comm", item.pid_))));
                 }
-                if (any_column(cfg, {"security"})) {
+                if (need_extra) {
                     values.set("security", json(read_field(format("/proc/{}/attr/current", item.pid_))));
                 }
-                if (any_column(cfg, {"wchan"})) {
+                if (need_extra) {
                     values.set("wchan", json(read_field(format("/proc/{}/wchan", item.pid_))));
                 }
-                if (any_column(cfg, {"exe", "exe_deleted", "cwd"})) {
+                if (need_extra) {
                     const string exe = ::neforce::process::get_executable_path(item.pid_);
                     if (!exe.empty()) {
                         values.set("exe", json(exe));
@@ -571,8 +563,25 @@ namespace neforce::neflux {
                         values.set("cwd", json(target));
                     }
                 }
-                if (any_column(cfg, {"fd_count"})) {
+                if (need_extra) {
                     values.set("fd_count", json(path(format("/proc/{}/fd", item.pid_)).children().size()));
+                    const auto priority = ::neforce::process::get_io_priority(item.pid_);
+                    if (priority.available) {
+                        const char* name =
+                                priority.priority_class == ::neforce::process::io_priority_class::realtime ? "realtime"
+                                : priority.priority_class == ::neforce::process::io_priority_class::best_effort
+                                        ? "best-effort"
+                                : priority.priority_class == ::neforce::process::io_priority_class::idle ? "idle"
+                                                                                                         : "none";
+                        values.set("io_priority", json(format("{} {}", name, priority.data)));
+                    }
+                    values.set("oom_adj", json(read_field(format("/proc/{}/oom_score_adj", item.pid_))));
+                    values.set("syscall", json(read_field(format("/proc/{}/syscall", item.pid_))));
+                    values.set("exe_deleted",
+                               json(ends_with(values.get("exe") != nullptr && values.get("exe")->is_string()
+                                                      ? values.get("exe")->as_string().view()
+                                                      : string_view(),
+                                              " (deleted)")));
                 }
                 values.set("details_sampled_at", json(unix_time()));
                 impl_->process_fields[identity] = impl::process_fields_entry{now, move(values)};

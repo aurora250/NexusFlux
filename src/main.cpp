@@ -62,16 +62,14 @@ namespace {
 
     void install_signals() {
         auto& signals = neforce::system_signal::instance();
-        signals.register_handler(neforce::system_signal::event::interrupt,
-                                 [](neforce::system_signal::event, void*) {
-                                     g_stop.store(1, neforce::memory_order_relaxed);
-                                     return true;
-                                 });
-        signals.register_handler(neforce::system_signal::event::terminate,
-                                 [](neforce::system_signal::event, void*) {
-                                     g_stop.store(1, neforce::memory_order_relaxed);
-                                     return true;
-                                 });
+        signals.subscribe(neforce::system_signal::signal::interrupt, [](neforce::system_signal::notification, void*) {
+            g_stop.store(1, neforce::memory_order_relaxed);
+            return true;
+        });
+        signals.subscribe(neforce::system_signal::signal::terminate, [](neforce::system_signal::notification, void*) {
+            g_stop.store(1, neforce::memory_order_relaxed);
+            return true;
+        });
     }
 
     bool stopped() { return g_stop.load(neforce::memory_order_relaxed) != 0; }
@@ -360,9 +358,9 @@ namespace {
             return result;
         };
         neforce::tim_sort(rows.begin(), rows.end(),
-                             [&](const neforce::neflux::connection& left, const neforce::neflux::connection& right) {
-                                 return args.reverse_ ? before(right, left) : before(left, right);
-                             });
+                          [&](const neforce::neflux::connection& left, const neforce::neflux::connection& right) {
+                              return args.reverse_ ? before(right, left) : before(left, right);
+                          });
         vector<string> lines;
         for (const auto& item: rows) {
             const string process_name = item.process_names_.empty() ? string("—") : item.process_names_[0];

@@ -56,11 +56,10 @@ namespace neforce::neflux {
     } // namespace
 
     recorder::recorder(const string& file_path, uint64_t max_mib) :
-    file_(::neforce::path(file_path),
-          {.max_bytes = max_mib * 1024ULL * 1024ULL,
-           .max_files = 3,
-           .naming = rotating_file::naming::rollover,
-           .append = true}) {}
+    file_(::neforce::path(file_path), {.max_bytes = max_mib * 1024ULL * 1024ULL,
+                                       .max_files = 3,
+                                       .naming = rotating_file::naming::rollover,
+                                       .append = true}) {}
 
     void recorder::write(const snapshot& value) {
         string data = to_json(value).dump();

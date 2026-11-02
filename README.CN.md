@@ -30,6 +30,11 @@ nexus-flux doctor --json
 ![概览](docs/images/overview.png)
 
 首页汇总主机信息、CPU 总图与逐核历史、内存、GPU、存储、网络卡片，以及进程预览。
+布局会随终端尺寸自适应：窄终端优先 CPU + 内存，中等宽度使用 2×2 卡片网格，
+宽终端使用四列卡片并在底部保留进程预览；卡片高度不足时自动改为单行排列。
+CPU 面板在 32 核等大核数场景使用两列逐核网格，并将 `CPU TIMES` 的
+user/system/iowait/steal 占比放在 PER-CORE HISTORY 标题行，不再挤占 CPU 历史图。
+GPU 进程表复用 PROCESSES 的列配置、选中和详情策略。
 
 - `1` 打开概览。
 - `W` 调整图表时间窗口；`-` / `+` 调整采样间隔。
@@ -46,33 +51,39 @@ nexus-flux doctor --json
 ![进程](docs/images/processes.png)
 
 完整进程表，支持列配置、过滤、聚合、树形视图，以及每进程 CPU/内存/GPU/IO 列。
+默认列对齐常用监控视图：`PID`、`USER`、`CPU`、`MEMORY`、`GPU-MEM`、`GPU`、
+`READ`、`WRITE`、`STATE`、`COMMAND`、`TAGS`。
 
 - `2` 打开进程页。
 - `F3` / `f` 过滤；`F4` / `S` / `r` 排序。
 - `C` 打开列选择器。
 - `T` 切换树形视图；点击树前缀折叠/展开节点。
-- `D` 切换持久进程侧栏。
+- `D` 切换进程详情侧栏；双击进程行也可打开。
 - 鼠标滚轮滚动表格视口；`↑/↓` 移动选中进程。
 - `d` / `Enter` 打开详细进程面板。
 - `P` 暂停进程列表，并保留最后一次 CPU/内存/GPU 数值。
-- `F` 跟随选中进程。
+- `F` 切换选中进程的跟随高亮；列表选中始终按身份跟随。
 - `L` 切换 CPU lazy/direct 排序。
 - `Space` 标记进程；`k`/`K`、`t`、`s`、`n`、`a` 对进程操作。
 - `e` / `o` 查看环境与打开文件；`l` / `F7` 读取输出文件。
 - `R` 打开选中进程的 ROS 图。
-- 右键打开进程操作菜单。
+- 右键打开与 PROCESSES 相同的进程操作菜单；`SEND SIGNAL` 由 NexusForce `system_signal` 统一提供发送接口。
 
 ### GPU
 
 ![GPU](docs/images/gpu.png)
 
-GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况。
+GPU 页汇总驱动/CUDA/NVML 版本、设备与进程数，并显示每张 GPU 的利用率、显存、
+温度、功耗/上限、风扇、P-state、核心/显存频率和进程数。设备详情还包含 VBIOS、
+PCIe 链路代际/宽度和最大频率；GPU 进程表复用 PROCESSES 的列配置、默认列、选中和
+详情策略，GPU-MEM/GPU 字段来自 GPU 采集。Intel/AMD DRM 后端通过 `fdinfo` 采集每进程
+显存与引擎占用。
 
-- `3` 打开 GPU 页。
+- `3` 打开 GPU 页；OVERVIEW 的 GPU 卡片将 GPU LOAD 与 VRAM 分成独立趋势图。
 - `[` / `]` 选择上一张/下一张 GPU。
 - `G` 打开设备详情；`D` 切换设备详情。
-- 点击卡片选择设备；点击进程行打开对应进程。
-- 右键卡片打开设备操作菜单。
+- 点击卡片选择设备；点击进程行选中进程，双击或 `Enter` 打开与 PROCESSES 相同的详情弹窗。
+- 右键卡片打开设备操作菜单；右键进程行复用 PROCESSES 的进程菜单（详情/跟随/暂停/终止/信号）。
 - `--gpu-panel` 指定初始 GPU 面板。
 
 ### 存储
@@ -80,7 +91,8 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 ![存储](docs/images/storage.png)
 
 文件系统容量/inode 表，以及块设备吞吐、IOPS、延迟和队列深度。文件系统与块设备
-使用独立选中项；吞吐图跟随当前块设备，并为每个设备保留独立的读写历史。
+使用独立选中项；读/写吞吐使用独立图表和独立比例尺，并跟随当前块设备，为每个设备
+保留独立的读写历史。
 
 - `4` 打开存储页。
 - `N` 在文件系统表和块设备表之间切换。
@@ -107,7 +119,8 @@ GPU 卡片、利用率/显存历史、设备详情和每进程 GPU 使用情况�
 
 ![系统](docs/images/system.png)
 
-主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。`HOST & POWER` 同时显示硬件档案：
+主机身份、负载、CPU/GPU 传感器、PSI 压力和监听端口。`CPU TIMES` 面板展示
+user/system/iowait/steal 时间占比及进度条。`HOST & POWER` 同时显示硬件档案：
 CPU 架构、厂商、型号、频率、核心/线程数、L1/L2/L3 缓存、指令集和 SIMD 扩展。
 架构专有信息会随 CPU 类型变化：
 
@@ -157,7 +170,11 @@ Linux 使用 systemd，Windows 使用 SCM。
 
 - `9` 打开虚拟机页。
 - `↑/↓` 选择；`Enter` / `d` 打开虚拟机详情。
-- 右键或 `F6` 提供启动、关机、重启、强制关闭、暂停/恢复和打开 QEMU 进程。
+- 双击虚拟机行打开唯一的虚拟机侧边栏（默认隐藏）；侧边栏可视化显示 vCPU、内存、自动启动和电源动作，切换页面或再次双击侧边栏外区域会关闭。`D` 也可切换该侧边栏。
+- `s` 启动、`x` 关机、`X` 强制关闭、`r` 重启；`a` 切换自动启动草稿，`w` 应用配置。
+- `+` / `-` 调整 vCPU，`[` / `]` 调整内存，`[ Apply config ]` 或 `w` 写入 libvirt。
+- 仅 libvirt 域支持配置写入；未托管 QEMU 进程的配置为只读，但仍可执行关机/强制关闭/暂停/恢复。
+- 右键或 `F6` 提供启动、关机、重启、强制关闭、暂停/恢复、配置应用和打开 QEMU 进程。
 
 ### 系统浏览器
 
@@ -218,10 +235,11 @@ ACTIVE，恢复后记录 RECOVERED。
 ![进程详情](docs/images/process-details.png)
 
 详情弹窗显示命令行、凭据、状态、CPU/内存/IO、GPU、启动时间、运行时长、历史和
-打开文件。`D` 侧栏在进程表旁保留紧凑版本。
+打开文件。`D` 侧栏上半部分可滚动查看标签、命令、当前表格字段和所有采样字段；
+下半部分固定显示 Since selection 的 CPU、RAM、GPU、VRAM 趋势图。
 
-- `d` / `Enter` 打开详情；`F6` 打开工具菜单。
-- `D` 在进程页切换侧栏。
+- `d` / `Enter` 打开详情弹窗；`F6` 打开工具菜单。
+- `D` 或双击进程行打开侧栏；侧栏按可用宽度收窄，长字段值自动换行；滚轮滚动上半部分；`D`/`Esc` 关闭。
 - `e` / `o` 打开环境变量和打开文件。
 
 ### 主菜单与选择器
@@ -252,6 +270,10 @@ ACTIVE，恢复后记录 RECOVERED。
 
 ![信号选择](docs/images/signal.png)
 
+信号选择器使用 NexusForce `system_signal` 统一管理发送与接收：
+发送侧使用 `system_signal::signal`、`send_to_process()`、`signal_name()`、`signal_number()`；
+接收侧使用 `system_signal::notification`、`subscribe()`、`wait_for_notification()`、`enqueue_signal()` / `enqueue_event()`；`event` 只表示非信号本地事件。接收端按订阅懒注册，并可链式调用已有 POSIX handler；`can_send()` 可查询平台发送能力。
+
 ## 通用按键
 
 | 按键                           | 操作                                                       |
@@ -270,12 +292,18 @@ ACTIVE，恢复后记录 RECOVERED。
 | `F1`、`?`、`:`                 | 帮助、菜单、命令列表                                       |
 | `F2`、`c`、`w`                 | 设置、主题选择器、保存配置                                 |
 | `Enter`、`d`                   | 详情                                                       |
-| 右键                           | 当前页面的上下文操作                                       |
+| 双击表格行                     | 在表格右侧打开该项目详情侧边栏                             |
+| 单击其他表格行                 | 选中新项目并更新侧边栏内容                                 |
+| 再次双击侧边栏外区域           | 关闭详情侧边栏                                             |
+| 右键                           | 打开该项目的控制/上下文菜单                                |
 | `Ctrl+C` / `Ctrl+Shift+C`      | 有选区时复制（OSC52/系统剪贴板）；无选区时退出             |
 | `q`、双击 `Esc`                | 退出                                                       |
 
 进程页支持 90 个可选列（`C` 打开列选择器）；`--read-only` 与回放模式下
 所有状态变更都会被拒绝，只保留查看与复制。
+
+进程、网络、容器、服务与虚拟机列表使用稳定身份保存选择：刷新、排序、过滤或切换页面后
+仍跟随同一项目；从其他页面跳转时也会继续跟随目标项，而不是停留在旧行号。
 
 过滤表达式支持 `field:value`、`!` 取反、数值比较、`/正则/`、空格 AND 与 ` | ` OR，
 例如 `user:alice cpu:>10 !name:rust` 或 `name:/python|torch/ pid:42 | mem:>1024`。
@@ -301,6 +329,7 @@ nexus-flux-YYYYMMDD-HHMMSS-<pid>.core
 ```
 
 致命日志和 `crash-fallback.log` 会记录 `core=<路径> bytes=<大小>`。
+转储最多保留 4096 个内存段、单段 4 GiB、总计 8 GiB，避免 GPU/虚拟机的大型映射被静默省略。
 如果 ELF core 写入失败，NexusFlux 会恢复默认信号动作，回退到内核 `core_pattern`。
 
 ## 构建
@@ -316,6 +345,11 @@ NexusForce 是唯一的外部依赖，用 `NEXUSFLUX_NEXUSFORCE_MODE` 选择 CMa
 
 package 模式还要求 NexusForce 自己的依赖（OpenSSL、PCRE2）可被发现；
 如果它们在 vcpkg 中，加上 `-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`。
+
+覆盖 `path::children` 与采集器 `/proc/<pid>/fd` 路径的 ASan 冒烟测试，
+使用 source 模式并加上 `-DNEXUSFLUX_BUILD_ASAN_SMOKE=ON` 配置，然后运行
+`ctest -R NeFluxAsanPathChildren`。该构建应关闭 `NEXUSFORCE_USING_MEMORY_POOL`，
+让 ASan 直接观察到容器分配（同时关闭 `NEXUSFORCE_MEMORY_POOL_GLOBAL_OVERRIDE`）。
 
 ## 许可证
 

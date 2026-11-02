@@ -606,8 +606,7 @@ namespace neforce::neflux {
                     data.vm_managers_.push_back("libvirt");
                     for (const auto& line: split_lines(listing)) {
                         const auto parts = split_whitespace(line.view());
-                        if (parts.size() < 3 || parts[0] == "Id" ||
-                            parts[0].find_first_not_of('-') == string::npos) {
+                        if (parts.size() < 3 || parts[0] == "Id" || parts[0].find_first_not_of('-') == string::npos) {
                             continue;
                         }
                         virtual_machine vm;
@@ -734,7 +733,7 @@ namespace neforce::neflux {
                 }
             }
             neforce::tim_sort(data.virtual_machines_.begin(), data.virtual_machines_.end(),
-                                 [](const virtual_machine& a, const virtual_machine& b) { return a.name_ < b.name_; });
+                              [](const virtual_machine& a, const virtual_machine& b) { return a.name_ < b.name_; });
 #endif
         }
 
@@ -753,7 +752,7 @@ namespace neforce::neflux {
             discover_systemd(data);
         }
         neforce::tim_sort(data.containers_.begin(), data.containers_.end(),
-                             [](const container& a, const container& b) { return a.name_ < b.name_; });
+                          [](const container& a, const container& b) { return a.name_ < b.name_; });
         neforce::tim_sort(data.services_.begin(), data.services_.end(), [](const service& a, const service& b) {
             const bool left_failed = a.active_ == "failed";
             const bool right_failed = b.active_ == "failed";

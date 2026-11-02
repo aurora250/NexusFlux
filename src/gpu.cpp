@@ -584,13 +584,27 @@ namespace neforce::neflux {
             return states;
         }
 
-        optional<drm_client_totals> read_drm_clients(const string& pci_id) {
+        struct drm_process_state {
+            uint64_t engine_ns = 0;
+            uint64_t memory_bytes = 0;
+            double sampled_at = 0.0;
+            bool valid = false;
+        };
+
+        map<string, map<uint32_t, drm_process_state>>& drm_process_states() {
+            static map<string, map<uint32_t, drm_process_state>> states;
+            return states;
+        }
+
+        optional<map<uint32_t, drm_client_totals>> read_drm_clients(const string& pci_id) {
             map<string, drm_client_totals> clients;
+            map<string, uint32_t> client_pids;
             for (const auto& proc_entry: ::neforce::path("/proc").children()) {
                 const string entry = proc_entry.str();
                 const auto slash = entry.rfind('/');
                 const string name = slash == string::npos ? entry : entry.substr(slash + 1);
-                if (!parse_u64(name.view()).has_value()) {
+                const auto pid = parse_u64(name.view());
+                if (!pid.has_value()) {
                     continue;
                 }
                 for (const auto& fd_entry: ::neforce::path(entry + "/fdinfo").children()) {
@@ -629,53 +643,108 @@ namespace neforce::neflux {
                     if (!matches || client.empty()) {
                         continue;
                     }
-                    auto& total = clients[client];
+                    const string key = format("{}|{}", *pid, client);
+                    auto& total = clients[key];
                     total.engine_ns = neforce::max(total.engine_ns, engine_ns);
                     total.memory_bytes = neforce::max(total.memory_bytes, memory_bytes);
+                    client_pids[key] = static_cast<uint32_t>(*pid);
                 }
             }
             if (clients.empty()) {
                 return none;
             }
-            drm_client_totals total;
+            map<uint32_t, drm_client_totals> by_pid;
             for (const auto& client: clients) {
+                auto& total = by_pid[client_pids[client.first]];
                 total.engine_ns += client.second.engine_ns;
                 total.memory_bytes += client.second.memory_bytes;
             }
-            return total;
+            return by_pid;
         }
 
-        void update_drm_state(gpu& item, const string& pci_id) {
+        void append_drm_processes(gpu& item, const string& pci_id, const map<uint32_t, drm_client_totals>& clients) {
+            auto& states = drm_process_states()[pci_id];
+            const auto now = static_cast<double>(monotonic_ms());
+            set<uint32_t> present;
+            for (const auto& client: clients) {
+                const uint32_t pid = client.first;
+                present.insert(pid);
+                auto& state = states[pid];
+                gpu_process process;
+                process.pid_ = pid;
+                process.kind_ = "G";
+                if (client.second.memory_bytes > 0) {
+                    process.memory_ = client.second.memory_bytes;
+                }
+                if (state.valid) {
+                    const double elapsed = neforce::max(1.0, now - state.sampled_at);
+                    if (client.second.engine_ns > state.engine_ns) {
+                        const double busy = static_cast<double>(client.second.engine_ns - state.engine_ns) /
+                                            (elapsed * 1'000'000.0) * 100.0;
+                        process.utilization_ = static_cast<uint32_t>(neforce::clamp(busy, 0.0, 100.0));
+                    } else {
+                        process.utilization_ = 0;
+                    }
+                }
+                state.engine_ns = client.second.engine_ns;
+                state.memory_bytes = client.second.memory_bytes;
+                state.sampled_at = now;
+                state.valid = true;
+                item.processes_.push_back(move(process));
+            }
+            for (auto iterator = states.begin(); iterator != states.end();) {
+                if (present.count(iterator->first) == 0) {
+                    auto next = iterator;
+                    ++next;
+                    states.erase(iterator);
+                    iterator = next;
+                } else {
+                    ++iterator;
+                }
+            }
+            neforce::tim_sort(item.processes_.begin(), item.processes_.end(),
+                              [](const gpu_process& left, const gpu_process& right) {
+                                  return left.memory_.value_or(0) > right.memory_.value_or(0);
+                              });
+        }
+
+        optional<map<uint32_t, drm_client_totals>> update_drm_state(gpu& item, const string& pci_id) {
             auto& state = drm_states()[pci_id];
-            const auto current = read_drm_clients(pci_id);
+            const auto clients = read_drm_clients(pci_id);
             const double now = static_cast<double>(monotonic_ms());
-            if (!current.has_value()) {
-                return;
+            if (!clients.has_value()) {
+                return none;
+            }
+            drm_client_totals current;
+            for (const auto& client: *clients) {
+                current.engine_ns += client.second.engine_ns;
+                current.memory_bytes += client.second.memory_bytes;
             }
             if (state.valid) {
                 const double elapsed = neforce::max(1.0, now - state.sampled_at);
-                if (current->engine_ns > state.engine_ns) {
+                if (current.engine_ns > state.engine_ns) {
                     const double busy =
-                            static_cast<double>(current->engine_ns - state.engine_ns) / (elapsed * 1'000'000.0) * 100.0;
+                            static_cast<double>(current.engine_ns - state.engine_ns) / (elapsed * 1'000'000.0) * 100.0;
                     state.utilization = static_cast<uint32_t>(neforce::clamp(busy, 0.0, 100.0));
                 } else {
                     state.utilization = 0;
                 }
             }
-            state.engine_ns = current->engine_ns;
-            state.memory_bytes = current->memory_bytes;
+            state.engine_ns = current.engine_ns;
+            state.memory_bytes = current.memory_bytes;
             state.sampled_at = now;
             state.valid = true;
             if (!item.utilization_.has_value() || *item.utilization_ == 0) {
                 item.utilization_ = state.utilization;
             }
-            if (!item.memory_used_.has_value() && current->memory_bytes > 0) {
-                item.memory_used_ = current->memory_bytes;
+            if (!item.memory_used_.has_value() && current.memory_bytes > 0) {
+                item.memory_used_ = current.memory_bytes;
             }
-            item.extra_.set("drm_engine_ns", json(current->engine_ns));
-            if (current->memory_bytes > 0) {
-                item.extra_.set("drm_client_memory_bytes", json(current->memory_bytes));
+            item.extra_.set("drm_engine_ns", json(current.engine_ns));
+            if (current.memory_bytes > 0) {
+                item.extra_.set("drm_client_memory_bytes", json(current.memory_bytes));
             }
+            return clients;
         }
 
         vector<gpu> read_sysfs(uint32_t first_id) {
@@ -814,7 +883,10 @@ namespace neforce::neflux {
                         item.extra_.set("fan_rpm", json(*fan));
                     }
                 }
-                update_drm_state(item, device_name_of(canonical));
+                const auto drm_clients = update_drm_state(item, device_name_of(canonical));
+                if (drm_clients.has_value()) {
+                    append_drm_processes(item, device_name_of(canonical), *drm_clients);
+                }
                 if (vendor_name == "Intel") {
                     item.memory_used_ = item.memory_used_.value_or(0);
                     if (!item.memory_total_.has_value()) {
@@ -831,6 +903,7 @@ namespace neforce::neflux {
                                 const auto value = parts.empty() ? none : parse_u64(parts[0].view());
                                 if (value.has_value()) {
                                     item.memory_total_ = *value * 1024;
+                                    item.unified_memory_ = true;
                                     item.extra_.set("memory_kind", json("shared"));
                                 }
                                 break;
@@ -838,7 +911,7 @@ namespace neforce::neflux {
                         }
                     }
                 }
-                item.process_status_ = "DRM fdinfo engine utilization · two-sample average";
+                item.process_status_ = "DRM fdinfo per-process engine/memory · two-sample average";
                 out.push_back(move(item));
             }
             for (const auto& entry: ::neforce::path("/sys/bus/pci/devices").children()) {

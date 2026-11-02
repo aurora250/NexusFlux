@@ -101,6 +101,41 @@ namespace neforce::neflux::ui {
                                                             string_view after, int width = 120, int height = 40);
 
     /**
+     * @brief 在任意列表视图中注入刷新前后的库存并返回最后一帧
+     * @param value 快照
+     * @param first 第一次库存
+     * @param second 刷新后的库存
+     * @param view_name 视图名（processes / network / containers / services / vms）
+     * @param before 刷新前输入
+     * @param after 刷新后输入
+     * @param width 终端列数
+     * @param height 终端行数
+     * @return 最后一帧的纯文本
+     */
+    NEFORCE_NODISCARD string headless_probe_view_refresh(const snapshot& value, const inventory& first,
+                                                         const inventory& second, string_view view_name,
+                                                         string_view before, string_view after, int width = 120,
+                                                         int height = 40);
+
+    /**
+     * @brief 在任意列表视图中注入刷新前后的快照并返回最后一帧
+     * @param first_value 第一次快照
+     * @param second_value 刷新后的快照
+     * @param data 库存
+     * @param view_name 视图名
+     * @param before 刷新前输入
+     * @param after 刷新后输入
+     * @param width 终端列数
+     * @param height 终端行数
+     * @param second_view_name 刷新后的视图名，空表示沿用 view_name
+     * @return 最后一帧的纯文本
+     */
+    NEFORCE_NODISCARD string headless_probe_snapshot_refresh(const snapshot& first_value, const snapshot& second_value,
+                                                             const inventory& data, string_view view_name,
+                                                             string_view before, string_view after, int width = 120,
+                                                             int height = 40, string_view second_view_name = {});
+
+    /**
      * @brief 获取无头 TUI 最后一次 ANSI 输出
      * @param input 键盘/鼠标输入字节流，使用 `|` 分隔逐帧输入
      * @return ANSI 转义序列

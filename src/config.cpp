@@ -421,8 +421,9 @@ namespace neforce::neflux {
         }
 
         if (custom_layout_.has_value()) {
-            builder.key("custom_layout").value_table(
-                    [this](toml_builder& table) { write_layout_builder(table, *custom_layout_); });
+            builder.key("custom_layout").value_table([this](toml_builder& table) {
+                write_layout_builder(table, *custom_layout_);
+            });
         }
 
         builder.key("check_updates").value(check_updates_);

@@ -377,44 +377,6 @@ namespace neforce::neflux {
             }
             return out;
         }
-        vector<pressure> read_pressure() {
-            vector<pressure> out;
-            for (const char* name: {"cpu", "memory", "io"}) {
-                const auto text = read_file(string("/proc/pressure/") + name);
-                if (text.empty()) {
-                    continue;
-                }
-                pressure item;
-                item.resource_ = name;
-                const auto value = [&text](const char* kind, const char* key) -> optional<double> {
-                    for (const auto& line: split_lines(text)) {
-                        if (starts_with(line.view(), kind)) {
-                            const auto parts = split_whitespace(line.view());
-                            for (const auto& part: parts) {
-                                if (starts_with(part.view(), key)) {
-                                    return parse_f64(part.view().substr(string_view(key).size()));
-                                }
-                            }
-                        }
-                    }
-                    return none;
-                };
-                item.some_10_ = value("some ", "avg10=");
-                item.some_60_ = value("some ", "avg60=");
-                item.some_300_ = value("some ", "avg300=");
-                if (const auto total = value("some ", "total="); total.has_value()) {
-                    item.some_total_us_ = static_cast<uint64_t>(*total);
-                }
-                item.full_10_ = value("full ", "avg10=");
-                item.full_60_ = value("full ", "avg60=");
-                item.full_300_ = value("full ", "avg300=");
-                if (const auto total = value("full ", "total="); total.has_value()) {
-                    item.full_total_us_ = static_cast<uint64_t>(*total);
-                }
-                out.push_back(move(item));
-            }
-            return out;
-        }
 
 #endif
 
@@ -928,7 +890,24 @@ namespace neforce::neflux {
             vector<pressure> pressure_values;
 #if NEFLUX_PLATFORM_LINUX
             core_temperatures_value = core_temperatures(topology);
-            pressure_values = read_pressure();
+            for (const auto& info: sysinfo::pressure_status()) {
+                if (!info.available) {
+                    continue;
+                }
+                pressure item;
+                item.resource_ = info.resource;
+                item.some_10_ = info.some_avg10;
+                item.some_60_ = info.some_avg60;
+                item.some_300_ = info.some_avg300;
+                item.some_total_us_ = info.some_total_us;
+                if (info.has_full) {
+                    item.full_10_ = info.full_avg10;
+                    item.full_60_ = info.full_avg60;
+                    item.full_300_ = info.full_avg300;
+                    item.full_total_us_ = info.full_total_us;
+                }
+                pressure_values.push_back(move(item));
+            }
 #endif
 
             const auto gpu_values = collect_gpus(gpu_enabled, live_gpu_processes);

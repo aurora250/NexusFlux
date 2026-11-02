@@ -71,6 +71,9 @@ namespace neforce::neflux {
             options.directory = log_root;
             options.file_prefix = "nexus-flux";
             options.include_memory = true;
+            options.max_segments = 4096;
+            options.max_segment_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+            options.max_file_bytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
             options.callback = log_crash;
             if (!crash_dump::install_handlers(options)) {
                 log->log(log_level::WARN, "failed to install crash handlers", source_location::current());

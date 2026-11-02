@@ -30,7 +30,13 @@ nexus-flux doctor --json
 ![Overview](docs/images/overview.png)
 
 Landing page with the host summary, CPU graph and per-core history, memory, GPU,
-storage and network cards, plus a process preview.
+storage and network cards, plus a process preview. The layout adapts to the
+terminal: narrow terminals prioritize CPU + memory, medium widths use a 2×2 card
+grid, and wide terminals use a four-card row with the process preview at the bottom;
+cards fall back to a single row when their height is too small. For large core counts (for
+example 32), the CPU panel uses a two-column core grid and shows `CPU TIMES`
+user/system/iowait/steal percentages. The GPU process table reuses the PROCESSES
+column, selection and detail strategies.
 
 - `1` opens Overview.
 - `W` changes the chart window; `-` / `+` changes the sampling interval.
@@ -47,34 +53,41 @@ index in `overview_preset`. Examples: `"cpu,memory,gpu,storage,network,processes
 ![Processes](docs/images/processes.png)
 
 Full process table with configurable columns, filtering, grouping, tree view and
-per-process CPU/RAM/GPU/I/O columns.
+per-process CPU/RAM/GPU/I/O columns. The default columns mirror the common monitor
+layout: `PID`, `USER`, `CPU`, `MEMORY`, `GPU-MEM`, `GPU`, `READ`, `WRITE`, `STATE`,
+`COMMAND`, `TAGS`.
 
 - `2` opens Processes.
 - `F3` / `f` filters; `F4` / `S` / `r` sorts.
 - `C` opens the column chooser.
 - `T` toggles the tree; click a tree prefix to collapse or expand a node.
-- `D` toggles the persistent process side panel.
+- `D` toggles the process detail side panel; double-clicking a process row also opens it.
 - Mouse wheel scrolls the table viewport; `↑/↓` moves the selected process.
 - `d` / `Enter` opens the detailed process panel.
 - `P` pauses the process list and retains the last CPU/RAM/GPU values.
-- `F` follows the selected process.
+- `F` toggles the followed-process highlight; list selection always follows item identity.
 - `L` switches lazy/direct CPU sorting.
 - `Space` marks a process; `k`/`K`, `t`, `s`, `n`, `a` act on it.
 - `e` / `o` show environment and open files; `l` / `F7` reads output files.
 - `R` opens the ROS graph for the selected process.
-- Right click opens the process action menu.
+- Right-click opens the same process action menu as PROCESSES; `SEND SIGNAL` uses the unified NexusForce `system_signal` send API.
 
 ### GPU
 
 ![GPU](docs/images/gpu.png)
 
-GPU cards, utilization/VRAM history, device details and per-process GPU usage.
+The GPU page summarizes driver/CUDA/NVML versions, device and process counts, and shows
+utilization, VRAM, temperature, power/limit, fan, P-state, core/memory clocks and process
+count per GPU. Device details also include VBIOS, PCIe link generation/width and maximum
+clock; the GPU process table reuses the PROCESSES column configuration, default columns,
+selection and detail strategies, with GPU-MEM/GPU supplied by GPU telemetry. The
+Intel/AMD DRM backend collects per-process memory and engine usage from `fdinfo`.
 
-- `3` opens GPU.
+- `3` opens GPU; the Overview GPU card separates GPU load and VRAM into independent trends.
 - `[` / `]` select the previous or next GPU.
 - `G` opens device details; `D` toggles device details.
-- Click a card to select it; click a process row to open that process.
-- Right click a card for device actions.
+- Click a card to select it; click a process row to select it, and double-click or `Enter` to open the same detail popup as PROCESSES.
+- Right-click a card for device actions; right-click a process row to reuse the PROCESSES process menu (details/follow/pause/terminate/signal).
 - `--gpu-panel` selects the initial GPU panel.
 
 ### Storage
@@ -82,8 +95,9 @@ GPU cards, utilization/VRAM history, device details and per-process GPU usage.
 ![Storage](docs/images/storage.png)
 
 Filesystem capacity/inode table and block-device throughput, IOPS, latency and queue
-depth. Filesystem and block-device selections are independent; the throughput chart
-follows the selected block device and keeps a separate read/write history per device.
+depth. Filesystem and block-device selections are independent; read and write throughput
+use separate charts and scales, follow the selected block device, and keep a separate
+read/write history per device.
 
 - `4` opens Storage.
 - `N` switches between the filesystem and block-device tables.
@@ -111,8 +125,9 @@ Download/upload history, interface counters, connections and socket ownership.
 ![System](docs/images/system.png)
 
 Host identity, load average, CPU/GPU sensors, pressure stall information and listening
-ports. `HOST & POWER` also shows the hardware inventory: CPU architecture, vendor,
-brand, clocks, core/thread counts, L1/L2/L3 caches, instructions and SIMD extensions.
+ports. The `CPU TIMES` panel shows user/system/iowait/steal percentages and bars.
+`HOST & POWER` also shows the hardware inventory: CPU architecture, vendor, brand,
+clocks, core/thread counts, L1/L2/L3 caches, instructions and SIMD extensions.
 Architecture-specific details change with the CPU:
 
 - x86: family/model/stepping, extended family/model, revision, core voltage,
@@ -164,7 +179,11 @@ memory and host PID.
 
 - `9` opens VMs.
 - `↑/↓` selects; `Enter` / `d` opens VM details.
-- Right-click or `F6` provides start, shutdown, reboot, force-off, pause/resume and
+- Double-click a VM row to open its single detail/config side panel (hidden by default), showing vCPUs, memory, autostart and power actions. It closes on page switches or a double-click outside the panel; `D` can also toggle it.
+- `s` starts, `x` shuts down, `X` forces off, `r` reboots; `a` toggles the autostart draft and `w` applies it.
+- `+` / `-` adjusts vCPUs, `[` / `]` adjusts memory; `[ Apply config ]` or `w` writes the config to libvirt.
+- Only libvirt domains support configuration writes; unmanaged QEMU processes are read-only for config but still support shutdown/force-off/pause/resume.
+- Right-click or `F6` provides start, shutdown, reboot, force-off, pause/resume, config and
   open-QEMU-process actions.
 
 ### System Explorer
@@ -227,11 +246,12 @@ becomes ACTIVE after `alert_hold_seconds` and is recorded as RECOVERED when it c
 ![Process details](docs/images/process-details.png)
 
 The details popup shows command line, credentials, state, CPU/RAM/I/O, GPU, start
-time, runtime, history and open files. The `D` side panel keeps a compact version
-visible next to the process table.
+time, runtime, history and open files. The `D` side panel scrolls through labels,
+command, active table fields and all sampled fields; its fixed lower section shows
+Since-selection CPU, RAM, GPU and VRAM charts next to the process table.
 
-- `d` / `Enter` opens details; `F6` opens the tools menu.
-- `D` toggles the side panel on Processes.
+- `d` / `Enter` opens the details popup; `F6` opens the tools menu.
+- `D` or a double-click on a process row opens the side panel; it narrows to the available width and wraps long field values; the wheel scrolls its upper section; `D`/`Esc` closes.
 - `e` / `o` open environment and open files.
 
 ### Main menu and choosers
@@ -262,6 +282,14 @@ Themes may override CPU/memory/network/GPU/temperature/process gradient stops,
 
 ![Signal chooser](docs/images/signal.png)
 
+The signal chooser uses NexusForce `system_signal` as the single signal facade.
+The send side uses `system_signal::signal`, `send_to_process()`, `signal_name()` and
+`signal_number()`; the receive side uses `system_signal::notification`, `subscribe()`,
+`wait_for_notification()`, and `enqueue_signal()` / `enqueue_event()`. `event` only
+represents non-signal local events. Handlers are installed lazily per subscription and
+can chain pre-existing POSIX handlers; `can_send()` exposes platform send capabilities. All signal delivery and reception goes through
+`system_signal`; the `process` class no longer exposes signal operations.
+
 ## Shared controls
 
 | Key                             | Action                                                                   |
@@ -279,14 +307,21 @@ Themes may override CPU/memory/network/GPU/temperature/process gradient stops,
 | `,` / `.`                       | Replay: previous / next frame                                            |
 | `F1`, `?`, `:`                  | Help, menu, command list                                                 |
 | `F2`, `c`, `w`                  | Settings, theme chooser, save configuration                              |
-| `Enter`, `d`                    | Details                                                                  |
-| `Right click`                   | Context actions on the active page                                       |
+| `Enter`, `d`                     | Details                                                                  |
+| Double-click a table row         | Open that item's detail side panel on the table side                     |
+| Single-click another table row   | Select it and update the open side panel                                 |
+| Double-click outside the panel   | Close the detail side panel                                              |
+| Right click                      | Open the item's control/context menu                                     |
 | `Ctrl+C` / `Ctrl+Shift+C`       | Copy selection (OSC52/clipboard); quit when nothing is selected          |
 | `q`, double `Esc`               | Quit                                                                     |
 
 The process page exposes 90 selectable columns (`C`); `--read-only` and replay reject
 all state changes (signals, nice/affinity, container/service lifecycle) while keeping
 inspection and copy available.
+
+Processes, Network, Containers, Services and VMs keep selection by stable identity:
+refreshes, sorting, filtering and page switches continue to follow the same item, and
+cross-page jumps keep following the target instead of a stale row index.
 
 Filters support `field:value`, `!` negation, numeric comparisons, `/regex/`, space-separated
 AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|torch/ pid:42 | mem:>1024`.
@@ -312,6 +347,8 @@ nexus-flux-YYYYMMDD-HHMMSS-<pid>.core
 ```
 
 The fatal log entry and `crash-fallback.log` record `core=<path> bytes=<size>`.
+The dump keeps up to 4096 memory segments, 4 GiB per segment, and 8 GiB total so large
+GPU/VM mappings are not silently dropped.
 If the ELF writer cannot create the file, NexusFlux restores the default action and falls back to the kernel `core_pattern`.
 
 ## Building
@@ -328,6 +365,12 @@ NexusForce is the only external dependency. Let CMake obtain it with `NEXUSFLUX_
 Package mode also needs NexusForce's own dependencies (OpenSSL, PCRE2) to be
 discoverable; when they live in vcpkg, add
 `-DCMAKE_PREFIX_PATH=<vcpkg>/installed/x64-windows`.
+
+For the ASan smoke test covering `path::children` and the collector's `/proc/<pid>/fd`
+path, configure a source-mode build with `-DNEXUSFLUX_BUILD_ASAN_SMOKE=ON` and run
+`ctest -R NeFluxAsanPathChildren`. Disable `NEXUSFORCE_USING_MEMORY_POOL` in that
+build (`-DNEXUSFORCE_USING_MEMORY_POOL=OFF -DNEXUSFORCE_MEMORY_POOL_GLOBAL_OVERRIDE=OFF`)
+so ASan observes the container allocations directly.
 
 ## License
 

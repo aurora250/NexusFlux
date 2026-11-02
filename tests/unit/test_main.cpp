@@ -713,6 +713,11 @@ namespace {
         value.cpu_name_ = "Test CPU";
         value.cpu_percent_ = 25.0F;
         value.cpu_mhz_ = 3000;
+        value.cpu_breakdown_ = json::object();
+        value.cpu_breakdown_.set("user", json(15.4));
+        value.cpu_breakdown_.set("system", json(1.2));
+        value.cpu_breakdown_.set("iowait", json(0.0));
+        value.cpu_breakdown_.set("steal", json(0.0));
         value.cores_ = {10.0F, 20.0F, 30.0F, 40.0F};
         value.core_temperatures_ = {optional<float>(45.0F), none, optional<float>(50.0F), none};
         value.load_[0] = 1.0F;
@@ -733,8 +738,16 @@ namespace {
         item.state_ = "Sleeping";
         item.cpu_ = 12.5F;
         item.memory_ = 512ULL * 1024 * 1024;
+        item.read_per_sec_ = 1024.0;
+        item.write_per_sec_ = 512.0;
+        item.gpu_memory_ = 256ULL * 1024 * 1024;
+        item.gpu_percent_ = 33;
         item.thread_ = false;
         item.extra_ = json::object();
+        tag process_tag;
+        process_tag.key_ = "gpu_memory";
+        process_tag.label_ = "GPU memory";
+        item.tags_.push_back(process_tag);
         value.processes_.push_back(item);
         disk root;
         root.name_ = "sda1";
@@ -768,11 +781,36 @@ namespace {
         device.vendor_ = "AMD";
         device.backend_ = "DRM sysfs";
         device.uuid_ = "0000:00:01.0";
+        device.driver_ = "595.99.02";
+        device.cuda_driver_version_ = "13.2";
+        device.nvml_version_ = "13.595.99.02";
         device.memory_used_ = 1024ULL * 1024 * 1024;
         device.memory_total_ = 4ULL * 1024 * 1024 * 1024;
         device.utilization_ = 10;
+        device.memory_utilization_ = 20;
         device.temperature_ = 55;
+        device.power_watts_ = 11.0F;
+        device.power_limit_watts_ = 100.0F;
+        device.clock_mhz_ = 750;
+        device.memory_clock_mhz_ = 810;
+        device.encoder_ = 0;
+        device.decoder_ = 0;
+        device.pcie_rx_kib_ = 1024;
+        device.pcie_tx_kib_ = 512;
+        device.performance_state_ = "P5";
         device.extra_ = json::object();
+        device.extra_.set("vbios_version", json("95.07.31.00.1a"));
+        device.extra_.set("pcie_link_generation", json(4));
+        device.extra_.set("pcie_link_width", json(8));
+        device.extra_.set("max_clock_mhz", json(2145));
+        gpu_process gpu_job;
+        gpu_job.pid_ = 42;
+        gpu_job.memory_ = 512ULL * 1024 * 1024;
+        gpu_job.utilization_ = 33;
+        gpu_job.memory_utilization_ = 44;
+        gpu_job.kind_ = "G";
+        device.processes_.push_back(gpu_job);
+        device.process_status_ = "compute + graphics";
         value.gpus_.push_back(device);
         sensor temperature;
         temperature.name_ = "Composite";
@@ -834,6 +872,35 @@ namespace {
         CHECK(rendered.find("CPU") != string::npos);
         const string processes = ui::render_plaintext(value, value.inventory_, parsed, "processes", 120, 40);
         CHECK(processes.find("COMMAND") != string::npos);
+    }
+
+    void test_signal_menu() {
+        const snapshot value = sample_snapshot();
+        const string menu = ui::headless_probe_seeded(value, value.inventory_, "processes",
+                                                      "2|\x1b[<2;10;9M|\x1b[B|\x1b[B|\x1b[B|\x1b[B|\x1b[B|\r", 120, 40);
+        CHECK(menu.find("Choose a signal") != string::npos);
+        CHECK(menu.find("SIGTERM") != string::npos);
+        CHECK(menu.find("SIGKILL") != string::npos);
+        CHECK(menu.find("SIGSTOP") != string::npos);
+    }
+
+    void test_responsive_overview_layout() {
+        const snapshot value = sample_snapshot();
+        config cfg;
+        const string tiny = ui::render_plaintext(value, value.inventory_, cfg, "overview", 60, 18);
+        CHECK(tiny.find("CPU") != string::npos);
+        CHECK(tiny.find("MEMORY") != string::npos);
+        const string small = ui::render_plaintext(value, value.inventory_, cfg, "overview", 80, 24);
+        CHECK(small.find("MEMORY") != string::npos);
+        CHECK(small.find("STORAGE") != string::npos);
+        CHECK(small.find("NETWORK") != string::npos);
+        const string wide = ui::render_plaintext(value, value.inventory_, cfg, "overview", 140, 44);
+        CHECK(wide.find("MEMORY") != string::npos);
+        CHECK(wide.find("NETWORK") != string::npos);
+        CHECK(wide.find("PROCESSES ·") != string::npos);
+        const string tall = ui::render_plaintext(value, value.inventory_, cfg, "overview", 200, 60);
+        CHECK(tall.find("STORAGE") != string::npos);
+        CHECK(tall.find("PROCESSES ·") != string::npos);
     }
 
     void test_advanced() {
@@ -1029,7 +1096,7 @@ namespace {
         // F6 打开上下文工具菜单（进程页）
         const string tools = ui::headless_probe_sized(120, 40, "2|\x1b[17~");
         CHECK(tools.find("Tools") != string::npos);
-        CHECK(tools.find("Signal") != string::npos);
+        CHECK(tools.find("Send signal") != string::npos);
         // F7 打开日志弹窗
         const string logs = ui::headless_probe_sized(120, 40, "2|\x1b[18~");
         CHECK(logs.find("Logs") != string::npos);
@@ -1145,13 +1212,25 @@ namespace {
         }
         const string storage = ui::render_plaintext(value, data, cfg, "storage", 120, 36);
         CHECK(storage.find("BLOCK DEVICES") != string::npos);
+        CHECK(storage.find("DISK READ") != string::npos);
+        CHECK(storage.find("DISK WRITE") != string::npos);
         const string system = ui::render_plaintext(value, data, cfg, "system", 120, 36);
         CHECK(system.find("TEMPERATURES") != string::npos);
         CHECK(system.find("PRESSURE") != string::npos);
+        CHECK(system.find("CPU TIMES") != string::npos);
+        CHECK(system.find("15.4%") != string::npos);
+        CHECK(system.find("iowait") != string::npos);
+        CHECK(system.find("steal") != string::npos);
         const string network = ui::render_plaintext(value, data, cfg, "network", 120, 36);
         CHECK(network.find("CONNECTIONS") != string::npos);
         const string explorer = ui::render_plaintext(value, data, cfg, "explorer", 120, 36);
         CHECK(explorer.find("SYSTEM EXPLORER") != string::npos);
+        const string processes_default = ui::render_plaintext(value, data, cfg, "processes", 180, 36);
+        CHECK(processes_default.find("GPU-MEM") != string::npos);
+        CHECK(processes_default.find("READ") != string::npos);
+        CHECK(processes_default.find("WRITE") != string::npos);
+        CHECK(processes_default.find("TAGS") != string::npos);
+        CHECK(processes_default.find("GPU memory") != string::npos);
         const string history = ui::render_plaintext(value, data, cfg, "history", 120, 36);
         CHECK(history.find("SERIES") != string::npos);
         const string events = ui::render_plaintext(value, data, cfg, "events", 120, 36);
@@ -1162,6 +1241,27 @@ namespace {
         CHECK(vms.find("VIRTUAL MACHINES") != string::npos);
         CHECK(vms.find("test-vm") != string::npos);
         CHECK(vms.find("libvirt") != string::npos);
+        CHECK(vms.find("vCPUs") == string::npos);
+        const string vm_double_click =
+                ui::headless_probe_seeded(value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M", 120, 40);
+        CHECK(vm_double_click.find("vCPUs") != string::npos);
+        CHECK(vm_double_click.find("Autostart") != string::npos);
+        CHECK(vm_double_click.find("Apply config") != string::npos);
+        const string vm_panel_switch =
+                ui::headless_probe_seeded(value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M|6", 120, 40);
+        CHECK(vm_panel_switch.find("vCPUs") == string::npos);
+        const string vm_panel_outside = ui::headless_probe_seeded(
+                value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M|\x1b[<0;70;10M|\x1b[<0;70;10M", 120, 40);
+        CHECK(vm_panel_outside.find("vCPUs") == string::npos);
+        const string vm_autostart_pending =
+                ui::headless_probe_seeded(value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M|a", 120, 40);
+        CHECK(vm_autostart_pending.find("on*") != string::npos);
+        const string vm_vcpu_pending =
+                ui::headless_probe_seeded(value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M|+", 120, 40);
+        CHECK(vm_vcpu_pending.find("5*") != string::npos);
+        const string vm_memory_pending =
+                ui::headless_probe_seeded(value, data, "vms", "\x1b[<0;10;9M|\x1b[<0;10;9M|]", 120, 40);
+        CHECK(vm_memory_pending.find("2304 MiB*") != string::npos);
         const string vm_menu = ui::headless_probe_seeded(value, data, "vms", "\x1b[<2;10;9M", 120, 40);
         CHECK(vm_menu.find("VM · test-vm") != string::npos);
         CHECK(vm_menu.find("Shutdown") != string::npos);
@@ -1182,6 +1282,147 @@ namespace {
         const string tracked_service =
                 ui::headless_probe_service_refresh(value, data, reordered, "\x1b[<0;10;9M", "\r", 120, 40);
         CHECK(tracked_service.find("Name          demo.service") != string::npos);
+        inventory vm_first = data;
+        vm_first.virtual_machines_.clear();
+        virtual_machine vm_a;
+        vm_a.name_ = "vm-a";
+        vm_a.backend_ = "libvirt";
+        vm_a.state_ = "running";
+        virtual_machine vm_b;
+        vm_b.name_ = "vm-b";
+        vm_b.backend_ = "libvirt";
+        vm_b.state_ = "shut off";
+        vm_first.virtual_machines_.push_back(vm_a);
+        vm_first.virtual_machines_.push_back(vm_b);
+        inventory vm_second = vm_first;
+        vm_second.virtual_machines_.clear();
+        vm_second.virtual_machines_.push_back(vm_b);
+        vm_second.virtual_machines_.push_back(vm_a);
+        const string tracked_vm =
+                ui::headless_probe_view_refresh(value, vm_first, vm_second, "vms", "\x1b[B", "\r", 120, 40);
+        CHECK(tracked_vm.find("Name          vm-b") != string::npos);
+        inventory container_first = data;
+        container_first.containers_.clear();
+        container first_container;
+        first_container.id_ = "c-a";
+        first_container.name_ = "container-a";
+        first_container.runtime_ = "docker";
+        first_container.state_ = "running";
+        container second_container;
+        second_container.id_ = "c-b";
+        second_container.name_ = "container-b";
+        second_container.runtime_ = "docker";
+        second_container.state_ = "running";
+        container_first.containers_.push_back(first_container);
+        container_first.containers_.push_back(second_container);
+        inventory container_second = container_first;
+        container_second.containers_.clear();
+        container_second.containers_.push_back(second_container);
+        container_second.containers_.push_back(first_container);
+        const string tracked_container = ui::headless_probe_view_refresh(value, container_first, container_second,
+                                                                         "containers", "\x1b[B", "\r", 120, 40);
+        CHECK(tracked_container.find("Name          container-b") != string::npos);
+        snapshot connection_first = value;
+        connection_first.connections_.connections_.clear();
+        neforce::neflux::connection conn_a;
+        conn_a.id_ = "conn-a";
+        conn_a.protocol_ = "TCP";
+        conn_a.local_ = "127.0.0.1:1111";
+        conn_a.remote_ = "10.0.0.1:80";
+        conn_a.state_ = "ESTABLISHED";
+        conn_a.inode_ = 1;
+        neforce::neflux::connection conn_b;
+        conn_b.id_ = "conn-b";
+        conn_b.protocol_ = "TCP";
+        conn_b.local_ = "127.0.0.1:2222";
+        conn_b.remote_ = "10.0.0.2:443";
+        conn_b.state_ = "ESTABLISHED";
+        conn_b.inode_ = 2;
+        connection_first.connections_.connections_.push_back(conn_a);
+        connection_first.connections_.connections_.push_back(conn_b);
+        snapshot connection_second = connection_first;
+        connection_second.connections_.connections_.clear();
+        connection_second.connections_.connections_.push_back(conn_b);
+        connection_second.connections_.connections_.push_back(conn_a);
+        const string tracked_connection = ui::headless_probe_snapshot_refresh(connection_first, connection_second, data,
+                                                                              "network", "\x1b[B", "\r", 120, 40);
+        CHECK(tracked_connection.find("Local         127.0.0.1:2222") != string::npos);
+        snapshot interface_first = value;
+        interface_first.networks_.clear();
+        neforce::neflux::network eth_a;
+        eth_a.name_ = "eth-a";
+        eth_a.state_ = "up";
+        neforce::neflux::network eth_b;
+        eth_b.name_ = "eth-b";
+        eth_b.state_ = "up";
+        interface_first.networks_.push_back(eth_a);
+        interface_first.networks_.push_back(eth_b);
+        snapshot interface_second = interface_first;
+        interface_second.networks_.clear();
+        interface_second.networks_.push_back(eth_b);
+        interface_second.networks_.push_back(eth_a);
+        const string tracked_interface = ui::headless_probe_snapshot_refresh(interface_first, interface_second, data,
+                                                                             "network", "N|\x1b[B", "\r", 120, 40);
+        CHECK(tracked_interface.find("Interface     eth-b") != string::npos);
+        snapshot jump_first = value;
+        jump_first.processes_.clear();
+        neforce::neflux::process qemu;
+        qemu.pid_ = 4242;
+        qemu.name_ = "qemu-vm";
+        qemu.command_ = "qemu-system-x86_64";
+        qemu.start_time_ = 4;
+        neforce::neflux::process helper;
+        helper.pid_ = 5000;
+        helper.name_ = "helper";
+        helper.command_ = "helper";
+        helper.start_time_ = 5;
+        jump_first.processes_.push_back(qemu);
+        jump_first.processes_.push_back(helper);
+        snapshot jump_second = jump_first;
+        jump_second.processes_.clear();
+        jump_second.processes_.push_back(helper);
+        jump_second.processes_.push_back(qemu);
+        inventory jump_data = data;
+        jump_data.services_.clear();
+        service jump_service = data.services_.front();
+        jump_service.name_ = "jump.service";
+        jump_service.pid_ = 4242;
+        jump_data.services_.push_back(jump_service);
+        const string tracked_jump =
+                ui::headless_probe_snapshot_refresh(jump_first, jump_second, jump_data, "services",
+                                                    "\x1b[17~|\x1b[B|\x1b[B|\r", "\r", 120, 40, "processes");
+        CHECK(tracked_jump.find("# qemu-vm · PID 4242") != string::npos);
+        snapshot process_first = value;
+        process_first.processes_.clear();
+        neforce::neflux::process proc_a;
+        proc_a.pid_ = 1001;
+        proc_a.name_ = "proc-a";
+        proc_a.command_ = "proc-a";
+        proc_a.start_time_ = 1;
+        neforce::neflux::process proc_b;
+        proc_b.pid_ = 1002;
+        proc_b.name_ = "proc-b";
+        proc_b.command_ = "proc-b";
+        proc_b.start_time_ = 2;
+        process_first.processes_.push_back(proc_a);
+        process_first.processes_.push_back(proc_b);
+        snapshot process_second = process_first;
+        process_second.processes_.clear();
+        process_second.processes_.push_back(proc_b);
+        process_second.processes_.push_back(proc_a);
+        const string tracked_process = ui::headless_probe_snapshot_refresh(process_first, process_second, data,
+                                                                           "processes", "\x1b[B", "\r", 120, 40);
+        CHECK(tracked_process.find("# proc-b · PID 1002") != string::npos);
+        inventory tab_services = data;
+        tab_services.services_.clear();
+        service service_a = data.services_.front();
+        service_a.name_ = "service-a";
+        service service_b = service_a;
+        service_b.name_ = "service-b";
+        tab_services.services_.push_back(service_a);
+        tab_services.services_.push_back(service_b);
+        const string tab_restore = ui::headless_probe_seeded(value, tab_services, "services", "\x1b[B|9|8|\r", 120, 40);
+        CHECK(tab_restore.find("Name          service-b") != string::npos);
         inventory many_listeners = data;
         many_listeners.listeners_.clear();
         for (uint32_t index = 0; index < 30; ++index) {
@@ -1203,22 +1444,88 @@ namespace {
         many_cores.ecore_count_ = 16;
         const string overview_many = ui::render_plaintext(many_cores, data, cfg, "overview", 140, 44);
         CHECK(overview_many.find("8P + 16E / 32T") != string::npos);
-        CHECK(overview_many.find("Per-core history · 8P + 16E / 32T") != string::npos);
+        CHECK(overview_many.find("Per-core history") != string::npos);
         CHECK(overview_many.find("C00") != string::npos);
         CHECK(overview_many.find("C15") != string::npos);
         CHECK(overview_many.find("C16") != string::npos);
         CHECK(overview_many.find("C31") != string::npos);
+        CHECK(overview_many.find("CPU TIMES") != string::npos);
+        const auto c00 = overview_many.find("C00");
+        const auto c16 = overview_many.find("C16");
+        bool two_columns = false;
+        if (c00 != string::npos && c16 != string::npos) {
+            const auto line_start = overview_many.rfind('\n', c00);
+            const auto line_end = overview_many.find('\n', c00);
+            two_columns = c16 > c00 && (line_end == string::npos || c16 < line_end) &&
+                          (line_start == string::npos || c16 > line_start);
+        }
+        CHECK(two_columns);
+        const string gpu_rich = ui::render_plaintext(value, data, cfg, "gpu", 140, 40);
+        CHECK(gpu_rich.find("GPU TELEMETRY") != string::npos);
+        CHECK(gpu_rich.find("CUDA 13.2") != string::npos);
+        CHECK(gpu_rich.find("NVML 13.595.99.02") != string::npos);
+        CHECK(gpu_rich.find("ENGINES") != string::npos);
+        CHECK(gpu_rich.find("GPU-MEM") != string::npos);
+        CHECK(gpu_rich.find("READ") != string::npos);
+        CHECK(gpu_rich.find("WRITE") != string::npos);
+        CHECK(gpu_rich.find("TAGS") != string::npos);
+        CHECK(gpu_rich.find("alice") != string::npos);
+        CHECK(gpu_rich.find("python3 train.py") != string::npos);
+        const string gpu_detail = ui::headless_probe_seeded(value, data, "gpu", "G", 140, 40);
+        CHECK(gpu_detail.find("VBIOS") != string::npos);
+        CHECK(gpu_detail.find("PCIe link") != string::npos);
+        const string gpu_process_detail = ui::headless_probe_seeded(value, data, "gpu", "\r", 140, 40);
+        CHECK(gpu_process_detail.find("# python3 · PID 42") != string::npos);
+        const string process_side_panel =
+                ui::headless_probe_seeded(value, data, "processes", "\x1b[<0;10;9M|\x1b[<0;10;9M", 140, 40);
+        CHECK(process_side_panel.find("PID 42 · Selected") != string::npos);
+        CHECK(process_side_panel.find("TABLE FIELDS") != string::npos);
+        const string process_side_panel_narrow = ui::headless_probe_seeded(value, data, "processes", "D", 96, 40);
+        CHECK(process_side_panel_narrow.find("TABLE FIELDS") != string::npos);
+        CHECK(process_side_panel_narrow.find("Drag select") != string::npos);
+        const string process_panel_switch =
+                ui::headless_probe_seeded(value, data, "processes", "\x1b[<0;10;9M|\x1b[<0;10;9M|6", 140, 40);
+        CHECK(process_panel_switch.find("TABLE FIELDS") == string::npos);
+        const string process_panel_outside = ui::headless_probe_seeded(
+                value, data, "processes", "\x1b[<0;10;9M|\x1b[<0;10;9M|\x1b[<0;70;10M|\x1b[<0;70;10M", 140, 40);
+        CHECK(process_panel_outside.find("TABLE FIELDS") == string::npos);
+        snapshot panel_processes = value;
+        neforce::neflux::process second_panel_process;
+        second_panel_process.pid_ = 43;
+        second_panel_process.name_ = "second";
+        second_panel_process.command_ = "second";
+        second_panel_process.user_ = "bob";
+        second_panel_process.state_ = "Sleeping";
+        second_panel_process.cpu_ = 1.0F;
+        second_panel_process.memory_ = 64ULL * 1024 * 1024;
+        second_panel_process.start_time_ = 2;
+        second_panel_process.extra_ = json::object();
+        panel_processes.processes_.push_back(second_panel_process);
+        const string process_panel_select = ui::headless_probe_seeded(
+                panel_processes, data, "processes", "\x1b[<0;10;9M|\x1b[<0;10;9M|\x1b[<0;10;10M", 140, 40);
+        CHECK(process_panel_select.find("PID 43 · Selected") != string::npos);
+        service other_service = data.services_.front();
+        other_service.name_ = "other.service";
+        inventory service_panel_data = data;
+        service_panel_data.services_.push_back(other_service);
+        const string service_panel_select = ui::headless_probe_seeded(
+                value, service_panel_data, "services", "\x1b[<0;10;9M|\x1b[<0;10;9M|\x1b[<0;10;10M", 140, 40);
+        CHECK(service_panel_select.find("Name          other.service") != string::npos);
         snapshot missing_gpu = value;
         missing_gpu.gpus_[0].utilization_.reset();
         missing_gpu.gpus_[0].memory_used_.reset();
         missing_gpu.gpus_[0].memory_total_.reset();
         missing_gpu.gpus_[0].temperature_.reset();
+        missing_gpu.gpus_[0].clock_mhz_.reset();
+        missing_gpu.gpus_[0].memory_clock_mhz_.reset();
+        missing_gpu.gpus_[0].power_watts_.reset();
+        missing_gpu.gpus_[0].processes_.clear();
         missing_gpu.gpus_[0].process_status_ = "Driver not loaded; telemetry unavailable";
         const string gpu_page = ui::render_plaintext(missing_gpu, data, cfg, "gpu", 140, 40);
         CHECK(gpu_page.find("Driver not loaded") != string::npos);
         const string theme_file = "/tmp/neflux-theme-unit.theme";
         CHECK(::neforce::filesystem::create_and_write(::neforce::path(theme_file),
-                                                        "theme[main_bg]=\"#102030\"\ntheme[main_fg]=\"#ffffff\"\n"));
+                                                      "theme[main_bg]=\"#102030\"\ntheme[main_fg]=\"#ffffff\"\n"));
         config theme_cfg = cfg;
         theme_cfg.theme_file_ = theme_file;
         const string themed_svg = ui::render_svg(value, data, theme_cfg, "processes", "summary", 100, 30);
@@ -1248,6 +1555,8 @@ int main() {
     test_neforce_system_components();
     test_battery_and_gpu();
     test_custom_layout();
+    test_responsive_overview_layout();
+    test_signal_menu();
     test_advanced();
     test_recording();
     test_parsers();
