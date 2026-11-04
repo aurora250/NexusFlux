@@ -53,7 +53,7 @@
                 fields.push_back(
                         {"Load", format("{:.2f} {:.2f} {:.2f}", snap_.load_[0], snap_.load_[1], snap_.load_[2])});
                 fields.push_back({"Sampling", format("{:.1f} / {} ms", snap_.collection_ms_,
-                                                     static_cast<uint64_t>(cfg_.interval_ms_))});
+                                                     static_cast<uint64_t>(cfg_.collection_.interval_ms_))});
                 const json* cpu_group = hardware != nullptr ? hardware->get("CPU") : nullptr;
                 const json* cpu_details = cpu_group != nullptr ? cpu_group->get("Details") : nullptr;
                 if (cpu_details != nullptr && cpu_details->is_array()) {
@@ -101,11 +101,6 @@
                                                       hardware_value("Memory", "Controller freq"))});
                 fields.push_back({"LLC / Ring", hardware_value("Memory", "LLC / Ring")});
                 fields.push_back({"Timings", hardware_value("Memory", "Timings")});
-#if NEFLUX_PLATFORM_LINUX
-                if (hardware_value("Memory", "Type") == "—") {
-                    fields.push_back({"Mem info", "SMBIOS needs root or EDAC"});
-                }
-#endif
                 fields.push_back({"CACHE", format("L1D {} · L1I {} · L2 {} · L3 {}", hardware_value("CPU", "L1 data"),
                                                   hardware_value("CPU", "L1 inst"), hardware_value("CPU", "L2"),
                                                   hardware_value("CPU", "L3"))});

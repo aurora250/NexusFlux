@@ -104,11 +104,7 @@
                     request_signal(system_signal::signal::terminate, "Terminate");
                 } else if (action == "kill_process") {
                     popup_ = popup_kind::none;
-#if NEFLUX_PLATFORM_WINDOWS
                     request_signal(system_signal::signal::kill, "Kill");
-#else
-                    request_signal(system_signal::signal::kill, "Kill");
-#endif
                 } else if (action == "signal_menu") {
                     open_signal_menu();
                 } else if (action == "net_interface_detail") {
@@ -291,15 +287,15 @@
                 const uint64_t needed =
                         cfg_.time_window_seconds_ == 0
                                 ? cfg_.history_
-                                : (cfg_.time_window_seconds_ * 1000 + cfg_.interval_ms_ - 1) / cfg_.interval_ms_;
+                                : (cfg_.time_window_seconds_ * 1000 + cfg_.collection_.interval_ms_ - 1) / cfg_.collection_.interval_ms_;
                 cfg_.history_ = neforce::max(cfg_.history_,
                                              static_cast<size_t>(neforce::min(needed, static_cast<uint64_t>(3600))));
                 popup_ = popup_kind::none;
             }
 
             void switch_view(view target) {
-                if (sampler_ != nullptr && !replay_) {
-                    sampler_->activate(target);
+                if (source_ != nullptr && !replay_) {
+                    activate_source(target);
                 }
                 current_ = target;
                 selected_ = 0;
@@ -357,8 +353,8 @@
                 }
                 if (settings_index_ == 1) {
                     const int64_t next =
-                            static_cast<int64_t>(cfg_.interval_ms_) + static_cast<int64_t>(direction * 250);
-                    cfg_.interval_ms_ = static_cast<uint64_t>(
+                            static_cast<int64_t>(cfg_.collection_.interval_ms_) + static_cast<int64_t>(direction * 250);
+                    cfg_.collection_.interval_ms_ = static_cast<uint64_t>(
                             neforce::clamp(next, static_cast<int64_t>(250), static_cast<int64_t>(10000)));
                 } else if (settings_index_ == 2) {
                     const int64_t next = static_cast<int64_t>(cfg_.history_) + static_cast<int64_t>(direction * 30);
@@ -395,13 +391,13 @@
                     cfg_.layout_ = layouts[static_cast<size_t>(
                             neforce::clamp(next, static_cast<int64_t>(0), static_cast<int64_t>(3)))];
                 } else if (settings_index_ == 6) {
-                    cfg_.show_threads_ = !cfg_.show_threads_;
+                    cfg_.collection_.show_threads_ = !cfg_.collection_.show_threads_;
                 } else if (settings_index_ == 7) {
-                    cfg_.show_kernel_threads_ = !cfg_.show_kernel_threads_;
+                    cfg_.collection_.show_kernel_threads_ = !cfg_.collection_.show_kernel_threads_;
                 } else if (settings_index_ == 8) {
                     cfg_.show_loopback_ = !cfg_.show_loopback_;
                 } else if (settings_index_ == 9) {
-                    cfg_.collect_gpu_ = !cfg_.collect_gpu_;
+                    cfg_.collection_.collect_gpu_ = !cfg_.collection_.collect_gpu_;
                 } else if (settings_index_ == 10) {
                     cfg_.ascii_ = !cfg_.ascii_;
                 } else if (settings_index_ == 11) {
@@ -1105,11 +1101,7 @@
                     return true;
                 }
                 if (key == tui::key_event::type::printable && (event.cp == U'k' || event.cp == U'K')) {
-#if NEFLUX_PLATFORM_WINDOWS
                     request_signal(system_signal::signal::kill, "Kill");
-#else
-                    request_signal(system_signal::signal::kill, "Kill");
-#endif
                     return true;
                 }
                 if (key == tui::key_event::type::printable && event.cp == U't') {
@@ -1332,13 +1324,13 @@
                     return true;
                 }
                 if (cp == U'z' || cp == U'Z') {
-                    const uint64_t current = cfg_.time_window_seconds_ == 0 ? cfg_.history_ * cfg_.interval_ms_ / 1000
+                    const uint64_t current = cfg_.time_window_seconds_ == 0 ? cfg_.history_ * cfg_.collection_.interval_ms_ / 1000
                                                                             : cfg_.time_window_seconds_;
-                    const uint64_t limit = neforce::max<uint64_t>(5, 3600ULL * cfg_.interval_ms_ / 1000);
+                    const uint64_t limit = neforce::max<uint64_t>(5, 3600ULL * cfg_.collection_.interval_ms_ / 1000);
                     const uint64_t target = cp == U'z' ? neforce::max<uint64_t>(5, current / 2)
                                                        : neforce::min<uint64_t>(limit, current * 2);
                     cfg_.time_window_seconds_ = target;
-                    const uint64_t needed = (target * 1000 + cfg_.interval_ms_ - 1) / cfg_.interval_ms_;
+                    const uint64_t needed = (target * 1000 + cfg_.collection_.interval_ms_ - 1) / cfg_.collection_.interval_ms_;
                     cfg_.history_ =
                             neforce::max(cfg_.history_, static_cast<size_t>(neforce::min<uint64_t>(needed, 3600)));
                     status_ = format("Chart window: {}", time_label(target));
@@ -1391,22 +1383,22 @@
                 }
                 if (cp == U'-' || cp == U'+') {
                     if (cp == U'+') {
-                        cfg_.interval_ms_ = neforce::min(static_cast<uint64_t>(10000), cfg_.interval_ms_ + 250);
+                        cfg_.collection_.interval_ms_ = neforce::min(static_cast<uint64_t>(10000), cfg_.collection_.interval_ms_ + 250);
                     } else {
-                        cfg_.interval_ms_ = neforce::max(static_cast<uint64_t>(250), cfg_.interval_ms_ - 250);
+                        cfg_.collection_.interval_ms_ = neforce::max(static_cast<uint64_t>(250), cfg_.collection_.interval_ms_ - 250);
                     }
-                    status_ = format("Interval {:.2f}s", static_cast<double>(cfg_.interval_ms_) / 1000.0);
+                    status_ = format("Interval {:.2f}s", static_cast<double>(cfg_.collection_.interval_ms_) / 1000.0);
                     return true;
                 }
                 if (cp == U'r' && replay_) {
-                    sampler_->seek(1);
+                    source_->seek(1);
                     return true;
                 }
                 if (replay_ && (cp == U',' || cp == U'.' || cp == U'<' || cp == U'>')) {
                     const bool forward = cp == U'.' || cp == U'>';
-                    sampler_->seek(forward ? 1 : -1);
-                    status_ = format("Replay frame {} / {}", static_cast<uint64_t>(sampler_->replay_index() + 1),
-                                     static_cast<uint64_t>(sampler_->replay_size()));
+                    source_->seek(forward ? 1 : -1);
+                    status_ = format("Replay frame {} / {}", static_cast<uint64_t>(source_->replay_index() + 1),
+                                     static_cast<uint64_t>(source_->replay_size()));
                     return true;
                 }
                 if (cp == U'p') {

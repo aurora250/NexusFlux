@@ -88,6 +88,15 @@ namespace neforce::neflux {
         add("count", 0, true);
         add("check", 0);
         add("input", 0, true);
+        add("machine", 0, true);
+        add("machine-user", 0, true);
+        add("machine-port", 0, true);
+        add("agent-path", 0, true);
+        add("machine-start", 0);
+        add("machine-start-command", 0, true);
+        add("machine-start-arg", 0, true);
+        add("allow-actions", 0);
+        add("stdio", 0);
         add("help", 'h');
         add("version", 'V');
         vector<string> arguments;
@@ -157,6 +166,31 @@ namespace neforce::neflux {
         if (parser.has("input")) {
             result.replay_ = parser.get("input");
         }
+        if (parser.has("machine")) {
+            result.machine_ = parser.get("machine");
+        }
+        if (parser.has("machine-user")) {
+            result.machine_user_ = parser.get("machine-user");
+        }
+        if (parser.has("machine-port")) {
+            const uint64_t value = to_u64(parser.get("machine-port"), "--machine-port");
+            if (value == 0 || value > 65535) {
+                invalid("machine-port must be 1..=65535");
+            }
+            result.machine_port_ = static_cast<uint16_t>(value);
+        }
+        if (parser.has("agent-path")) {
+            result.agent_path_ = parser.get("agent-path");
+        }
+        result.machine_start_ = parser.has("machine-start");
+        if (parser.has("machine-start-command")) {
+            result.machine_start_command_ = parser.get("machine-start-command");
+            for (size_t index = 0; index < parser.count("machine-start-arg"); ++index) {
+                result.machine_start_args_.push_back(parser.get("machine-start-arg", index));
+            }
+        }
+        result.allow_actions_ = parser.has("allow-actions");
+        result.agent_stdio_ = parser.has("stdio");
         result.ascii_ = parser.has("ascii");
         result.no_color_ = parser.has("no-color");
         result.threads_ = parser.has("threads");
@@ -302,13 +336,18 @@ namespace neforce::neflux {
             result.command_ = cli_command::man;
         } else if (command == "update") {
             result.command_ = cli_command::update;
+        } else if (command == "agent") {
+            result.command_ = cli_command::agent;
+            result.agent_stdio_ = true;
+        } else if (command == "machines") {
+            result.command_ = cli_command::machines;
         } else {
             invalid(format("Unknown command: {}", command));
         }
         return result;
     }
 
-    string version_text() { return "nexus-flux 0.1.0"; }
+    string version_text() { return "nexus-flux 0.2.0"; }
 
     string help_text() {
         return R"(One terminal. Your whole system. CPU, GPU, containers and services.
@@ -325,6 +364,7 @@ Commands:
   gpu [select]         Open the GPU view or select CUDA devices
   network [COMMAND]    Open connection monitoring, check a target, capture packets
   doctor               Explain resource problems and next steps
+  machines             List local QEMU targets and SSH endpoints
   config [path|write]  Print the configuration path or write preferences
   completions <SHELL>  Generate shell completions
   man                  Print the manual page
@@ -336,6 +376,14 @@ Options:
       --view <VIEW>          Initial page
       --gpu-panel <PANEL>    summary/history/device
       --config <PATH>        Alternate configuration file
+      --machine <TARGET>     local, qemu:<name>, or ssh:[user@]host[:port]
+      --machine-user <USER>  SSH user for qemu targets
+      --machine-port <PORT>  Override SSH port
+      --agent-path <PATH>    Guest nexus-flux path
+      --machine-start        Start a libvirt VM before connecting
+      --machine-start-command <EXE>  Start an unmanaged QEMU VM with EXE
+      --machine-start-arg <ARG>      Append a QEMU start argument
+      --allow-actions        Allow remote process actions
       --no-gpu               Disable GPU driver queries
       --ascii                Use ASCII glyphs
       --no-color             Disable colors

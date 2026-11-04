@@ -88,7 +88,7 @@ namespace neforce::neflux {
     void history::ingest(const snapshot& value, const config& cfg) {
         const size_t limit = cfg.history_;
         ++sequence_;
-        const double period = static_cast<double>(cfg.interval_ms_) / 1000.0;
+        const double period = static_cast<double>(cfg.collection_.interval_ms_) / 1000.0;
         const optional<double> previous = timestamps_.empty() ? none : optional<double>(timestamps_.back());
         double time = 0.0;
         if (neforce::is_finite(value.elapsed_) && (!previous.has_value() || value.elapsed_ > *previous)) {

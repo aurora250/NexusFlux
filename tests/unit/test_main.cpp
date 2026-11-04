@@ -11,6 +11,9 @@
 #include <NeFlux/history.hpp>
 #include <NeFlux/json.hpp>
 #include <NeFlux/model.hpp>
+#include <NeFlux/machine.hpp>
+#include <NeFlux/protocol.hpp>
+#include <NeFlux/source.hpp>
 #include <NeFlux/plot.hpp>
 #include <NeFlux/recording.hpp>
 #include <NeFlux/ros.hpp>
@@ -75,6 +78,92 @@ namespace {
         return false;
     }
 
+    void test_protocol_and_machine() {
+        protocol_message hello;
+        hello.type_ = "hello";
+        hello.id_ = 7;
+        hello.payload_ = json::object();
+        hello.payload_.set("os", json("linux"));
+        string error;
+        const auto decoded = decode_message(encode_message(hello).view(), error);
+        CHECK(decoded.has_value());
+        CHECK(decoded->type_ == "hello");
+        CHECK(decoded->id_ == 7);
+        CHECK(decoded->payload_.string_or("os") == "linux");
+
+        CHECK(!decode_message("not json", error).has_value());
+        CHECK(!decode_message("{\"v\":2,\"type\":\"hello\"}", error).has_value());
+
+        const auto local = parse_machine_selector("local", error);
+        CHECK(local.has_value() && local->kind_ == machine_kind::local);
+        const auto qemu = parse_machine_selector("qemu:guest-1", error);
+        CHECK(qemu.has_value() && qemu->kind_ == machine_kind::qemu && qemu->name_ == "guest-1");
+        const auto ssh = parse_machine_selector("ssh:user@example.test:2222", error);
+        CHECK(ssh.has_value() && ssh->kind_ == machine_kind::ssh);
+        CHECK(ssh->user_ == "user");
+        CHECK(ssh->host_ == "example.test");
+        CHECK(ssh->port_ == 2222);
+
+        virtual_machine vm;
+        vm.name_ = "guest";
+        vm.extra_ = json::object();
+        vm.extra_.set("command", json("qemu-system-x86_64 -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22"));
+        const char* argv[] = {"nexus-flux", "--machine",       "qemu:guest", "--machine-user",
+                              "user",       "--allow-actions", "agent"};
+        auto* mutable_argv = const_cast<char**>(argv);
+        const auto parsed_cli = parse_cli(7, mutable_argv);
+        CHECK(parsed_cli.command_ == cli_command::agent);
+        CHECK(parsed_cli.machine_.has_value() && *parsed_cli.machine_ == "qemu:guest");
+        CHECK(parsed_cli.machine_user_.has_value() && *parsed_cli.machine_user_ == "user");
+        CHECK(parsed_cli.allow_actions_);
+
+        const auto endpoint = machine_ssh_endpoint(vm, error);
+        CHECK(endpoint.has_value());
+        CHECK(endpoint->first == "127.0.0.1");
+        CHECK(endpoint->second == 2222);
+
+        config cfg;
+        cfg.collection_.interval_ms_ = 2000;
+        cfg.collection_.collect_gpu_ = false;
+        const auto policy = make_collect_policy(cfg, true);
+        CHECK(policy.interval_ms_ == 2000);
+        CHECK(!policy.gpu_);
+        CHECK(policy.detail_ == process_detail::full);
+        const config restored = config_from_policy(policy);
+        CHECK(restored.collection_.interval_ms_ == 2000);
+        CHECK(!restored.collection_.collect_gpu_);
+    }
+
+    void test_source_actions() {
+        source_options options;
+        options.cfg_ = config{};
+        auto source = make_local_source(move(options));
+        CHECK(source->capabilities().actions_);
+        CHECK(source->capabilities().signals_);
+        CHECK(source->capabilities().nice_);
+        CHECK(source->capabilities().affinity_);
+        source_action action;
+        string error;
+        action.kind_ = "unsupported";
+        action.pid_ = 1;
+        CHECK(!source->invoke_action(action, error));
+
+        action.kind_ = "nice";
+        action.pid_ = static_cast<uint32_t>(::neforce::process::current_id());
+        action.value_ = "99";
+        CHECK(!source->invoke_action(action, error));
+
+        action.kind_ = "affinity";
+        action.value_ = "not-a-number";
+        CHECK(!source->invoke_action(action, error));
+
+        const auto mask = ::neforce::process::get_affinity(::neforce::process::current_id());
+        if (mask.has_value()) {
+            action.value_ = format("{}", *mask);
+            CHECK(source->invoke_action(action, error));
+        }
+    }
+
     void test_json() {
         json value = json::object();
         value.set("a", json(static_cast<int64_t>(42)));
@@ -103,7 +192,7 @@ namespace {
     void test_config() {
         config cfg;
         cfg.theme_ = "nord";
-        cfg.interval_ms_ = 500;
+        cfg.collection_.interval_ms_ = 500;
         cfg.sort_index_ = 2;
         cfg.reverse_sort_ = true;
         cfg.tree_ = true;
@@ -119,7 +208,7 @@ namespace {
         cfg.display_.graph_symbol_cpu_ = "block";
         cfg.display_.graph_symbol_net_ = "tty";
         cfg.alert_commands_ = {{"echo", "alert"}};
-        cfg.probes_.push_back(probe_config{"probe", {"true"}, 2});
+        cfg.collection_.probes_.push_back(probe_config{"probe", {"true"}, 2});
         layout_node layout;
         layout.kind_ = layout_node::kind::split;
         layout.direction_ = "horizontal";
@@ -134,7 +223,7 @@ namespace {
         const string text = cfg.to_toml();
         const config parsed = config::from_toml(text);
         CHECK(parsed.theme_ == "nord");
-        CHECK(parsed.interval_ms_ == 500);
+        CHECK(parsed.collection_.interval_ms_ == 500);
         CHECK(parsed.sort_index_ == 2);
         CHECK(parsed.reverse_sort_);
         CHECK(parsed.tree_);
@@ -150,8 +239,8 @@ namespace {
         CHECK(parsed.display_.graph_symbol_cpu_ == "block");
         CHECK(parsed.display_.graph_symbol_net_ == "tty");
         CHECK(parsed.alert_commands_.size() == 1);
-        CHECK(parsed.probes_.size() == 1);
-        CHECK(parsed.probes_[0].timeout_seconds_ == 2);
+        CHECK(parsed.collection_.probes_.size() == 1);
+        CHECK(parsed.collection_.probes_[0].timeout_seconds_ == 2);
         CHECK(parsed.custom_layout_.has_value());
         if (parsed.custom_layout_.has_value()) {
             CHECK(parsed.custom_layout_->children_.size() == 2);
@@ -1040,9 +1129,9 @@ namespace {
 
     void test_sampling_sources() {
         config cfg;
-        cfg.collect_gpu_ = false;
-        cfg.show_threads_ = false;
-        cfg.show_kernel_threads_ = true;
+        cfg.collection_.collect_gpu_ = false;
+        cfg.collection_.show_threads_ = false;
+        cfg.collection_.show_kernel_threads_ = true;
         collector instance(false);
         const snapshot minimal = instance.collect_with_processes(cfg, false, false, false);
         CHECK(minimal.processes_.empty());
@@ -1539,6 +1628,8 @@ namespace {
 
 int main() {
     test_json();
+    test_source_actions();
+    test_protocol_and_machine();
     test_config();
     test_cli();
     test_cpu_info();

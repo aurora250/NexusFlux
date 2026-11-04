@@ -46,6 +46,13 @@ namespace neforce::neflux {
     string run_command(const string& program, const vector<string>& args, int timeout_ms, bool include_stderr = false);
 
     /**
+     * @brief 仅发现本机虚拟机
+     * @param cfg 配置
+     * @return 仅包含虚拟机与管理器信息的清单
+     */
+    NEFORCE_NODISCARD inventory discover_machine_inventory(const config& cfg);
+
+    /**
      * @brief 执行本地发现
      * @param cfg 配置
      * @return 发现清单

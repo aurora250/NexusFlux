@@ -231,7 +231,7 @@ namespace neforce::neflux {
         if (time_window_seconds_ > 36000) {
             fail("time_window_seconds must be 0..=36000");
         }
-        if (interval_ms_ < 250 || interval_ms_ > 10000) {
+        if (collection_.interval_ms_ < 250 || collection_.interval_ms_ > 10000) {
             fail("interval_ms must be 250..=10000");
         }
         if (history_ < 30 || history_ > 3600) {
@@ -295,7 +295,7 @@ namespace neforce::neflux {
         if (alert_hold_seconds_ > 3600) {
             fail("alert_hold_seconds must be 0..=3600");
         }
-        if (probes_.size() > 64 || monitored_folders_.size() > 64) {
+        if (collection_.probes_.size() > 64 || collection_.monitored_folders_.size() > 64) {
             fail("At most 64 probes/folders");
         }
         if (alert_commands_.size() > 8) {
@@ -309,7 +309,7 @@ namespace neforce::neflux {
         if (columns_.size() > 90) {
             fail("Too many process columns");
         }
-        for (const auto& probe: probes_) {
+        for (const auto& probe: collection_.probes_) {
             if (probe.name_.empty() || probe.command_.empty() || probe.command_[0].empty() ||
                 probe.timeout_seconds_ == 0 || probe.timeout_seconds_ > 30) {
                 fail("Invalid local probe");
@@ -359,8 +359,8 @@ namespace neforce::neflux {
             builder.end_array();
         };
 
-        builder.key("interval_ms").value(static_cast<int64_t>(interval_ms_));
-        builder.key("collect_gpu").value(collect_gpu_);
+        builder.key("interval_ms").value(static_cast<int64_t>(collection_.interval_ms_));
+        builder.key("collect_gpu").value(collection_.collect_gpu_);
         builder.key("theme").value(theme_);
         if (!theme_file_.empty()) {
             builder.key("theme_file").value(theme_file_);
@@ -377,8 +377,8 @@ namespace neforce::neflux {
         builder.key("cpu_warning").value(static_cast<double>(cpu_warning_));
         builder.key("memory_warning").value(memory_warning_);
         builder.key("gpu_temperature_warning").value(static_cast<int64_t>(gpu_temperature_warning_));
-        builder.key("show_threads").value(show_threads_);
-        builder.key("show_kernel_threads").value(show_kernel_threads_);
+        builder.key("show_threads").value(collection_.show_threads_);
+        builder.key("show_kernel_threads").value(collection_.show_kernel_threads_);
         builder.key("ascii").value(ascii_);
         builder.key("no_color").value(no_color_);
         builder.key("layout").value(layout_);
@@ -392,8 +392,8 @@ namespace neforce::neflux {
         }
         builder.end_inline_table();
 
-        string_array("monitored_folders", monitored_folders_);
-        builder.key("process_network").value(process_network_);
+        string_array("monitored_folders", collection_.monitored_folders_);
+        builder.key("process_network").value(collection_.process_network_);
         builder.key("alert_hold_seconds").value(static_cast<int64_t>(alert_hold_seconds_));
         builder.key("alert_history").value(static_cast<int64_t>(alert_history_));
         builder.key("alert_commands").begin_array();
@@ -408,9 +408,9 @@ namespace neforce::neflux {
         builder.key("log_lines").value(static_cast<int64_t>(log_lines_));
         builder.key("record_max_mib").value(static_cast<int64_t>(record_max_mib_));
 
-        if (!probes_.empty()) {
+        if (!collection_.probes_.empty()) {
             builder.key("probes").begin_array();
-            for (const auto& probe: probes_) {
+            for (const auto& probe: collection_.probes_) {
                 builder.begin_inline_table();
                 builder.key("name").value(probe.name_);
                 string_array("command", probe.command_);
@@ -519,9 +519,9 @@ namespace neforce::neflux {
 
         int64_t number = 0;
         if (read_integer(*root, "interval_ms", number)) {
-            value.interval_ms_ = static_cast<uint64_t>(number);
+            value.collection_.interval_ms_ = static_cast<uint64_t>(number);
         }
-        read_bool(*root, "collect_gpu", value.collect_gpu_);
+        read_bool(*root, "collect_gpu", value.collection_.collect_gpu_);
         read_string(*root, "theme", value.theme_);
         read_string(*root, "theme_file", value.theme_file_);
         if (read_integer(*root, "view", number)) {
@@ -553,8 +553,8 @@ namespace neforce::neflux {
         if (read_integer(*root, "gpu_temperature_warning", number)) {
             value.gpu_temperature_warning_ = static_cast<uint32_t>(number);
         }
-        read_bool(*root, "show_threads", value.show_threads_);
-        read_bool(*root, "show_kernel_threads", value.show_kernel_threads_);
+        read_bool(*root, "show_threads", value.collection_.show_threads_);
+        read_bool(*root, "show_kernel_threads", value.collection_.show_kernel_threads_);
         read_bool(*root, "ascii", value.ascii_);
         read_bool(*root, "no_color", value.no_color_);
         read_string(*root, "layout", value.layout_);
@@ -575,8 +575,8 @@ namespace neforce::neflux {
                 value.custom_colors_.set(entry.first, json(entry.second->as_string()->get_value()));
             }
         }
-        read_string_array(*root, "monitored_folders", value.monitored_folders_);
-        read_bool(*root, "process_network", value.process_network_);
+        read_string_array(*root, "monitored_folders", value.collection_.monitored_folders_);
+        read_bool(*root, "process_network", value.collection_.process_network_);
         if (read_integer(*root, "alert_hold_seconds", number)) {
             value.alert_hold_seconds_ = static_cast<uint64_t>(number);
         }
@@ -620,7 +620,7 @@ namespace neforce::neflux {
                 if (read_integer(*item->as_table(), "timeout_seconds", number)) {
                     probe.timeout_seconds_ = static_cast<uint64_t>(number);
                 }
-                value.probes_.push_back(move(probe));
+                value.collection_.probes_.push_back(move(probe));
             }
         }
         if (const toml_value* display = root->get_member("display"); display != nullptr && display->is_table()) {

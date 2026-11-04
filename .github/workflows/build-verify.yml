@@ -37,6 +37,8 @@ jobs:
             compiler: gcc
           - os: ubuntu-24.04
             compiler: clang
+          - os: macos-14
+            compiler: appleclang
 
     steps:
       - name: Checkout NexusFlux
@@ -47,6 +49,10 @@ jobs:
         with:
           repository: aurora250/NexusForce
           path: NexusForce
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -81,6 +87,10 @@ jobs:
           if [ -z "${VCPKG_ROOT:-}" ]; then
             if [ -n "${VCPKG_INSTALLATION_ROOT:-}" ]; then
               echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT}" >> "$GITHUB_ENV"
+            elif [ -d "$HOME/vcpkg" ]; then
+              echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
+            elif [ -d "/usr/local/share/vcpkg" ]; then
+              echo "VCPKG_ROOT=/usr/local/share/vcpkg" >> "$GITHUB_ENV"
             else
               echo "VCPKG_ROOT=C:/vcpkg" >> "$GITHUB_ENV"
             fi
@@ -113,7 +123,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./build/nexus-flux.exe --version
             ./build/nexus-flux.exe --help > /dev/null
+            ./build/nexus-flux.exe snapshot --samples 1 > /dev/null
           else
             ./build/nexus-flux --version
             ./build/nexus-flux --help > /dev/null
+            ./build/nexus-flux snapshot --samples 1 > /dev/null
           fi

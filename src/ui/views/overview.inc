@@ -44,7 +44,7 @@
             NEFORCE_NODISCARD bool layout_visible(const layout_node& node) const {
                 if (node.kind_ == layout_node::kind::panel) {
                     if (node.panel_ == "gpu") {
-                        return cfg_.collect_gpu_ || !snap_.gpus_.empty();
+                        return cfg_.collection_.collect_gpu_ || !snap_.gpus_.empty();
                     }
                     return true;
                 }
@@ -137,7 +137,7 @@
                 if (cfg_.layout_ == "compute") {
                     const int left = area.w_ * 60 / 100;
                     draw_cpu_panel(brush, rect{area.x_, area.y_, left - 1, area.h_});
-                    if (snap_.gpus_.empty() && !cfg_.collect_gpu_) {
+                    if (snap_.gpus_.empty() && !cfg_.collection_.collect_gpu_) {
                         draw_memory_panel(brush, rect{area.x_ + left, area.y_, area.w_ - left, area.h_});
                     } else {
                         draw_gpu_card(brush, rect{area.x_ + left, area.y_, area.w_ - left, area.h_});
@@ -157,7 +157,7 @@
                 const bool show_cpu = overview_has_box(boxes, "cpu");
                 const bool show_processes = overview_has_box(boxes, "processes");
                 vector<const char*> card_names;
-                const bool gpu_visible = cfg_.collect_gpu_ || !snap_.gpus_.empty();
+                const bool gpu_visible = cfg_.collection_.collect_gpu_ || !snap_.gpus_.empty();
                 if (overview_has_box(boxes, "memory")) {
                     card_names.push_back("memory");
                 }

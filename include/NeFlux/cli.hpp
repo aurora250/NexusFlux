@@ -34,6 +34,8 @@ namespace neforce::neflux {
         completions,         ///< 输出补全脚本
         man,                 ///< 输出手册
         update,              ///< 更新
+        agent,               ///< 隐藏的采集端模式
+        machines,            ///< 列出可选机器
     };
 
     /**
@@ -62,6 +64,15 @@ namespace neforce::neflux {
         optional<string> record_;                               ///< 录制文件
         optional<string> csv_;                                  ///< CSV 输出
         optional<string> replay_;                               ///< 回放文件
+        optional<string> machine_;                              ///< 目标机器
+        optional<string> machine_user_;                         ///< 目标 SSH 用户
+        optional<uint16_t> machine_port_;                       ///< 目标 SSH 端口
+        optional<string> agent_path_;                           ///< guest agent 路径
+        optional<string> machine_start_command_;                ///< VM 启动命令
+        vector<string> machine_start_args_;                     ///< VM 启动参数
+        bool machine_start_ = false;                            ///< 启动 VM
+        bool allow_actions_ = false;                            ///< 允许远端动作
+        bool agent_stdio_ = false;                              ///< agent 使用 stdio
         bool ascii_ = false;                                    ///< ASCII 模式
         bool no_color_ = false;                                 ///< 无颜色
         bool threads_ = false;                                  ///< 显示线程

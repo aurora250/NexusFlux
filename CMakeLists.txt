@@ -29,7 +29,20 @@ set(NEXUSFLUX_NEXUSFORCE_SOURCE_BUILD_DIR "${CMAKE_BINARY_DIR}/_deps/nexusforce"
 
 include(cmake/NexusForceBootstrap.cmake)
 
-project(NexusFlux VERSION 0.1.0 LANGUAGES CXX)
+project(NexusFlux VERSION 0.2.0 LANGUAGES CXX)
+
+if(WIN32)
+    set(NEXUSFLUX_PLATFORM_NAME "windows")
+elseif(APPLE)
+    set(NEXUSFLUX_PLATFORM_NAME "macos")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    set(NEXUSFLUX_PLATFORM_NAME "freebsd")
+elseif(UNIX)
+    set(NEXUSFLUX_PLATFORM_NAME "linux")
+else()
+    message(FATAL_ERROR "NexusFlux supports Windows, Linux, macOS and FreeBSD")
+endif()
+message(STATUS "NexusFlux platform: ${NEXUSFLUX_PLATFORM_NAME}")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,8 +76,21 @@ include(cmake/NexusForceDependency.cmake)
 
 include(GNUInstallDirs)
 
+set(NEFLUX_PLATFORM_SOURCE
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/platform.cpp)
+
 set(NEFLUX_SOURCES
     src/cli.cpp
+    src/extras.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/advanced.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/collect.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/discovery.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/connections.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/gpu.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/network.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/process.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/taskstats.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/ros.cpp
     src/config.cpp
     src/crash.cpp
     src/json.cpp
@@ -77,13 +103,17 @@ set(NEFLUX_SOURCES
     src/discovery.cpp
     src/recording.cpp
     src/gpu.cpp
-    src/ros.cpp
-    src/taskstats.cpp
-    src/advanced.cpp
     src/collect.cpp
     src/connections.cpp
     src/ui/painter.cpp
     src/ui/app.cpp
+    src/source/local_source.cpp
+    src/source/remote_source.cpp
+    src/machine.cpp
+    src/session.cpp
+    src/agent/protocol.cpp
+    src/agent/agent.cpp
+    ${NEFLUX_PLATFORM_SOURCE}
 )
 
 add_library(NeFlux STATIC ${NEFLUX_SOURCES})
@@ -91,6 +121,7 @@ add_library(NeFlux::NeFlux ALIAS NeFlux)
 target_include_directories(NeFlux PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
+target_include_directories(NeFlux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(NeFlux PUBLIC NexusForce::NexusForce)
 neflux_compiler_options(NeFlux)
 set_target_properties(NeFlux PROPERTIES FOLDER "library")
@@ -103,6 +134,19 @@ nexusflux_deploy_nexusforce_runtime(nexus-flux)
 
 if(WIN32)
     target_link_libraries(NeFlux PUBLIC ws2_32 iphlpapi psapi dxgi user32 advapi32)
+elseif(APPLE)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
+    target_link_libraries(NeFlux PUBLIC ${COREFOUNDATION_FRAMEWORK} ${IOKIT_FRAMEWORK})
+elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    find_library(DEVSTAT_LIBRARY devstat)
+    find_library(KVM_LIBRARY kvm)
+    if(DEVSTAT_LIBRARY)
+        target_link_libraries(NeFlux PUBLIC ${DEVSTAT_LIBRARY})
+    endif()
+    if(KVM_LIBRARY)
+        target_link_libraries(NeFlux PUBLIC ${KVM_LIBRARY})
+    endif()
 endif()
 
 if(UNIX)

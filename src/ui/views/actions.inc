@@ -1,5 +1,13 @@
             NEFORCE_NODISCARD bool state_changes_allowed() const { return !(replay_ || args_.read_only_); }
 
+            NEFORCE_NODISCARD bool remote_mode() const {
+                return source_ != nullptr && source_->label() != "local" && !source_->replay_active();
+            }
+
+            NEFORCE_NODISCARD bool process_actions_allowed() const {
+                return state_changes_allowed() && (source_ == nullptr || source_->capabilities().actions_);
+            }
+
             NEFORCE_NODISCARD vector<pair<uint32_t, uint64_t>> action_targets() const {
                 vector<pair<uint32_t, uint64_t>> targets;
                 if (!marked_processes_.empty()) {
@@ -36,9 +44,13 @@
             }
 
             void request_signal(system_signal::signal signal_value, const string& title) {
-                if (!state_changes_allowed()) {
+                if (!process_actions_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    return;
+                }
+                if (source_ != nullptr && !source_->capabilities().signals_) {
+                    status_ = "Signals are not supported by this agent.";
                     return;
                 }
                 const auto targets = action_targets();
@@ -55,12 +67,21 @@
                 popup_title_ = title;
             }
 
-            NEFORCE_NODISCARD int send_signal(uint32_t pid, system_signal::signal signal_value) const {
-                return system_signal::send_to_process(static_cast<int>(pid), signal_value) ? 0 : -1;
+            NEFORCE_NODISCARD int send_signal(uint32_t pid, uint64_t start_time, system_signal::signal signal_value) {
+                if (source_ == nullptr) {
+                    return system_signal::send_to_process(static_cast<int>(pid), signal_value) ? 0 : -1;
+                }
+                source_action action;
+                action.kind_ = "signal";
+                action.pid_ = pid;
+                action.start_time_ = start_time;
+                action.value_ = string(system_signal::signal_name(signal_value));
+                string error;
+                return source_->invoke_action(action, error) ? 0 : -1;
             }
 
             void execute_pending_signal() {
-                if (!state_changes_allowed()) {
+                if (!process_actions_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
                     popup_ = popup_kind::none;
@@ -85,7 +106,7 @@
                         ++failed;
                         continue;
                     }
-                    if (send_signal(identity.first, pending_signal_) == 0) {
+                    if (send_signal(identity.first, identity.second, pending_signal_) == 0) {
                         ++succeeded;
                     } else {
                         ++failed;
@@ -149,7 +170,7 @@
             }
 
             void open_signal_menu() {
-                if (!state_changes_allowed()) {
+                if (!process_actions_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
                     return;
@@ -170,9 +191,14 @@
             }
 
             void apply_nice() {
-                if (!state_changes_allowed()) {
+                if (!process_actions_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                if (source_ != nullptr && !source_->capabilities().nice_) {
+                    status_ = "Nice is not supported by this agent.";
                     popup_ = popup_kind::none;
                     return;
                 }
@@ -188,8 +214,13 @@
                 }
                 size_t failed = 0;
                 for (const auto& identity: targets) {
-                    if (!::neforce::process::set_nice(static_cast<::neforce::process::native_id_type>(identity.first),
-                                                      static_cast<int32_t>(*value))) {
+                    source_action action;
+                    action.kind_ = "nice";
+                    action.pid_ = identity.first;
+                    action.start_time_ = identity.second;
+                    action.value_ = format("{}", *value);
+                    string error;
+                    if (source_ == nullptr || !source_->invoke_action(action, error)) {
                         ++failed;
                     }
                 }
@@ -201,9 +232,14 @@
             }
 
             void apply_affinity() {
-                if (!state_changes_allowed()) {
+                if (!process_actions_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                if (source_ != nullptr && !source_->capabilities().affinity_) {
+                    status_ = "Affinity is not supported by this agent.";
                     popup_ = popup_kind::none;
                     return;
                 }
@@ -244,8 +280,13 @@
                 }
                 size_t failed = 0;
                 for (const auto& identity: targets) {
-                    if (!::neforce::process::set_affinity(
-                                static_cast<::neforce::process::native_id_type>(identity.first), mask)) {
+                    source_action action;
+                    action.kind_ = "affinity";
+                    action.pid_ = identity.first;
+                    action.start_time_ = identity.second;
+                    action.value_ = format("{}", mask);
+                    string error;
+                    if (source_ == nullptr || !source_->invoke_action(action, error)) {
                         ++failed;
                     }
                 }
@@ -255,6 +296,10 @@
             }
 
             void open_process_environment() {
+                if (remote_mode()) {
+                    status_ = "Not available for remote machines.";
+                    return;
+                }
                 if (replay_) {
                     status_ = "Live process inspection is disabled during replay.";
                     return;
@@ -266,29 +311,11 @@
                 }
                 detail_lines_.clear();
                 popup_title_ = format("ENVIRONMENT · {} · PID {}", value->name_, static_cast<uint64_t>(value->pid_));
-#if NEFLUX_PLATFORM_LINUX
-                try {
-                    const auto text = read_text_file(format("/proc/{}/environ", value->pid_));
-                    if (!text.has_value()) {
-                        detail_lines_.push_back("Cannot read the process environment; run as its owner.");
-                    } else {
-                        size_t begin = 0;
-                        for (size_t index = 0; index <= text->size(); ++index) {
-                            if (index != text->size() && (*text)[index] != '\0') {
-                                continue;
-                            }
-                            if (index > begin) {
-                                detail_lines_.push_back(text->substr(begin, index - begin));
-                            }
-                            begin = index + 1;
-                        }
-                    }
-                } catch (const exception& error) {
-                    detail_lines_.push_back(format("Cannot inspect process: {}", error.what()));
+                string inspect_error;
+                detail_lines_ = platform::process_environment(value->pid_, inspect_error);
+                if (!inspect_error.empty()) {
+                    detail_lines_.push_back(inspect_error);
                 }
-#else
-                detail_lines_.push_back("Process environments are not exposed by this platform.");
-#endif
                 if (detail_lines_.empty()) {
                     detail_lines_.push_back("Environment is empty or unreadable.");
                 }
@@ -297,6 +324,10 @@
             }
 
             void open_process_files() {
+                if (remote_mode()) {
+                    status_ = "Not available for remote machines.";
+                    return;
+                }
                 if (replay_) {
                     status_ = "Live process inspection is disabled during replay.";
                     return;
@@ -308,29 +339,11 @@
                 }
                 detail_lines_.clear();
                 popup_title_ = format("OPEN FILES · {} · PID {}", value->name_, static_cast<uint64_t>(value->pid_));
-#if NEFLUX_PLATFORM_LINUX
-                try {
-                    vector<string> lines;
-                    for (const auto& entry: ::neforce::path(format("/proc/{}/fd", value->pid_)).children()) {
-                        char target[4096] = {};
-                        const auto length = ::readlink(entry.str().data(), target, sizeof(target) - 1);
-                        string text = format("{:>5}  ", entry.filename());
-                        if (length > 0) {
-                            text.append(string(target, static_cast<size_t>(length)));
-                        } else {
-                            text.append("unreadable");
-                        }
-                        lines.push_back(move(text));
-                    }
-                    neforce::tim_sort(lines.begin(), lines.end(),
-                                      [](const string& left, const string& right) { return left < right; });
-                    detail_lines_ = move(lines);
-                } catch (const exception& error) {
-                    detail_lines_.push_back(format("Cannot inspect process: {}", error.what()));
+                string inspect_error;
+                detail_lines_ = platform::process_open_files(value->pid_, inspect_error);
+                if (!inspect_error.empty()) {
+                    detail_lines_.push_back(inspect_error);
                 }
-#else
-                detail_lines_.push_back("Open file descriptors are not exposed by this platform.");
-#endif
                 if (detail_lines_.empty()) {
                     detail_lines_.push_back("No open files are readable.");
                 }
@@ -474,6 +487,11 @@
                     popup_ = popup_kind::none;
                     return;
                 }
+                if (remote_mode()) {
+                    status_ = "Workload actions are not available for remote machines.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 const bool containers = current_ == view::containers;
                 const auto rows = workload_rows(containers);
                 if (rows.empty() || selected_ >= rows.size()) {
@@ -499,6 +517,10 @@
              * @param action start/stop/restart/remove
              */
             void run_workload_action(const string_view action) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: workload actions are host-only.";
+                    return;
+                }
                 reconcile_current_selection();
                 if (!state_changes_allowed()) {
                     status_ =
@@ -531,16 +553,13 @@
                     }
                 } else {
                     const auto& item = inventory_.services_[index];
-#if NEFLUX_PLATFORM_WINDOWS
-                    if (action == "restart") {
-                        run_command("sc", {"stop", item.name_}, 5000);
-                        run_command("sc", {"start", item.name_}, 5000);
-                    } else {
-                        run_command("sc", {string(action), item.name_}, 5000);
+                    string action_error;
+                    platform::service_action(item.name_, string(action), action_error);
+                    if (!action_error.empty()) {
+                        status_ = format("Service action failed: {}", action_error);
+                        popup_ = popup_kind::none;
+                        return;
                     }
-#else
-                    run_command("systemctl", {string(action), item.name_}, 5000);
-#endif
                     status_ = format("{} requested for service {}", action, item.name_);
                 }
                 popup_ = popup_kind::none;
@@ -563,6 +582,10 @@
              * @brief 容器/服务日志（F7）
              */
             void open_workload_logs(const bool containers) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: workload actions are host-only.";
+                    return;
+                }
                 reconcile_current_selection();
                 vector<string> lines;
                 const auto rows = workload_rows(containers);
@@ -576,14 +599,11 @@
                     lines = split_lines(text);
                 } else {
                     const auto& item = inventory_.services_[rows[selected_]];
-#if NEFLUX_PLATFORM_WINDOWS
-                    lines.push_back("# Windows SCM does not expose service logs portably.");
-                    lines.push_back("Use the service's own log file or Event Viewer.");
-#else
-                    const string text = run_command(
-                            "journalctl", {"-u", item.name_, "-n", format("{}", cfg_.log_lines_), "--no-pager"}, 5000);
-                    lines = split_lines(text);
-#endif
+                    string log_error;
+                    lines = platform::service_logs(item.name_, cfg_.log_lines_, log_error);
+                    if (!log_error.empty()) {
+                        lines.push_back(format("# {}", log_error));
+                    }
                 }
                 if (lines.empty()) {
                     lines.push_back("# No log output available.");
@@ -595,6 +615,10 @@
             }
 
             void open_logs() {
+                if (remote_mode()) {
+                    status_ = "Logs are not available for remote machines.";
+                    return;
+                }
                 if (current_ == view::containers) {
                     open_workload_logs(true);
                     return;
@@ -606,42 +630,11 @@
                 const auto value = selected_process_value();
                 vector<string> lines;
                 if (value.has_value()) {
-#if NEFLUX_PLATFORM_WINDOWS
-                    lines.push_back("# Process output files are not exposed by the Windows API.");
-                    lines.push_back("Use the service or container log tools for persistent output.");
-#else
-                    const string base = format("/proc/{}/fd/", static_cast<uint64_t>(value->pid_));
-                    string text;
-                    for (const int fd: {1, 2}) {
-                        char target[4096] = {};
-                        const string link = base + format("{}", fd);
-                        const ssize_t length = readlink(link.data(), target, sizeof(target) - 1);
-                        if (length <= 0) {
-                            continue;
-                        }
-                        target[length] = '\0';
-                        const string path(target, static_cast<size_t>(length));
-                        if (!starts_with(path.view(), "/") || starts_with(path.view(), "/dev/") ||
-                            starts_with(path.view(), "/proc/")) {
-                            continue;
-                        }
-                        const auto content = read_text_file(path);
-                        if (!content.has_value()) {
-                            continue;
-                        }
-                        const auto all = split_lines(*content);
-                        const size_t take = neforce::min(all.size(), cfg_.log_lines_);
-                        text.append(format("## fd {} · {}\n", fd, path));
-                        for (size_t index = all.size() - take; index < all.size(); ++index) {
-                            lines.push_back(all[index]);
-                        }
+                    string log_error;
+                    lines = platform::process_logs(value->pid_, cfg_.log_lines_, log_error);
+                    if (!log_error.empty()) {
+                        lines.push_back(format("# {}", log_error));
                     }
-                    if (lines.empty()) {
-                        lines.push_back("# No readable regular stdout/stderr files for this process.");
-                        lines.push_back(
-                                "Pipes and terminals are not consumed; unsaved terminal output cannot be recovered.");
-                    }
-#endif
                 } else {
                     lines.push_back("# Select a process first.");
                 }
@@ -884,15 +877,15 @@
                 vector<pair<string, string>> rows;
                 rows.push_back({"Config file", config_path_});
                 rows.push_back(
-                        {"Sampling interval", format("{:.2f}s", static_cast<double>(cfg_.interval_ms_) / 1000.0)});
+                        {"Sampling interval", format("{:.2f}s", static_cast<double>(cfg_.collection_.interval_ms_) / 1000.0)});
                 rows.push_back({"History", format("{} samples", static_cast<uint64_t>(cfg_.history_))});
                 rows.push_back({"Chart window", time_label(cfg_.time_window_seconds_)});
                 rows.push_back({"Theme", cfg_.theme_});
                 rows.push_back({"Layout", cfg_.layout_});
-                rows.push_back({"Show threads", cfg_.show_threads_ ? "On" : "Off"});
-                rows.push_back({"Show kernel threads", cfg_.show_kernel_threads_ ? "On" : "Off"});
+                rows.push_back({"Show threads", cfg_.collection_.show_threads_ ? "On" : "Off"});
+                rows.push_back({"Show kernel threads", cfg_.collection_.show_kernel_threads_ ? "On" : "Off"});
                 rows.push_back({"Show loopback", cfg_.show_loopback_ ? "On" : "Off"});
-                rows.push_back({"Collect GPU", cfg_.collect_gpu_ ? "On" : "Off"});
+                rows.push_back({"Collect GPU", cfg_.collection_.collect_gpu_ ? "On" : "Off"});
                 rows.push_back({"ASCII glyphs", cfg_.ascii_ ? "On" : "Off"});
                 rows.push_back({"No color", cfg_.no_color_ ? "On" : "Off"});
                 rows.push_back({"Alert hold", format("{} s", static_cast<uint64_t>(cfg_.alert_hold_seconds_))});
@@ -934,7 +927,7 @@
                 if (row == 1) {
                     for (const auto& value: {250U, 500U, 1000U, 2000U, 5000U, 10000U}) {
                         add(format("{:.2f} s", static_cast<double>(value) / 1000.0), format("{}", value),
-                            format("{}", cfg_.interval_ms_));
+                            format("{}", cfg_.collection_.interval_ms_));
                     }
                 } else if (row == 2) {
                     for (const auto value: {60U, 120U, 300U, 600U, 1800U, 3600U}) {
@@ -1054,7 +1047,7 @@
                 const auto as_u64 = [&code]() -> uint64_t { return parse_u64(code.view()).value_or(0); };
                 const auto as_double = [&code]() -> double { return parse_f64(code.view()).value_or(0.0); };
                 if (row == 1) {
-                    cfg_.interval_ms_ = neforce::clamp<uint64_t>(as_u64(), 250, 10000);
+                    cfg_.collection_.interval_ms_ = neforce::clamp<uint64_t>(as_u64(), 250, 10000);
                 } else if (row == 2) {
                     cfg_.history_ = static_cast<size_t>(neforce::clamp<uint64_t>(as_u64(), 30, 3600));
                 } else if (row == 3) {
@@ -1066,13 +1059,13 @@
                 } else if (row >= 6 && row <= 11) {
                     const bool value = code == "on";
                     if (row == 6) {
-                        cfg_.show_threads_ = value;
+                        cfg_.collection_.show_threads_ = value;
                     } else if (row == 7) {
-                        cfg_.show_kernel_threads_ = value;
+                        cfg_.collection_.show_kernel_threads_ = value;
                     } else if (row == 8) {
                         cfg_.show_loopback_ = value;
                     } else if (row == 9) {
-                        cfg_.collect_gpu_ = value;
+                        cfg_.collection_.collect_gpu_ = value;
                     } else if (row == 10) {
                         cfg_.ascii_ = value;
                     } else {

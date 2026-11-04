@@ -1,4 +1,6 @@
 #include <NeFlux/common.hpp>
+#include <NeFlux/agent.hpp>
+#include <NeFlux/machine.hpp>
 #include <NeFlux/cli.hpp>
 #include <NeFlux/discovery.hpp>
 #include <NeFlux/filter.hpp>
@@ -9,6 +11,9 @@
 #include <NeFlux/diagnostics.hpp>
 #include <NeFlux/gpu.hpp>
 #include <NeFlux/recording.hpp>
+#include <NeFlux/session.hpp>
+#include "platform/platform_backend.hpp"
+#include <NeFlux/source.hpp>
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/painter.hpp>
 #include <NeFlux/ui/app.hpp>
@@ -84,6 +89,30 @@ namespace {
     using namespace neforce;
     using namespace neforce::neflux;
 
+    bool machine_is_remote(const cli_args& args) {
+        return args.machine_.has_value() && *args.machine_ != "local";
+    }
+
+    connection_sample collect_remote_connections(const cli_args& args, const config& cfg, string& error) {
+        auto source = create_source(args, cfg, error);
+        if (source == nullptr || !source->start(error)) {
+            return {};
+        }
+        snapshot sample;
+        const int64_t deadline = monotonic_ms() + static_cast<int64_t>(cfg.collection_.interval_ms_) + 10000;
+        while (!stopped() && monotonic_ms() < deadline) {
+            if (source->take_snapshot(sample)) {
+                break;
+            }
+            sleep_ms(20);
+        }
+        if (sample.timestamp_ == 0) {
+            error = format("no sample received from {}", source->label());
+            return {};
+        }
+        return sample.connections_;
+    }
+
     int run_headless(const cli_args& args, config cfg) {
         const uint32_t sample_count = args.samples_.has_value() ? *args.samples_ : (args.snapshot_ ? 1 : 1);
         unique_ptr<recorder> writer;
@@ -153,27 +182,42 @@ namespace {
             return 0;
         }
 
-        collector collector_instance(cfg.collect_gpu_);
-        inventory discovered;
-        inventory_rates rates;
-        try {
-            discovered = discover_with_config(cfg);
-            rates.apply(discovered);
-        } catch (const exception& error) {
-            errln(format("Discovery: {}", error.what()));
+        string source_error;
+        auto source = create_source(args, cfg, source_error);
+        if (source == nullptr) {
+            errln(format("Cannot select machine: {}", source_error));
+            return 1;
+        }
+        if (!source->start(source_error)) {
+            errln(format("Cannot start telemetry source: {}", source_error));
+            return 1;
         }
         const uint32_t total = args.samples_.has_value() ? *args.samples_ : 1;
         snapshot last;
+        inventory discovered;
         vector<snapshot> rendered;
         rendered.reserve(total);
-        int64_t deadline = monotonic_ms() + static_cast<int64_t>(cfg.interval_ms_);
         for (uint32_t index = 0; index < total && !stopped(); ++index) {
-            wait_until(deadline);
-            if (stopped()) {
-                break;
+            snapshot sample;
+            const int64_t deadline = monotonic_ms() + static_cast<int64_t>(cfg.collection_.interval_ms_) + 10000;
+            while (!stopped() && monotonic_ms() < deadline) {
+                if (source->take_snapshot(sample)) {
+                    break;
+                }
+                sleep_ms(20);
             }
-            auto sample = collector_instance.collect(cfg);
-            sample.apply_inventory(discovered);
+            if (sample.timestamp_ == 0) {
+                errln(format("No sample received from {}", source->label()));
+                return 1;
+            }
+            inventory current;
+            if (source->take_inventory(current)) {
+                discovered = move(current);
+            }
+            if (!discovered.virtual_machines_.empty() || !discovered.containers_.empty() ||
+                !discovered.services_.empty() || !discovered.listeners_.empty()) {
+                sample.apply_inventory(discovered);
+            }
             annotate(sample);
             last = sample;
             rendered.push_back(sample);
@@ -188,7 +232,6 @@ namespace {
                         (args.samples_.has_value() || total > 1) ? to_json(sample).dump() : to_json(sample).dump(true);
                 outln(text);
             }
-            deadline = monotonic_ms() + static_cast<int64_t>(cfg.interval_ms_);
         }
         if (args.csv_.has_value() && !filesystem::create_and_write(::neforce::path(*args.csv_), csv_text)) {
             errln(format("Cannot write CSV: {}", *args.csv_));
@@ -292,21 +335,6 @@ namespace {
         return out;
     }
 
-    vector<string> capture_packets(const cli_args& args) {
-#if NEFLUX_PLATFORM_WINDOWS
-        static_cast<void>(args);
-        throw value_exception("Packet capture requires tcpdump on Linux or macOS");
-#else
-        vector<string> command = {"-i", args.interface_, "-w", args.file_, "-c", format("{}", args.packets_), "-s", "0",
-                                  "-q"};
-        if (!args.capture_filter_.empty()) {
-            command.push_back(args.capture_filter_);
-        }
-        const auto output = run_command("tcpdump", command, static_cast<int>(args.seconds_ * 1000 + 5000), true);
-        return {output};
-#endif
-    }
-
     void filter_network_sample(connection_sample& sample, const cli_args& args) {
         if (args.filter_.empty()) {
             return;
@@ -320,11 +348,8 @@ namespace {
         sample.connections_ = move(rows);
     }
 
-    vector<string> network_connection_rows(const cli_args& args) {
-        connection_collector collector;
-        static_cast<void>(collector.collect());
-        sleep_ms(1000);
-        auto sample = collector.collect();
+    vector<string> network_connection_rows(const connection_sample& input, const cli_args& args) {
+        auto sample = input;
         filter_network_sample(sample, args);
         auto rows = move(sample.connections_);
         const auto metric = [](const neforce::neflux::connection& item) {
@@ -375,6 +400,13 @@ namespace {
                                sample.owners_sampled_at_);
         lines.insert(lines.begin(), header);
         return lines;
+    }
+
+    vector<string> network_connection_rows(const cli_args& args) {
+        connection_collector collector;
+        static_cast<void>(collector.collect());
+        sleep_ms(1000);
+        return network_connection_rows(collector.collect(), args);
     }
 
     string doctor_trends(const vector<snapshot>& samples) {
@@ -448,14 +480,37 @@ namespace {
             recorded = true;
         } else {
             cfg.alert_commands_.clear();
-            collector instance(cfg.collect_gpu_);
-            data = discover_with_config(cfg);
-            value = instance.collect(cfg);
-            samples.push_back(value);
-            sleep_ms(cfg.interval_ms_);
-            value = instance.collect(cfg);
-            samples.push_back(value);
-            value.apply_inventory(data);
+            string source_error;
+            auto source = create_source(args, cfg, source_error);
+            if (source == nullptr || !source->start(source_error)) {
+                errln(format("Cannot start telemetry source: {}", source_error));
+                return 1;
+            }
+            for (int index = 0; index < 2; ++index) {
+                snapshot sample;
+                const int64_t deadline = monotonic_ms() + static_cast<int64_t>(cfg.collection_.interval_ms_) + 10000;
+                while (!stopped() && monotonic_ms() < deadline) {
+                    if (source->take_snapshot(sample)) {
+                        break;
+                    }
+                    sleep_ms(20);
+                }
+                if (sample.timestamp_ == 0) {
+                    errln(format("No sample received from {}", source->label()));
+                    return 1;
+                }
+                inventory current;
+                if (source->take_inventory(current)) {
+                    data = move(current);
+                }
+                if (!data.virtual_machines_.empty() || !data.containers_.empty() || !data.services_.empty() ||
+                    !data.listeners_.empty()) {
+                    sample.apply_inventory(data);
+                }
+                annotate(sample);
+                samples.push_back(sample);
+                value = sample;
+            }
         }
         value.alerts_.clear();
         value.alerts_ = resource_alerts(value, cfg);
@@ -742,7 +797,7 @@ disables color when supported by the terminal.
     }
 
     int run_gpu_select(const cli_args& args, const config& cfg) {
-        const auto result = collect_gpus(cfg.collect_gpu_, false);
+        const auto result = collect_gpus(cfg.collection_.collect_gpu_, false);
         gpu_selection selection;
         selection.min_free_bytes_ = args.min_free_mib_ * 1024ULL * 1024ULL;
         selection.min_total_bytes_ = args.min_total_mib_ * 1024ULL * 1024ULL;
@@ -800,18 +855,18 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (args.interval_.has_value()) {
-        cfg.interval_ms_ = *args.interval_;
+        cfg.collection_.interval_ms_ = *args.interval_;
     }
     if (args.theme_.has_value()) {
         cfg.theme_ = *args.theme_;
     }
-    cfg.collect_gpu_ = cfg.collect_gpu_ && !args.no_gpu_;
+    cfg.collection_.collect_gpu_ = cfg.collection_.collect_gpu_ && !args.no_gpu_;
     cfg.ascii_ = cfg.ascii_ || args.ascii_;
     cfg.no_color_ = cfg.no_color_ || args.no_color_;
-    cfg.show_threads_ = cfg.show_threads_ || args.threads_;
-    cfg.process_network_ = cfg.process_network_ || args.process_network_;
+    cfg.collection_.show_threads_ = cfg.collection_.show_threads_ || args.threads_;
+    cfg.collection_.process_network_ = cfg.collection_.process_network_ || args.process_network_;
     if (args.read_only_ || args.no_config_exec_) {
-        cfg.config_exec_ = false;
+        cfg.collection_.config_exec_ = false;
     }
     if (args.layout_.has_value()) {
         cfg.layout_ = *args.layout_;
@@ -822,6 +877,28 @@ int main(int argc, char** argv) {
     } catch (const exception& error) {
         errln(error.what());
         return 1;
+    }
+    if (args.command_ == cli_command::agent) {
+        return run_agent(args, move(cfg));
+    }
+    if (args.command_ == cli_command::machines) {
+        outln("local");
+        try {
+            const auto data = discover_machine_inventory(cfg);
+            for (const auto& vm: data.virtual_machines_) {
+                string endpoint_error;
+                const auto endpoint = machine_ssh_endpoint(vm, endpoint_error);
+                if (endpoint.has_value()) {
+                    outln(format("qemu:{}  ssh://{}@{}:{}", vm.name_, "USER", endpoint->first, endpoint->second));
+                } else {
+                    outln(format("qemu:{}  {}", vm.name_, endpoint_error));
+                }
+            }
+        } catch (const exception& error) {
+            errln(format("Cannot list machines: {}", error.what()));
+            return 1;
+        }
+        return 0;
     }
     if (args.command_ == cli_command::config_write || args.write_config_) {
         try {
@@ -834,6 +911,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args.command_ == cli_command::gpu_select) {
+        if (machine_is_remote(args)) {
+            errln("gpu select is local-only; it selects devices on this host");
+            return 1;
+        }
         return run_gpu_select(args, cfg);
     }
     if (args.command_ == cli_command::completions) {
@@ -850,6 +931,10 @@ int main(int argc, char** argv) {
         return args.update_check_ ? 0 : 1;
     }
     if (args.command_ == cli_command::network_check) {
+        if (machine_is_remote(args)) {
+            errln("network check runs from this host and does not support --machine");
+            return 1;
+        }
         outln(check_target(args.target_));
         return 0;
     }
@@ -858,12 +943,16 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args.command_ == cli_command::network_capture) {
+        if (machine_is_remote(args)) {
+            errln("network capture is local-only; remote capture requires an agent RPC");
+            return 1;
+        }
         if (args.read_only_) {
             errln("Packet capture disabled in read-only mode");
             return 1;
         }
         try {
-            const auto output = capture_packets(args);
+            const auto output = platform::capture_packets(args);
             for (const auto& line: output) {
                 outln(line);
             }
@@ -874,16 +963,26 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args.command_ == cli_command::network_connections) {
-        if (args.json_) {
+        connection_sample sample;
+        if (machine_is_remote(args)) {
+            string source_error;
+            sample = collect_remote_connections(args, cfg, source_error);
+            if (!source_error.empty()) {
+                errln(source_error);
+                return 1;
+            }
+        } else {
             connection_collector collector;
             static_cast<void>(collector.collect());
             sleep_ms(1000);
-            auto sample = collector.collect();
+            sample = collector.collect();
+        }
+        if (args.json_) {
             filter_network_sample(sample, args);
             outln(to_json(sample).dump(true));
             return 0;
         }
-        for (const auto& line: network_connection_rows(args)) {
+        for (const auto& line: network_connection_rows(sample, args)) {
             outln(line);
         }
         return 0;

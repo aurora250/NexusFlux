@@ -139,13 +139,26 @@ namespace neforce::neflux {
     };
 
     /**
+     * @brief 采集配置
+     */
+    struct collection_config {
+        uint64_t interval_ms_ = 1000;     ///< 采样间隔
+        bool collect_gpu_ = true;         ///< 采集 GPU
+        bool show_threads_ = false;       ///< 显示线程
+        bool show_kernel_threads_ = true; ///< 显示内核线程
+        bool process_network_ = false;    ///< 进程网络
+        vector<string> monitored_folders_; ///< 监控目录
+        vector<probe_config> probes_;      ///< 本地探针
+        bool config_exec_ = true;          ///< 是否允许执行配置命令
+    };
+
+    /**
      * @brief 应用配置
      */
     struct config {
         static constexpr size_t settings_count = 32; ///< 总设置项数量
 
-        uint64_t interval_ms_ = 1000;           ///< 采样间隔
-        bool collect_gpu_ = true;               ///< 采集 GPU
+        collection_config collection_;          ///< 采集选项
         string theme_ = "midnight";             ///< 主题
         string theme_file_;                     ///< 外部 .theme 文件路径
         size_t view_ = 0;                       ///< 启动页面
@@ -160,8 +173,6 @@ namespace neforce::neflux {
         float cpu_warning_ = 90.0F;             ///< CPU 告警阈值
         double memory_warning_ = 90.0;          ///< 内存告警阈值
         uint32_t gpu_temperature_warning_ = 85; ///< GPU 温度告警阈值
-        bool show_threads_ = false;             ///< 显示线程
-        bool show_kernel_threads_ = true;       ///< 显示内核线程
         bool ascii_ = false;                    ///< ASCII 模式
         bool no_color_ = false;                 ///< 无颜色模式
         string layout_ = "balanced";            ///< 布局
@@ -172,19 +183,14 @@ namespace neforce::neflux {
         optional<layout_node> custom_layout_;     ///< 自定义布局
         vector<string> columns_;                  ///< 进程列
         json custom_colors_;                      ///< 自定义颜色
-        vector<string> monitored_folders_;        ///< 监控目录
-        bool process_network_ = false;            ///< 进程网络
         uint64_t alert_hold_seconds_ = 3;         ///< 告警保持时间
         size_t alert_history_ = 200;              ///< 告警历史容量
         vector<vector<string>> alert_commands_;   ///< 告警命令
         size_t log_lines_ = 500;                  ///< 日志行数
         uint64_t record_max_mib_ = 64;            ///< 录制分卷大小
-        vector<probe_config> probes_;             ///< 本地探针
         display_config display_;                  ///< 显示选项
         bool check_updates_ = true;               ///< 检查更新
         optional<string> ignored_update_version_; ///< 忽略的版本
-        bool config_exec_ = true;                 ///< 是否允许执行配置命令
-
         /**
          * @brief 获取主题名称列表
          * @return 主题列表

@@ -75,6 +75,11 @@
             }
 
             void request_vm_action(string action) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: VM control is host-only.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 reconcile_current_selection();
                 if (!state_changes_allowed()) {
                     status_ =
@@ -130,6 +135,11 @@
             }
 
             void run_vm_action(const string_view action) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: VM control is host-only.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 reconcile_current_selection();
                 if (!state_changes_allowed()) {
                     status_ =
@@ -160,7 +170,7 @@
                         }
                         if (!signal.has_value()) {
                             status_ = "Start is not available for an unmanaged QEMU process.";
-                        } else if (send_signal(*item.pid_, *signal) == 0) {
+                        } else if (system_signal::send_to_process(static_cast<int>(*item.pid_), *signal)) {
                             status_ = format("{} sent to QEMU {}", action, static_cast<uint64_t>(*item.pid_));
                         } else {
                             status_ = format("Failed to send {} to QEMU {}", action, static_cast<uint64_t>(*item.pid_));
@@ -175,6 +185,11 @@
             }
 
             void toggle_vm_autostart() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: VM control is host-only.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 sync_vm_edit();
                 if (selected_ >= inventory_.virtual_machines_.size()) {
                     return;
@@ -189,6 +204,11 @@
             }
 
             void apply_vm_config() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: VM control is host-only.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 if (!state_changes_allowed()) {
                     status_ =
                             replay_ ? "Replay: state changes are disabled." : "Read-only: state changes are disabled.";
@@ -240,6 +260,11 @@
             }
 
             void handle_vm_control(const size_t control) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: VM control is host-only.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
                 sync_vm_edit();
                 if (selected_ >= inventory_.virtual_machines_.size()) {
                     return;

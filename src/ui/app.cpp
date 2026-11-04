@@ -11,7 +11,10 @@
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/painter.hpp>
 #include <NeFlux/ui/testing.hpp>
+#include <NeFlux/source.hpp>
+#include <NeFlux/session.hpp>
 #include <NeFlux/util.hpp>
+#include "platform/platform_backend.hpp"
 #include <NeForce/core/async/atomic.hpp>
 #include <NeForce/core/async/io_context.hpp>
 #include <NeForce/core/async/mutex.hpp>
@@ -26,16 +29,6 @@
 #include <NeForce/tui/dom/element.hpp>
 #include <NeForce/tui/headless.hpp>
 #include <NeForce/tui/screen.hpp>
-#if NEFLUX_PLATFORM_WINDOWS
-#    include <windows.h>
-#    include <csignal>
-#else
-#    include <csignal>
-#    include <sys/resource.h>
-#    include <sys/syscall.h>
-#    include <sys/types.h>
-#    include <unistd.h>
-#endif
 namespace neforce::neflux::ui {
 
     namespace {
@@ -470,226 +463,25 @@ namespace neforce::neflux::ui {
             bool tree_aggregate_ = false; ///< 树模式累计子进程
         };
 
-        struct sampler {
-            config cfg_;
-            bool replay_ = false;
-            bool read_only_ = false;
-            atomic<bool> stop_{false};
-            atomic<bool> need_gpu_processes_{false};
-            atomic<bool> need_connections_{false};
-            atomic<bool> need_containers_{false};
-            atomic<bool> need_services_{false};
-            atomic<bool> need_extras_{false};
-            atomic<bool> discovery_wake_{false};
-            thread worker_;
-            thread discovery_worker_;
-            mutex mutex_;
-            snapshot pending_;
-            bool has_pending_ = false;
-            inventory inventory_;
-            bool has_inventory_ = false;
-            optional<string> error_;
-            vector<snapshot> replay_data_;
-            size_t replay_index_ = 0;
-            size_t replay_limit_ = 0;
-            int64_t next_replay_ms_ = 0;
-            bool replay_finished_ = false;
-
-            sampler(config cfg, optional<string> replay, bool read_only, bool full_sampling) :
-            cfg_(move(cfg)),
-            replay_(replay.has_value()),
-            read_only_(read_only) {
-                if (full_sampling) {
-                    need_gpu_processes_ = true;
-                    need_connections_ = true;
-                    need_containers_ = true;
-                    need_services_ = true;
-                    need_extras_ = true;
-                }
-                if (replay.has_value()) {
-                    replay_data_ = replay_file(*replay);
-                    replay_limit_ = replay_data_.size();
-                    if (!replay_data_.empty()) {
-                        pending_ = replay_data_[0];
-                        has_pending_ = true;
-                        inventory_ = replay_data_[0].inventory_;
-                        has_inventory_ = true;
-                    }
-                    next_replay_ms_ = monotonic_ms() + static_cast<int64_t>(cfg_.interval_ms_);
-                } else {
-                    worker_ = thread([this] { run_collector(); });
-                    discovery_worker_ = thread([this] { run_discovery(); });
-                }
-            }
-
-            ~sampler() {
-                stop_ = true;
-                if (worker_.joinable()) {
-                    worker_.join();
-                }
-                if (discovery_worker_.joinable()) {
-                    discovery_worker_.join();
-                }
-            }
-
-            static vector<snapshot> replay_file(const string& file_path) {
-                vector<snapshot> data;
-                const auto samples = replay(file_path);
-                for (const auto& item: samples) {
-                    data.push_back(item);
-                }
-                return data;
-            }
-
-            void run_collector() {
-                try {
-                    collector instance(cfg_.collect_gpu_);
-                    int64_t deadline = monotonic_ms();
-                    while (!stop_) {
-                        auto sample =
-                                instance.collect_with_processes(cfg_, true, need_gpu_processes_, need_connections_);
-                        {
-                            unique_lock<mutex> guard(mutex_);
-                            pending_ = move(sample);
-                            has_pending_ = true;
-                        }
-                        deadline += static_cast<int64_t>(cfg_.interval_ms_);
-                        while (!stop_ && monotonic_ms() < deadline) {
-                            neforce::this_thread::sleep_for_ms(20);
-                        }
-                    }
-                } catch (const neforce::exception& failure) {
-                    unique_lock<mutex> guard(mutex_);
-                    error_ = failure.what();
-                }
-            }
-
-            void run_discovery() {
-                inventory_rates rates;
-                while (!stop_) {
-                    const discovery_sources sources{need_containers_, need_services_, need_extras_};
-                    if (sources.containers_ || sources.services_ || sources.extras_) {
-                        try {
-                            auto found = discover_with_sources(cfg_, sources);
-                            rates.apply(found);
-                            unique_lock<mutex> guard(mutex_);
-                            inventory_ = move(found);
-                            has_inventory_ = true;
-                        } catch (const neforce::exception& failure) {
-                            unique_lock<mutex> guard(mutex_);
-                            error_ = failure.what();
-                        }
-                    }
-                    discovery_wake_ = false;
-                    for (int step = 0; step < 50 && !stop_; ++step) {
-                        if (discovery_wake_) {
-                            break;
-                        }
-                        sleep_ms(100);
-                    }
-                }
-            }
-
-            void activate(view target) {
-                if (target == view::processes || target == view::gpu || target == view::containers ||
-                    target == view::services || target == view::history || target == view::events) {
-                    need_gpu_processes_ = true;
-                }
-                if (target == view::network) {
-                    need_connections_ = true;
-                    need_extras_ = true;
-                }
-                if (target == view::containers || target == view::vms) {
-                    need_containers_ = true;
-                }
-                if (target == view::services) {
-                    need_services_ = true;
-                }
-                if (target == view::storage || target == view::system) {
-                    need_extras_ = true;
-                }
-                discovery_wake_ = true;
-            }
-
-            bool take_snapshot(snapshot& out) {
-                if (replay_) {
-                    if (replay_finished_) {
-                        return false;
-                    }
-                    if (monotonic_ms() < next_replay_ms_) {
-                        return false;
-                    }
-                    next_replay_ms_ = monotonic_ms() + static_cast<int64_t>(cfg_.interval_ms_);
-                    if (replay_index_ + 1 < replay_data_.size()) {
-                        ++replay_index_;
-                    } else {
-                        replay_finished_ = true;
-                    }
-                    out = replay_data_[replay_index_];
-                    return true;
-                }
-                unique_lock<mutex> guard(mutex_);
-                if (!has_pending_) {
-                    return false;
-                }
-                out = move(pending_);
-                has_pending_ = false;
-                return true;
-            }
-
-            bool take_inventory(inventory& out) {
-                if (replay_) {
-                    return false;
-                }
-                unique_lock<mutex> guard(mutex_);
-                if (!has_inventory_) {
-                    return false;
-                }
-                out = inventory_;
-                has_inventory_ = false;
-                return true;
-            }
-
-            optional<string> take_error() {
-                unique_lock<mutex> guard(mutex_);
-                auto value = error_;
-                error_.reset();
-                return value;
-            }
-
-            void seek(int delta) {
-                if (!replay_ || replay_data_.empty()) {
-                    return;
-                }
-                int64_t target = static_cast<int64_t>(replay_index_) + delta;
-                target = neforce::max(static_cast<int64_t>(0),
-                                      neforce::min(static_cast<int64_t>(replay_data_.size()) - 1, target));
-                replay_index_ = static_cast<size_t>(target);
-                replay_finished_ = false;
-                unique_lock<mutex> guard(mutex_);
-                pending_ = replay_data_[replay_index_];
-                has_pending_ = true;
-                inventory_ = pending_.inventory_;
-                has_inventory_ = true;
-                next_replay_ms_ = monotonic_ms() + static_cast<int64_t>(cfg_.interval_ms_);
-            }
-
-            NEFORCE_NODISCARD size_t replay_index() const noexcept { return replay_index_; }
-            NEFORCE_NODISCARD size_t replay_size() const noexcept { return replay_data_.size(); }
-        };
-
         view parse_view(const string& name);
 
         class flux_component final : public tui::component<> {
         public:
-            flux_component(sampler* source, config cfg, string config_path, cli_args args) :
-            sampler_(source),
+            flux_component(telemetry_source* source, config cfg, string config_path, cli_args args) :
+            source_(source),
             cfg_(move(cfg)),
             config_path_(move(config_path)),
             args_(move(args)) {
-                replay_ = source != nullptr && source->replay_;
+                replay_ = source != nullptr && source->replay_active();
                 tree_ = cfg_.tree_;
                 auto_collapse_done_ = false;
+                if (args_.full_sampling_ || args_.record_.has_value()) {
+                    interest_.gpu_processes_ = true;
+                    interest_.connections_ = true;
+                    interest_.containers_ = true;
+                    interest_.services_ = true;
+                    interest_.extras_ = true;
+                }
             }
 
             void setup() override {
@@ -716,10 +508,34 @@ namespace neforce::neflux::ui {
                 } else if (args_.gpu_panel_ == "history") {
                     gpu_section_ = 1;
                 }
-                if (sampler_ != nullptr && !replay_) {
-                    sampler_->activate(current_);
+                if (source_ != nullptr && !replay_) {
+                    activate_source(current_);
                 }
                 schedule_poll();
+            }
+
+            void activate_source(view target) {
+                if (source_ == nullptr || replay_) {
+                    return;
+                }
+                if (target == view::processes || target == view::gpu || target == view::containers ||
+                    target == view::services || target == view::history || target == view::events) {
+                    interest_.gpu_processes_ = true;
+                }
+                if (target == view::network) {
+                    interest_.connections_ = true;
+                    interest_.extras_ = true;
+                }
+                if (target == view::containers || target == view::vms) {
+                    interest_.containers_ = true;
+                }
+                if (target == view::services) {
+                    interest_.services_ = true;
+                }
+                if (target == view::storage || target == view::system) {
+                    interest_.extras_ = true;
+                }
+                source_->set_interest(interest_);
             }
 
             void on_terminal_resize(const int width, const int height) override {
@@ -800,7 +616,8 @@ namespace neforce::neflux::ui {
             bool on_mouse(const tui::mouse_event& event) override { return handle_mouse(event); }
 
         private:
-            sampler* sampler_ = nullptr;
+            telemetry_source* source_ = nullptr;
+            source_interest interest_;
             config cfg_;
             string config_path_;
             cli_args args_;
@@ -962,10 +779,13 @@ namespace neforce::neflux::ui {
                     spans.push_back({"· discovering", muted_style, {}});
                 }
 
-                string right = format("[{}] · [-]{:.2f}s[+] · up {}", time_label(cfg_.time_window_seconds_),
-                                      static_cast<double>(cfg_.interval_ms_) / 1000.0, duration(snap_.uptime_));
+                string right =
+                        format("[{}] · [-]{:.2f}s[+] · up {}", time_label(cfg_.time_window_seconds_),
+                               static_cast<double>(cfg_.collection_.interval_ms_) / 1000.0, duration(snap_.uptime_));
                 if (replay_) {
-                    right = format("REPLAY {}/{} · {}", sampler_->replay_index() + 1, sampler_->replay_size(), right);
+                    right = format("REPLAY {}/{} · {}", source_->replay_index() + 1, source_->replay_size(), right);
+                } else if (source_ != nullptr) {
+                    right = format("{} · {}", source_->label(), right);
                 }
 
                 tui::box_props props;
@@ -1163,7 +983,7 @@ namespace neforce::neflux::ui {
             }
 
             void schedule_poll() {
-                if (sampler_ == nullptr) {
+                if (source_ == nullptr) {
                     return;
                 }
                 ctx_->schedule_timer(40, [this] {
@@ -1175,23 +995,23 @@ namespace neforce::neflux::ui {
             }
 
             void poll() {
-                if (quit_ || sampler_ == nullptr) {
+                if (quit_ || source_ == nullptr) {
                     return;
                 }
                 snapshot incoming;
                 bool changed = false;
-                while (sampler_->take_snapshot(incoming)) {
+                while (source_->take_snapshot(incoming)) {
                     apply_snapshot(move(incoming));
                     changed = true;
                 }
                 inventory found;
-                if (sampler_->take_inventory(found)) {
+                if (source_->take_inventory(found)) {
                     inventory_ = move(found);
                     snap_.apply_inventory(inventory_);
                     annotate(snap_);
                     changed = true;
                 }
-                if (const auto error = sampler_->take_error(); error.has_value()) {
+                if (const auto error = source_->take_error(); error.has_value()) {
                     status_ = *error;
                     changed = true;
                 }
@@ -1325,10 +1145,10 @@ namespace neforce::neflux::ui {
             }
 
             NEFORCE_NODISCARD bool visible_process(const process& value) const {
-                if (value.thread_ && !cfg_.show_threads_) {
+                if (value.thread_ && !cfg_.collection_.show_threads_) {
                     return false;
                 }
-                if (value.kernel_thread_ && !cfg_.show_kernel_threads_) {
+                if (value.kernel_thread_ && !cfg_.collection_.show_kernel_threads_) {
                     return false;
                 }
                 if (gpu_only_ && !value.gpu_percent_.has_value() && !value.gpu_memory_.has_value() &&
@@ -2558,11 +2378,20 @@ namespace neforce::neflux::ui {
     int run_interactive(const cli_args& args, config cfg, const string& config_path) {
         cli_args copy = args;
         const bool replay_mode = args.replay_.has_value();
-        sampler source(cfg, args.replay_, args.read_only_, args.full_sampling_ || args.record_.has_value());
+        string source_error;
+        auto source = create_source(args, cfg, source_error);
+        if (source == nullptr) {
+            sys_console::instance().print_error(format("Cannot select machine: {}\n", source_error));
+            return 1;
+        }
+        if (!source->start(source_error)) {
+            sys_console::instance().print_error(format("Cannot start telemetry source: {}\n", source_error));
+            return 1;
+        }
         const palette colors = palette_from_config(cfg);
         const tui::theme theme = theme_for(colors);
         const auto app = make_unique<tui::application>();
-        app->with_component<flux_component>(&source, cfg, config_path, copy)
+        app->with_component<flux_component>(source.get(), cfg, config_path, copy)
                 .with_theme(theme)
                 // The monitor has no frame-driven animation: redraw on sampled state changes only.
                 .with_fps(0)

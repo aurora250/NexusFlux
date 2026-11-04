@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-本地 CPU、GPU、进程、存储、网络、容器、服务与虚拟机监控，基于 NexusForce 实现。
+基于 NexusForce 的 CPU、GPU、进程、存储、网络、容器、服务与虚拟机监控，支持本机或远端 agent 采集。
 
 可执行文件为 `nexus-flux`，别名 `neflux`。
 
@@ -21,6 +21,9 @@ nexus-flux export svg screen.svg --input recording.jsonl   # 渲染回放历史
 nexus-flux gpu select --count 1 --min-free-mib 8192
 nexus-flux network connections --filter port:443 --sort download --json
 nexus-flux doctor --json
+nexus-flux machines                       # 列出本机 QEMU 目标与 SSH 端点
+nexus-flux --machine qemu:guest --machine-user user   # 监控 QEMU 虚拟机
+nexus-flux --machine ssh:user@host:22 snapshot         # 远端快照
 ```
 
 ## 界面说明
@@ -308,10 +311,23 @@ ACTIVE，恢复后记录 RECOVERED。
 过滤表达式支持 `field:value`、`!` 取反、数值比较、`/正则/`、空格 AND 与 ` | ` OR，
 例如 `user:alice cpu:>10 !name:rust` 或 `name:/python|torch/ pid:42 | mem:>1024`。
 
+## 远端机器
+
+`--machine` 选择采集目标，默认 `local`；`qemu:<name>` 从本机 QEMU 进程解析 SSH
+`hostfwd`，`ssh:[user@]host[:port]` 连接手工配置的 agent。远端运行同一个二进制的隐藏
+`nexus-flux agent --stdio` 子命令，通过 SSH 流式推送快照，不监听入站端口。hostfwd、
+agent 安装、macOS 代码签名、FreeBSD 与安全说明见 [docs/REMOTE.md](docs/REMOTE.md)。
+
+平台采集、连接、GPU、进程检查与抓包实现位于 `src/platform/<os>/`，公共源文件不再包含平台条件分支。
+
+远端默认只读；两端都加 `--allow-actions` 才允许进程动作。远端进程命令行默认使用
+`normal` 详细度，本地采集保持 `full`。无 libvirt 的 QEMU 可用
+`--machine-start-command <exe> --machine-start-arg <arg>` 显式启动，NexusFlux 不经过 shell。
+
 ## 配置
 
-配置文件路径为 `$XDG_CONFIG_HOME/neflux/config.toml`（回退 `~/.config/neflux/config.toml`）；
-Windows 下为 `%APPDATA%\neflux\config.toml`。
+Linux、macOS 与 FreeBSD 的配置文件路径为 `$XDG_CONFIG_HOME/neflux/config.toml`
+（回退 `~/.config/neflux/config.toml`）；Windows 下为 `%APPDATA%\neflux\config.toml`。
 
 ## 日志
 
@@ -319,6 +335,8 @@ Windows 下为 `%APPDATA%\neflux\config.toml`。
 
 - Linux：`~/.config/neflux/logs/nexus-flux.log.<date>`
 - Windows：`%APPDATA%\neflux\logs\nexus-flux.log.<date>`
+- macOS：`~/.config/neflux/logs/nexus-flux.log.<date>`
+- FreeBSD：`~/.config/neflux/logs/nexus-flux.log.<date>`
 
 Windows 未处理异常会另存 minidump。
 Linux x86-64/AArch64 遇到未捕获的 C++ 异常、`terminate`，或收到
@@ -334,7 +352,7 @@ nexus-flux-YYYYMMDD-HHMMSS-<pid>.core
 
 ## 构建
 
-NexusForce 是唯一的外部依赖，用 `NEXUSFLUX_NEXUSFORCE_MODE` 选择 CMake 获取它的方式：
+NexusFlux 支持 Windows、Linux、macOS 与 FreeBSD。NexusForce 是唯一的外部依赖，用 `NEXUSFLUX_NEXUSFORCE_MODE` 选择 CMake 获取它的方式：
 
 | 模式           | 行为                                                                                 |
 |----------------|--------------------------------------------------------------------------------------|

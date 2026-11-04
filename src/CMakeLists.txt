@@ -63,6 +63,17 @@ include(GNUInstallDirs)
 
 set(NEFLUX_SOURCES
     src/cli.cpp
+    src/extras.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/advanced.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/taskstats.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/ros.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/platform.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/collect.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/discovery.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/connections.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/gpu.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/network.cpp
+    src/platform/${NEXUSFLUX_PLATFORM_NAME}/process.cpp
     src/config.cpp
     src/crash.cpp
     src/json.cpp
@@ -75,9 +86,6 @@ set(NEFLUX_SOURCES
     src/discovery.cpp
     src/recording.cpp
     src/gpu.cpp
-    src/ros.cpp
-    src/taskstats.cpp
-    src/advanced.cpp
     src/collect.cpp
     src/connections.cpp
     src/ui/painter.cpp

@@ -2,7 +2,7 @@
 
 English | [简体中文](README.CN.md)
 
-A NexusForce-based local CPU, GPU, process, storage, network, container, service and virtual-machine monitor.
+A NexusForce-based CPU, GPU, process, storage, network, container, service and virtual-machine monitor for the local host or a remote agent.
 
 The executable is `nexus-flux` with the short alias `neflux`.
 
@@ -21,6 +21,9 @@ nexus-flux export svg screen.svg --input recording.jsonl   # renders replay hist
 nexus-flux gpu select --count 1 --min-free-mib 8192
 nexus-flux network connections --filter port:443 --sort download --json
 nexus-flux doctor --json
+nexus-flux machines                       # local QEMU targets with SSH endpoints
+nexus-flux --machine qemu:guest --machine-user user   # monitor a QEMU guest
+nexus-flux --machine ssh:user@host:22 snapshot         # remote snapshot
 ```
 
 ## Interface guide
@@ -326,10 +329,28 @@ cross-page jumps keep following the target instead of a stale row index.
 Filters support `field:value`, `!` negation, numeric comparisons, `/regex/`, space-separated
 AND and ` | ` OR, for example `user:alice cpu:>10 !name:rust` or `name:/python|torch/ pid:42 | mem:>1024`.
 
+## Remote machines
+
+`--machine` selects the telemetry source. The default is `local`; `qemu:<name>` resolves
+a local QEMU process and its SSH `hostfwd`, and `ssh:[user@]host[:port]` connects to a
+manually configured agent. The remote side runs the same binary as a hidden
+`nexus-flux agent --stdio` subcommand, streams snapshots over SSH, and performs no
+inbound listening. See [docs/REMOTE.md](docs/REMOTE.md) for hostfwd, agent installation,
+macOS code signing, FreeBSD and security notes.
+
+Platform-specific collection, connection, GPU, process inspection and packet-capture
+code lives under `src/platform/<os>/`. Shared sources contain no platform conditionals.
+
+Remote collection is read-only by default. Start both sides with `--allow-actions` to
+enable process actions; remote process command lines use `normal` detail, while local
+collection keeps `full`. For an unmanaged QEMU process, use
+`--machine-start-command <exe> --machine-start-arg <arg>`; NexusFlux never invokes a shell.
+
 ## Configuration
 
 Configuration is read from `$XDG_CONFIG_HOME/neflux/config.toml` (falling back to
-`~/.config/neflux/config.toml`). On Windows it lives under `%APPDATA%\neflux\config.toml`.
+`~/.config/neflux/config.toml`) on Linux, macOS and FreeBSD. On Windows it lives under
+`%APPDATA%\neflux\config.toml`.
 
 ## Logs
 
@@ -337,6 +358,8 @@ At startup NexusFlux initializes `neforce::logger` with a rotating file sink:
 
 - Linux: `~/.config/neflux/logs/nexus-flux.log.<date>`
 - Windows: `%APPDATA%\neflux\logs\nexus-flux.log.<date>`
+- macOS: `~/.config/neflux/logs/nexus-flux.log.<date>`
+- FreeBSD: `~/.config/neflux/logs/nexus-flux.log.<date>`
 
 Windows writes a minidump next to the log on an unhandled exception.
 On Linux x86-64/AArch64 an uncaught C++ exception, `terminate`, or
@@ -353,7 +376,7 @@ If the ELF writer cannot create the file, NexusFlux restores the default action 
 
 ## Building
 
-NexusForce is the only external dependency. Let CMake obtain it with `NEXUSFLUX_NEXUSFORCE_MODE`:
+NexusFlux builds for Windows, Linux, macOS and FreeBSD. NexusForce is the only external dependency. Let CMake obtain it with `NEXUSFLUX_NEXUSFORCE_MODE`:
 
 | Mode             | Behaviour                                                                                                  |
 |------------------|------------------------------------------------------------------------------------------------------------|
