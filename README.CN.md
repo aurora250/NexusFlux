@@ -86,7 +86,7 @@ PCIe 链路代际/宽度和最大频率；GPU 进程表复用 PROCESSES 的列�
 - `[` / `]` 选择上一张/下一张 GPU。
 - `G` 打开设备详情；`D` 切换设备详情。
 - 点击卡片选择设备；点击进程行选中进程，双击或 `Enter` 打开与 PROCESSES 相同的详情弹窗。
-- 右键卡片打开设备操作菜单；右键进程行复用 PROCESSES 的进程菜单（详情/跟随/暂停/终止/信号）。
+- 右键卡片打开设备操作菜单；右键进程行打开完整的 PROCESSES 右键菜单（详情、日志、环境、文件、标记、树、过滤、信号/nice/亲和性、文件锁、跟踪/回溯、诊断）。
 - `--gpu-panel` 指定初始 GPU 面板。
 
 ### 存储
@@ -116,7 +116,8 @@ PCIe 链路代际/宽度和最大频率；GPU 进程表复用 PROCESSES 的列�
 - `S` 切换当前区域的排序键。
 - `i` 切换回环接口显示。
 - `p` 打开连接所属进程。
-- 右键提供过滤和 owner 操作。
+- 右键连接提供详情、过滤、owner 定位、网站/TCP 检查、抓包、PCAP 预览、路由/DNS、诊断、排序和区域切换。
+- 右键接口提供详情、排序、回环、路由/DNS 和诊断。
 
 ### 系统
 
@@ -257,9 +258,18 @@ ACTIVE，恢复后记录 RECOVERED。
 
 ![主题选择器](docs/images/theme.png)
 
-主题选择器列出内置主题和 `.theme` 文件；高亮主题立即应用，`Esc` 返回主菜单。
-将 `.theme` 文件放到 `~/.config/neflux/themes`（Linux）或 `%APPDATA%\neflux\themes`（Windows），
-也可设置 `NEFLUX_THEME_DIR`，或用 `theme_file = "…"` 指定单个文件。
+默认配色为 `btop`；内置配色派生自 btop 社区主题（Apache-2.0）。主题选择器列出 40+ 个由 btop 主题派生的内置配色（含 `btop`、`dracula`、`nord`、
+`gruvbox_dark`、`tokyo-night`、`kanagawa-wave`、`everforest-*`、`solarized_*` 等）以及用户
+`.theme` 文件；高亮主题立即应用，`Esc` 返回主菜单。
+
+NexusFlux 直接读取 btop `.theme` 语法（`theme[main_bg]`、`theme[cpu_start]`、`theme[upload_end]`、
+`theme[proc_misc]` 等），支持 `#RRGGBB`、`#BW` 和十进制 RGB。可放入
+`~/.config/btop/themes`、`~/.config/neflux/themes`，设置 `BTOP_THEME_DIR`/`NEFLUX_THEME_DIR`，
+或用 `theme_file = "…"` 指定单个文件。面板边框会使用 btop 的 `cpu_box`、`mem_box`、`net_box`、
+`proc_box` 颜色；圆角、渐变、透明背景和图表符号仍可在 `[display]` 中配置。
+将 `.theme` 文件放到 `~/.config/neflux/themes`、`~/.config/btop/themes`（Linux）或
+`%APPDATA%\neflux\themes`（Windows），也可设置 `NEFLUX_THEME_DIR`/`BTOP_THEME_DIR`，
+或用 `theme_file = "…"` 指定单个文件。
 主题可覆盖 CPU/内存/网络/GPU/温度/进程的渐变起止色、
 `graph_text`、`meter_bg`、follow/pause/banner 等属性，以及基础调色板。
 `graph_gradient`

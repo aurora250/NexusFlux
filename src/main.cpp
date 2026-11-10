@@ -12,6 +12,7 @@
 #include <NeFlux/gpu.hpp>
 #include <NeFlux/recording.hpp>
 #include <NeFlux/session.hpp>
+#include "net_tools.hpp"
 #include "platform/platform_backend.hpp"
 #include <NeFlux/source.hpp>
 #include <NeFlux/tags.hpp>
@@ -89,9 +90,7 @@ namespace {
     using namespace neforce;
     using namespace neforce::neflux;
 
-    bool machine_is_remote(const cli_args& args) {
-        return args.machine_.has_value() && *args.machine_ != "local";
-    }
+    bool machine_is_remote(const cli_args& args) { return args.machine_.has_value() && *args.machine_ != "local"; }
 
     connection_sample collect_remote_connections(const cli_args& args, const config& cfg, string& error) {
         auto source = create_source(args, cfg, error);
@@ -241,98 +240,6 @@ namespace {
             return export_svg_file(rendered, discovered) ? 0 : 1;
         }
         return 0;
-    }
-
-    string check_target(const string& target) {
-        if (starts_with(target.view(), "http://") || starts_with(target.view(), "https://")) {
-            const int64_t began = monotonic_ms();
-            try {
-                neforce::io_context context;
-                neforce::http::http_client client(context);
-                client.set_timeout(neforce::milliseconds(5000));
-                client.set_follow_redirects(true);
-                const auto response = client.get(target);
-                const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
-                return format("HTTP {} · {} in {:.2f}s", static_cast<int>(response.status),
-                              response.is_success() ? "success" : "failure", elapsed);
-            } catch (const exception& error) {
-                return format("HTTP check failed: {}", error.what());
-            }
-        }
-
-        string host = target;
-        const auto slash = host.find('/');
-        if (slash != string::npos) {
-            host = host.substr(0, slash);
-        }
-        uint16_t port = 80;
-        const auto colon = host.rfind(':');
-        if (colon != string::npos) {
-            const auto value = parse_u64(host.view().substr(colon + 1));
-            if (!value.has_value() || *value == 0 || *value > 65535) {
-                return format("Invalid TCP port in {}", target);
-            }
-            port = static_cast<uint16_t>(*value);
-            host = host.substr(0, colon);
-        }
-        if (host.empty()) {
-            return "Target must be a URL or host:port";
-        }
-
-        const int64_t began = monotonic_ms();
-        try {
-            neforce::io_context context;
-            neforce::tcp_client client(context);
-            client.set_connect_timeout(neforce::milliseconds(4000));
-            const bool connected = client.connect(host, neforce::ports(port));
-            const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
-            if (!connected) {
-                return format("TCP {}:{} failed ({:.2f}s)", host, static_cast<uint64_t>(port), elapsed);
-            }
-            client.disconnect();
-            return format("TCP {}:{} connected in {:.2f}s", host, static_cast<uint64_t>(port), elapsed);
-        } catch (const exception& error) {
-            const double elapsed = static_cast<double>(monotonic_ms() - began) / 1000.0;
-            return format("TCP {}:{} failed: {} ({:.2f}s)", host, static_cast<uint64_t>(port), error.what(), elapsed);
-        }
-    }
-
-    string read_capture(const string& file_path) {
-        const auto text = read_text_file(file_path);
-        if (!text.has_value() || text->size() < 24) {
-            return format("Cannot read PCAP: {}", file_path);
-        }
-        const auto byte_at = [&text](size_t offset) -> uint8_t { return static_cast<uint8_t>((*text)[offset]); };
-        const uint32_t magic = static_cast<uint32_t>(byte_at(0)) | (static_cast<uint32_t>(byte_at(1)) << 8) |
-                               (static_cast<uint32_t>(byte_at(2)) << 16) | (static_cast<uint32_t>(byte_at(3)) << 24);
-        const bool little = magic == 0xA1B2C3D4;
-        const bool nano = magic == 0xA1B23C4D;
-        if (!little && !nano) {
-            return "Not a little-endian PCAP file";
-        }
-        const auto read32 = [&text](size_t offset) {
-            return static_cast<uint32_t>(static_cast<uint8_t>((*text)[offset])) |
-                   (static_cast<uint32_t>(static_cast<uint8_t>((*text)[offset + 1])) << 8) |
-                   (static_cast<uint32_t>(static_cast<uint8_t>((*text)[offset + 2])) << 16) |
-                   (static_cast<uint32_t>(static_cast<uint8_t>((*text)[offset + 3])) << 24);
-        };
-        string out = format("PCAP {} · linktype {} · {} bytes\n", file_path, read32(20), text->size());
-        size_t offset = 24;
-        size_t index = 0;
-        while (offset + 16 <= text->size() && index < 60) {
-            const uint32_t seconds = read32(offset);
-            const uint32_t captured = read32(offset + 8);
-            const uint32_t original = read32(offset + 12);
-            offset += 16;
-            if (captured > text->size() - offset) {
-                out.append("truncated packet record\n");
-                break;
-            }
-            out.append(format("#{} t={} len={}/{} cap={}\n", index + 1, seconds, original, captured, captured));
-            offset += captured;
-            ++index;
-        }
-        return out;
     }
 
     void filter_network_sample(connection_sample& sample, const cli_args& args) {
@@ -555,7 +462,7 @@ namespace {
     local commands="monitor snapshot sample record replay export gpu network doctor config completions man update"
     local options="--interval --theme --view --gpu-panel --config --no-gpu --samples --width --height --ascii --no-color --threads --process-network --read-only --full-sampling --layout --min-free-mib --min-total-mib --max-gpu-utilization --max-memory-utilization --no-config-exec --help --version"
     case "$prev" in
-        --theme) COMPREPLY=($(compgen -W "midnight nord ember black white graphite ocean forest sand" -- "$cur")); return 0 ;;
+        --theme) COMPREPLY=($(compgen -W "btop midnight nord dracula gruvbox_dark tokyo-night monokai solarized_dark" -- "$cur")); return 0 ;;
         --view) COMPREPLY=($(compgen -W "overview processes gpu storage network system containers services explorer history events" -- "$cur")); return 0 ;;
         --gpu-panel) COMPREPLY=($(compgen -W "summary history device" -- "$cur")); return 0 ;;
         --layout) COMPREPLY=($(compgen -W "balanced compute storage minimal" -- "$cur")); return 0 ;;
@@ -580,7 +487,7 @@ complete -F _nexus_flux_complete nexus-flux neflux
 _nexus_flux() {
     _arguments \
         '(-i --interval)'{-i,--interval}'[sampling interval in milliseconds]:milliseconds:' \
-        '--theme[color theme]:theme:(midnight nord ember black white graphite ocean forest sand)' \
+        '--theme[color theme]:theme:(btop midnight nord dracula gruvbox_dark tokyo-night monokai solarized_dark)' \
         '--view[initial page]:view:(overview processes gpu storage network system containers services explorer history events)' \
         '--gpu-panel[GPU display]:panel:(summary history device)' \
         '--config[alternate configuration file]:file:_files' \
@@ -622,7 +529,7 @@ _nexus_flux "$@"
         if (shell == "fish") {
             return R"FISH(complete -c nexus-flux -f -a "monitor snapshot sample record replay export gpu network doctor config completions man update"
 complete -c nexus-flux -s i -l interval -d "Sampling interval in milliseconds" -x -a "250 500 1000 2000 5000"
-complete -c nexus-flux -l theme -d "Color theme" -x -a "midnight nord ember black white graphite ocean forest sand"
+complete -c nexus-flux -l theme -d "Color theme" -x -a "btop midnight nord dracula gruvbox_dark tokyo-night monokai solarized_dark"
 complete -c nexus-flux -l view -d "Initial page" -x -a "overview processes gpu storage network system containers services explorer history events"
 complete -c nexus-flux -l gpu-panel -d "GPU display" -x -a "summary history device"
 complete -c nexus-flux -l config -d "Alternate configuration file" -r
@@ -687,7 +594,7 @@ exports JSON, NDJSON, CSV and SVG.
 Sampling interval, 250 to 10000 ms.
 .TP
 .B \-\-theme \fINAME\fR
-midnight, nord, ember, black, white, graphite, ocean, forest or sand.
+btop, midnight, nord, dracula, gruvbox_dark, tokyo-night, monokai, solarized_dark and 40+ more (see `config themes`/theme menu).
 .TP
 .B \-\-view \fINAME\fR
 overview, processes, gpu, storage, network, system, containers, services, history or events.
@@ -939,7 +846,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args.command_ == cli_command::network_read) {
-        out(read_capture(args.file_));
+        out(summarize_capture(args.file_));
         return 0;
     }
     if (args.command_ == cli_command::network_capture) {

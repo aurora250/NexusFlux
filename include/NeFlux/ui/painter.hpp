@@ -57,32 +57,53 @@ namespace neforce::neflux::ui {
         color red_;       ///< 危险
         color selection_; ///< 选中行底色
 
-        color cpu_start_;   ///< CPU 渐变起点
-        color cpu_mid_;     ///< CPU 渐变中点
-        color cpu_end_;     ///< CPU 渐变终点
-        color mem_start_;   ///< 内存渐变起点
-        color mem_mid_;     ///< 内存渐变中点
-        color mem_end_;     ///< 内存渐变终点
-        color net_start_;   ///< 网络渐变起点
-        color net_mid_;     ///< 网络渐变中点
-        color net_end_;     ///< 网络渐变终点
-        color gpu_start_;   ///< GPU 渐变起点
-        color gpu_mid_;     ///< GPU 渐变中点
-        color gpu_end_;     ///< GPU 渐变终点
-        color temp_start_;  ///< 温度渐变起点
-        color temp_mid_;    ///< 温度渐变中点
-        color temp_end_;    ///< 温度渐变终点
-        color proc_start_;  ///< 进程渐变起点
-        color proc_mid_;    ///< 进程渐变中点
-        color proc_end_;    ///< 进程渐变终点
-        color meter_bg_;    ///< 仪表背景
-        color graph_text_;  ///< 图表文字
-        color followed_bg_; ///< 跟随进程底色
-        color followed_fg_; ///< 跟随进程文字
-        color pause_bg_;    ///< 暂停横幅底色
-        color follow_bg_;   ///< 跟随横幅底色
-        color banner_bg_;   ///< 暂停+跟随横幅底色
-        color banner_fg_;   ///< 横幅文字
+        color cpu_start_;       ///< CPU 渐变起点
+        color cpu_mid_;         ///< CPU 渐变中点
+        color cpu_end_;         ///< CPU 渐变终点
+        color mem_start_;       ///< 内存渐变起点
+        color mem_mid_;         ///< 内存渐变中点
+        color mem_end_;         ///< 内存渐变终点
+        color net_start_;       ///< 网络渐变起点
+        color net_mid_;         ///< 网络渐变中点
+        color net_end_;         ///< 网络渐变终点
+        color gpu_start_;       ///< GPU 渐变起点
+        color gpu_mid_;         ///< GPU 渐变中点
+        color gpu_end_;         ///< GPU 渐变终点
+        color temp_start_;      ///< 温度渐变起点
+        color temp_mid_;        ///< 温度渐变中点
+        color temp_end_;        ///< 温度渐变终点
+        color proc_start_;      ///< 进程渐变起点
+        color proc_mid_;        ///< 进程渐变中点
+        color proc_end_;        ///< 进程渐变终点
+        color meter_bg_;        ///< 仪表背景
+        color graph_text_;      ///< 图表文字
+        color followed_bg_;     ///< 跟随进程底色
+        color followed_fg_;     ///< 跟随进程文字
+        color pause_bg_;        ///< 暂停横幅底色
+        color follow_bg_;       ///< 跟随横幅底色
+        color banner_bg_;       ///< 暂停+跟随横幅底色
+        color banner_fg_;       ///< 横幅文字
+        color cpu_box_;         ///< CPU 面板边框
+        color mem_box_;         ///< 内存/磁盘面板边框
+        color net_box_;         ///< 网络面板边框
+        color proc_box_;        ///< 进程面板边框
+        color div_line_;        ///< 分隔线
+        color free_start_;      ///< 空闲内存渐变起点
+        color free_mid_;        ///< 空闲内存渐变中点
+        color free_end_;        ///< 空闲内存渐变终点
+        color cached_start_;    ///< 缓存内存渐变起点
+        color cached_mid_;      ///< 缓存内存渐变中点
+        color cached_end_;      ///< 缓存内存渐变终点
+        color available_start_; ///< 可用内存渐变起点
+        color available_mid_;   ///< 可用内存渐变中点
+        color available_end_;   ///< 可用内存渐变终点
+        color used_start_;      ///< 已用内存渐变起点
+        color used_mid_;        ///< 已用内存渐变中点
+        color used_end_;        ///< 已用内存渐变终点
+        color upload_start_;    ///< 上传渐变起点
+        color upload_mid_;      ///< 上传渐变中点
+        color upload_end_;      ///< 上传渐变终点
+        color proc_misc_;       ///< 进程杂项/详情颜色
     };
 
     /**

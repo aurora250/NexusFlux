@@ -41,4 +41,33 @@ namespace neforce::neflux::platform {
         return {};
     }
 
+    vector<string> process_file_locks(uint32_t pid, string& error) {
+        static_cast<void>(pid);
+        error = "Advisory file locks are not exposed on Windows.";
+        return {};
+    }
+
+    vector<string> process_trace(uint32_t pid, string& error) {
+        static_cast<void>(pid);
+        error = "System-call tracing is not implemented on Windows.";
+        return {};
+    }
+
+    vector<string> process_backtrace(uint32_t pid, string& error) {
+        static_cast<void>(pid);
+        error = "Process backtraces are not implemented on Windows.";
+        return {};
+    }
+
+    vector<string> kernel_messages(string& error) {
+        error = "Kernel messages are not exposed on Windows.";
+        return {};
+    }
+
+    void set_io_priority(uint32_t pid, int priority, string& error) {
+        static_cast<void>(pid);
+        static_cast<void>(priority);
+        error = "I/O priority is not supported on Windows.";
+    }
+
 } // namespace neforce::neflux::platform

@@ -15,9 +15,9 @@
                         apply_setting_choice(static_cast<size_t>(*row_value), action.substr(row_end + 1));
                         settings_index_ = static_cast<size_t>(*row_value);
                         popup_parent_ = popup_kind::none;
-                        free_scroll_ = false;
+                        settings_free_scroll_ = false;
                         popup_ = popup_kind::settings;
-                        popup_scroll_ = 0;
+                        settings_scroll_ = 0;
                     }
                 } else if (action == "vm_detail") {
                     popup_ = popup_kind::none;
@@ -91,6 +91,70 @@
                 } else if (action == "detail") {
                     popup_ = popup_kind::none;
                     open_detail();
+                } else if (action == "mark_process") {
+                    toggle_mark_selected();
+                    popup_ = popup_kind::none;
+                } else if (action == "mark_descendants") {
+                    mark_selected_descendants();
+                    popup_ = popup_kind::none;
+                } else if (action == "clear_marks") {
+                    clear_process_marks();
+                    popup_ = popup_kind::none;
+                } else if (action == "own_only") {
+                    own_only_ = !own_only_;
+                    status_ = own_only_ ? "Showing own processes only" : "Showing all users";
+                    popup_ = popup_kind::none;
+                } else if (action == "gpu_only") {
+                    gpu_only_ = !gpu_only_;
+                    status_ = gpu_only_ ? "Showing GPU processes only" : "Showing all processes";
+                    popup_ = popup_kind::none;
+                } else if (action == "threads") {
+                    cfg_.collection_.show_threads_ = !cfg_.collection_.show_threads_;
+                    status_ = cfg_.collection_.show_threads_ ? "Threads shown" : "Threads hidden";
+                    popup_ = popup_kind::none;
+                } else if (action == "kernel_threads") {
+                    cfg_.collection_.show_kernel_threads_ = !cfg_.collection_.show_kernel_threads_;
+                    status_ = cfg_.collection_.show_kernel_threads_ ? "Kernel threads shown" : "Kernel threads hidden";
+                    popup_ = popup_kind::none;
+                } else if (action == "columns") {
+                    open_columns_menu();
+                } else if (action == "sort_cpu" || action == "sort_memory") {
+                    sort_index_ = action == "sort_memory" ? 1 : 0;
+                    reverse_ = true;
+                    sync_sort_config();
+                    popup_ = popup_kind::none;
+                } else if (action == "sort") {
+                    open_sort_menu();
+                } else if (action == "process_side_panel") {
+                    process_side_panel_ = !process_side_panel_;
+                    status_ = process_side_panel_ ? "Process side panel on · D close" : "Process side panel off";
+                    popup_ = popup_kind::none;
+                } else if (action == "labels") {
+                    popup_ = popup_kind::none;
+                    show_process_labels();
+                } else if (action == "filter_label") {
+                    filter_by_label();
+                } else if (action == "io_priority") {
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "I/O priority (0..7)";
+                    prompt_action_ = prompt_action::io_priority;
+                    prompt_text_ = "4";
+                    prompt_cursor_ = prompt_text_.size();
+                } else if (action == "file_locks") {
+                    popup_ = popup_kind::none;
+                    show_process_locks();
+                } else if (action == "trace_process") {
+                    popup_ = popup_kind::none;
+                    show_process_trace();
+                } else if (action == "backtrace_process") {
+                    popup_ = popup_kind::none;
+                    show_process_backtrace();
+                } else if (action == "diagnose_process") {
+                    popup_ = popup_kind::none;
+                    show_process_diagnostics();
+                } else if (action == "kernel_messages") {
+                    popup_ = popup_kind::none;
+                    show_kernel_messages();
                 } else if (action == "follow") {
                     popup_ = popup_kind::none;
                     follow_process_ = true;
@@ -143,14 +207,88 @@
                             }
                         }
                     }
+                } else if (action == "net_labels") {
+                    popup_ = popup_kind::none;
+                    show_connection_labels();
+                } else if (action == "net_filter_label") {
+                    filter_connection_label();
                 } else if (action == "net_toggle_loopback") {
                     popup_ = popup_kind::none;
                     cfg_.show_loopback_ = !cfg_.show_loopback_;
                     status_ = cfg_.show_loopback_ ? "Loopback interfaces shown" : "Loopback interfaces hidden";
                 } else if (action == "net_sort_rx" || action == "net_sort_tx" || action == "net_sort_name") {
-                    network_section_ = 0;
-                    network_sort_ = action == "net_sort_tx" ? 1 : (action == "net_sort_name" ? 2 : 0);
+                    if (network_section_ == 1) {
+                        interface_sort_ = action == "net_sort_tx" ? 1 : (action == "net_sort_name" ? 2 : 0);
+                    } else {
+                        network_sort_ = action == "net_sort_tx" ? 1 : 0;
+                    }
                     popup_ = popup_kind::none;
+                } else if (action == "net_sort_state") {
+                    if (network_section_ == 1) {
+                        interface_sort_ = 3;
+                    } else {
+                        network_sort_ = 2;
+                    }
+                    popup_ = popup_kind::none;
+                } else if (action == "net_sort_speed") {
+                    interface_sort_ = 4;
+                    popup_ = popup_kind::none;
+                } else if (action == "net_sort_local") {
+                    network_sort_ = 3;
+                    popup_ = popup_kind::none;
+                } else if (action == "net_sort_pid") {
+                    network_sort_ = 4;
+                    popup_ = popup_kind::none;
+                } else if (action == "net_toggle_section") {
+                    network_section_ = network_section_ == 0 ? 1 : 0;
+                    selected_ = 0;
+                    selected_connection_ = 0;
+                    selection_restore_pending_ = true;
+                    status_ = network_section_ == 0 ? "Network: connections" : "Network: interfaces";
+                    popup_ = popup_kind::none;
+                } else if (action == "net_routes") {
+                    popup_ = popup_kind::none;
+                    show_network_routes();
+                } else if (action == "net_diagnose") {
+                    popup_ = popup_kind::none;
+                    show_network_diagnostics();
+                } else if (action == "net_test") {
+                    string target;
+                    const auto rows = filtered_connections();
+                    if (!rows.empty() && selected_connection_ < rows.size()) {
+                        const auto& item = snap_.connections_.connections_[rows[selected_connection_]];
+                        const string& endpoint = item.state_ == "LISTEN" ? item.local_ : item.remote_;
+                        const auto colon = endpoint.rfind(':');
+                        if (colon != string::npos) {
+                            string host = endpoint.substr(0, colon);
+                            const string port = endpoint.substr(colon + 1);
+                            if (host == "0.0.0.0" || host == "*" || host.empty()) {
+                                host = "127.0.0.1";
+                            } else if (host == "::" || host == "[::]") {
+                                host = "[::1]";
+                            }
+                            if (port != "0") {
+                                target = host + ":" + port;
+                            }
+                        }
+                    }
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "Test URL or host:port";
+                    prompt_action_ = prompt_action::network_target;
+                    prompt_text_ = target;
+                    prompt_cursor_ = prompt_text_.size();
+                } else if (action == "net_capture") {
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "Packet capture output (.pcap)";
+                    prompt_action_ = prompt_action::capture_path;
+                    prompt_text_ = "/tmp/nexus-flux-capture.pcap";
+                    prompt_cursor_ = prompt_text_.size();
+                } else if (action == "net_open_capture") {
+                    popup_ = popup_kind::prompt;
+                    popup_title_ = "Open PCAP file";
+                    prompt_action_ = prompt_action::capture_open;
+                    prompt_text_ = "/tmp/nexus-flux-capture.pcap";
+                    prompt_cursor_ = prompt_text_.size();
                 } else if (action == "storage_detail") {
                     popup_ = popup_kind::none;
                     open_storage_detail();
@@ -185,9 +323,15 @@
                     popup_scroll_ = 0;
                 } else if (action == "settings") {
                     popup_parent_ = popup_kind::main_menu;
-                    free_scroll_ = false;
+                    settings_free_scroll_ = false;
                     popup_ = popup_kind::settings;
                     settings_index_ = 0;
+                    settings_scroll_ = 0;
+                } else if (action == "sort_cpu" || action == "sort_memory") {
+                    sort_index_ = action == "sort_memory" ? 1 : 0;
+                    reverse_ = true;
+                    sync_sort_config();
+                    popup_ = popup_kind::none;
                 } else if (action == "sort") {
                     open_sort_menu();
                 } else if (action == "reverse") {
@@ -424,7 +568,12 @@
                             static_cast<int64_t>(cfg_.gpu_temperature_warning_) + static_cast<int64_t>(direction * 5);
                     cfg_.gpu_temperature_warning_ = static_cast<uint32_t>(
                             neforce::clamp(next, static_cast<int64_t>(0), static_cast<int64_t>(150)));
-                } else if (settings_index_ >= 17) {
+                } else if (settings_index_ == 17) {
+                    sort_index_ = (sort_index_ + (direction > 0 ? 1 : sizeof(sorts) / sizeof(sorts[0]) - 1)) %
+                                  (sizeof(sorts) / sizeof(sorts[0]));
+                    reverse_ = !sorts[sort_index_].descending;
+                    sync_sort_config();
+                } else if (settings_index_ >= 18) {
                     vector<string> networks;
                     for (const auto& item: snap_.networks_) {
                         networks.push_back(item.name_);
@@ -433,7 +582,7 @@
                     for (const auto& item: snap_.sensors_) {
                         sensors.push_back(item.name_);
                     }
-                    cfg_.display_.adjust(settings_index_ - 17, direction > 0, networks, sensors);
+                    cfg_.display_.adjust(settings_index_ - 18, direction > 0, networks, sensors);
                 }
             }
 
@@ -468,6 +617,12 @@
                             apply_nice();
                         } else if (prompt_action_ == prompt_action::affinity) {
                             apply_affinity();
+                        } else if (prompt_action_ == prompt_action::network_target) {
+                            run_network_check(prompt_text_);
+                        } else if (prompt_action_ == prompt_action::capture_path) {
+                            run_network_capture(prompt_text_);
+                        } else if (prompt_action_ == prompt_action::capture_open) {
+                            show_capture_file(prompt_text_);
                         }
                         return true;
                     }
@@ -521,14 +676,14 @@
                         return true;
                     }
                     if (key == tui::key_event::type::up) {
-                        free_scroll_ = false;
+                        settings_free_scroll_ = false;
                         if (settings_index_ > 0) {
                             --settings_index_;
                         }
                         return true;
                     }
                     if (key == tui::key_event::type::down) {
-                        free_scroll_ = false;
+                        settings_free_scroll_ = false;
                         settings_index_ = neforce::min(settings_index_ + 1, settings_rows().size() - 1);
                         return true;
                     }
@@ -554,7 +709,7 @@
                     if (popup_parent_ == popup_kind::main_menu) {
                         open_main_menu();
                     } else if (popup_parent_ == popup_kind::settings) {
-                        free_scroll_ = false;
+                        settings_free_scroll_ = false;
                         popup_ = popup_kind::settings;
                         popup_parent_ = popup_kind::none;
                     } else {
@@ -855,9 +1010,10 @@
                 }
                 if (key == tui::key_event::type::F2) {
                     popup_parent_ = popup_kind::none;
-                    free_scroll_ = false;
+                    settings_free_scroll_ = false;
                     popup_ = popup_kind::settings;
                     settings_index_ = 0;
+                    settings_scroll_ = 0;
                     return true;
                 }
                 if (key == tui::key_event::type::F3) {

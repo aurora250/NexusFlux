@@ -67,6 +67,8 @@ namespace neforce::neflux::platform {
 
     NEFORCE_NODISCARD vector<string> capture_packets(const cli_args& args);
 
+    NEFORCE_NODISCARD string network_routes_dns();
+
     NEFORCE_NODISCARD vector<string> process_environment(uint32_t pid, string& error);
 
     NEFORCE_NODISCARD vector<string> process_open_files(uint32_t pid, string& error);
@@ -76,6 +78,16 @@ namespace neforce::neflux::platform {
     void service_action(const string& name, const string& action, string& error);
 
     NEFORCE_NODISCARD vector<string> service_logs(const string& name, size_t max_lines, string& error);
+
+    NEFORCE_NODISCARD vector<string> process_file_locks(uint32_t pid, string& error);
+
+    NEFORCE_NODISCARD vector<string> process_trace(uint32_t pid, string& error);
+
+    NEFORCE_NODISCARD vector<string> process_backtrace(uint32_t pid, string& error);
+
+    NEFORCE_NODISCARD vector<string> kernel_messages(string& error);
+
+    void set_io_priority(uint32_t pid, int priority, string& error);
 
     NEFORCE_NODISCARD string nvml_library_name();
 

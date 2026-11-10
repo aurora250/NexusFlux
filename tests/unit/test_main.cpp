@@ -39,6 +39,7 @@
 #endif
 #include <NeFlux/tags.hpp>
 #include <NeFlux/ui/app.hpp>
+#include <NeFlux/ui/painter.hpp>
 #include <NeFlux/util.hpp>
 #include <cstdio> // for CHECK macro
 #include <NeForce/core/file/filesystem.hpp>
@@ -162,6 +163,39 @@ namespace {
             action.value_ = format("{}", *mask);
             CHECK(source->invoke_action(action, error));
         }
+    }
+
+    void test_display_settings_indices() {
+        display_config display;
+        const bool transparent = display.transparent_background_;
+        display.adjust(18, true, {}, {});
+        CHECK(display.transparent_background_ != transparent);
+        const bool rounded = display.rounded_corners_;
+        display.adjust(21, true, {}, {});
+        CHECK(display.rounded_corners_ != rounded);
+    }
+
+    void test_btop_theme_presets() {
+        const auto names = config::themes();
+        CHECK(names.size() >= 40);
+        const auto has_theme = [&](const char* name) {
+            for (const auto& item: names) {
+                if (item == name) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        CHECK(has_theme("btop"));
+        CHECK(has_theme("dracula"));
+        CHECK(has_theme("tokyo-night"));
+        const ui::palette btop = ui::make_palette("btop", json::object());
+        CHECK(btop.bg_.R() == 0 && btop.bg_.G() == 0 && btop.bg_.B() == 0);
+        const ui::palette dracula = ui::make_palette("dracula", json::object());
+        CHECK(dracula.bg_.R() == 0x28 && dracula.bg_.G() == 0x2a && dracula.bg_.B() == 0x36);
+        CHECK(dracula.text_.R() == 0xf8 && dracula.text_.G() == 0xf8 && dracula.text_.B() == 0xf2);
+        CHECK(dracula.cpu_box_.R() == 0xbd && dracula.cpu_box_.G() == 0x93 && dracula.cpu_box_.B() == 0xf9);
+        CHECK(format("{:5.1f}%", 100.0) == "100.0%");
     }
 
     void test_json() {
@@ -522,8 +556,8 @@ namespace {
         CHECK(frames.find("black") != string::npos);
         CHECK(frames.find("●") != string::npos);
         CHECK(frames.find("Settings") != string::npos);
-        CHECK(ui::headless_probe_background("#wait|#esc|\\x1b[B|\\x1b[B|\\x1b[B|\\r|#wait|#esc", 40, 22) ==
-              ui::headless_probe_background("#esc|\x1b[<0;40;16M|#wait|#esc", 40, 22));
+        CHECK(ui::headless_probe_background("#wait|#esc|\\x1b[B|\\x1b[B|\\x1b[B|\\r|#wait|#esc", 2, 10) ==
+              ui::headless_probe_background("#esc|\x1b[<0;40;16M|#wait|#esc", 2, 10));
         const string choice = ui::headless_probe("#esc|\x1b[<0;40;18M|\x1b[<0;40;14M");
         CHECK(choice.find("Setting · Theme") != string::npos);
         CHECK(choice.find("midnight") != string::npos);
@@ -1255,6 +1289,11 @@ namespace {
         const string click = "\x1b[<0;6;10M";
         CHECK(ui::headless_probe_seeded_background(value, data, "processes", click.view(), 5, 9) == selected);
         CHECK(ui::headless_probe_seeded_background(value, data, "processes", click.view(), 5, 8) == plain);
+        const string menu = ui::headless_probe_seeded(value, data, "processes", "\x1b[<2;6;10M");
+        CHECK(menu.find("Full process details") != string::npos);
+        CHECK(menu.find("Set CPU affinity") != string::npos);
+        CHECK(menu.find("Mark descendants") != string::npos);
+        CHECK(menu.find("Kill (SIGKILL)") != string::npos);
     }
 
     void test_chrome_background() {

@@ -82,6 +82,7 @@ set(NEFLUX_PLATFORM_SOURCE
 set(NEFLUX_SOURCES
     src/cli.cpp
     src/extras.cpp
+    src/net_tools.cpp
     src/platform/${NEXUSFLUX_PLATFORM_NAME}/advanced.cpp
     src/platform/${NEXUSFLUX_PLATFORM_NAME}/collect.cpp
     src/platform/${NEXUSFLUX_PLATFORM_NAME}/discovery.cpp

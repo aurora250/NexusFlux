@@ -75,6 +75,32 @@ namespace neforce::neflux::ui {
             return codepoint::decode_utf8(reinterpret_cast<const byte_t*>(text.data()), index, text.size());
         }
 
+#include "btop_themes.inc"
+
+        void apply_palette_style_defaults(palette& p) {
+            p.cpu_box_ = p.border_;
+            p.mem_box_ = p.border_;
+            p.net_box_ = p.border_;
+            p.proc_box_ = p.border_;
+            p.div_line_ = p.border_;
+            p.free_start_ = p.mem_start_;
+            p.free_mid_ = p.mem_mid_;
+            p.free_end_ = p.mem_end_;
+            p.cached_start_ = p.net_start_;
+            p.cached_mid_ = p.net_mid_;
+            p.cached_end_ = p.net_end_;
+            p.available_start_ = p.amber_;
+            p.available_mid_ = p.amber_;
+            p.available_end_ = p.red_;
+            p.used_start_ = p.mem_start_;
+            p.used_mid_ = p.mem_mid_;
+            p.used_end_ = p.mem_end_;
+            p.upload_start_ = p.net_start_;
+            p.upload_mid_ = p.net_mid_;
+            p.upload_end_ = p.net_end_;
+            p.proc_misc_ = p.purple_;
+        }
+
         void apply_palette_defaults(palette& p) {
             p.cpu_start_ = p.mint_;
             p.cpu_mid_ = p.amber_;
@@ -102,12 +128,23 @@ namespace neforce::neflux::ui {
             p.follow_bg_ = blend(p.panel_, p.mint_);
             p.banner_bg_ = blend(p.panel_, p.purple_);
             p.banner_fg_ = p.text_;
+            apply_palette_style_defaults(p);
         }
     } // namespace
 
     palette make_palette(const string& name, const json& custom) {
         palette p{};
-        if (name == "black") {
+        bool btop_theme = false;
+        for (const auto& entry: btop_palettes) {
+            if (name == entry.name_) {
+                p = entry.value_;
+                btop_theme = true;
+                break;
+            }
+        }
+        if (btop_theme) {
+            apply_palette_style_defaults(p);
+        } else if (name == "black") {
             p = {color{0, 0, 0},       color{10, 10, 10},    color{55, 55, 60},    color{160, 166, 176},
                  color{235, 238, 243}, color{105, 205, 171}, color{124, 179, 239}, color{189, 163, 228},
                  color{226, 186, 111}, color{239, 146, 154}, color{25, 41, 48}};
@@ -144,7 +181,9 @@ namespace neforce::neflux::ui {
                  color{215, 226, 241}, color{124, 184, 165}, color{134, 166, 204}, color{173, 157, 198},
                  color{204, 179, 141}, color{216, 151, 160}, color{29, 51, 70}};
         }
-        apply_palette_defaults(p);
+        if (!btop_theme) {
+            apply_palette_defaults(p);
+        }
         for (const auto& member: custom.as_object()) {
             if (!member.second.is_string() || member.second.as_string().size() != 7) {
                 continue;
@@ -237,6 +276,48 @@ namespace neforce::neflux::ui {
                 p.banner_bg_ = value;
             } else if (member.first == "banner_fg" || member.first == "proc_banner_fg") {
                 p.banner_fg_ = value;
+            } else if (member.first == "cpu_box") {
+                p.cpu_box_ = value;
+            } else if (member.first == "mem_box") {
+                p.mem_box_ = value;
+            } else if (member.first == "net_box") {
+                p.net_box_ = value;
+            } else if (member.first == "proc_box") {
+                p.proc_box_ = value;
+            } else if (member.first == "div_line") {
+                p.div_line_ = value;
+            } else if (member.first == "free_start") {
+                p.free_start_ = value;
+            } else if (member.first == "free_mid") {
+                p.free_mid_ = value;
+            } else if (member.first == "free_end") {
+                p.free_end_ = value;
+            } else if (member.first == "cached_start") {
+                p.cached_start_ = value;
+            } else if (member.first == "cached_mid") {
+                p.cached_mid_ = value;
+            } else if (member.first == "cached_end") {
+                p.cached_end_ = value;
+            } else if (member.first == "available_start") {
+                p.available_start_ = value;
+            } else if (member.first == "available_mid") {
+                p.available_mid_ = value;
+            } else if (member.first == "available_end") {
+                p.available_end_ = value;
+            } else if (member.first == "used_start") {
+                p.used_start_ = value;
+            } else if (member.first == "used_mid") {
+                p.used_mid_ = value;
+            } else if (member.first == "used_end") {
+                p.used_end_ = value;
+            } else if (member.first == "upload_start") {
+                p.upload_start_ = value;
+            } else if (member.first == "upload_mid") {
+                p.upload_mid_ = value;
+            } else if (member.first == "upload_end") {
+                p.upload_end_ = value;
+            } else if (member.first == "proc_misc") {
+                p.proc_misc_ = value;
             }
         }
         return p;
@@ -260,12 +341,18 @@ namespace neforce::neflux::ui {
         colors.red_ = colors.text_;
         colors.selection_ = gray(source.selection_);
         for (color* value:
-             {&colors.cpu_start_,   &colors.cpu_mid_,     &colors.cpu_end_,    &colors.mem_start_, &colors.mem_mid_,
-              &colors.mem_end_,     &colors.net_start_,   &colors.net_mid_,    &colors.net_end_,   &colors.gpu_start_,
-              &colors.gpu_mid_,     &colors.gpu_end_,     &colors.temp_start_, &colors.temp_mid_,  &colors.temp_end_,
-              &colors.proc_start_,  &colors.proc_mid_,    &colors.proc_end_,   &colors.meter_bg_,  &colors.graph_text_,
-              &colors.followed_bg_, &colors.followed_fg_, &colors.pause_bg_,   &colors.follow_bg_, &colors.banner_bg_,
-              &colors.banner_fg_}) {
+             {&colors.cpu_start_,   &colors.cpu_mid_,         &colors.cpu_end_,       &colors.mem_start_,
+              &colors.mem_mid_,     &colors.mem_end_,         &colors.net_start_,     &colors.net_mid_,
+              &colors.net_end_,     &colors.gpu_start_,       &colors.gpu_mid_,       &colors.gpu_end_,
+              &colors.temp_start_,  &colors.temp_mid_,        &colors.temp_end_,      &colors.proc_start_,
+              &colors.proc_mid_,    &colors.proc_end_,        &colors.meter_bg_,      &colors.graph_text_,
+              &colors.followed_bg_, &colors.followed_fg_,     &colors.pause_bg_,      &colors.follow_bg_,
+              &colors.banner_bg_,   &colors.banner_fg_,       &colors.cpu_box_,       &colors.mem_box_,
+              &colors.net_box_,     &colors.proc_box_,        &colors.div_line_,      &colors.free_start_,
+              &colors.free_mid_,    &colors.free_end_,        &colors.cached_start_,  &colors.cached_mid_,
+              &colors.cached_end_,  &colors.available_start_, &colors.available_mid_, &colors.available_end_,
+              &colors.used_start_,  &colors.used_mid_,        &colors.used_end_,      &colors.upload_start_,
+              &colors.upload_mid_,  &colors.upload_end_,      &colors.proc_misc_}) {
             *value = gray(*value);
         }
         return colors;
@@ -478,17 +565,27 @@ namespace neforce::neflux::ui {
         } else {
             canvas_->fill(area.x_, area.y_, area.w_, area.h_, " ", background_style);
         }
-        const tui::style border = make_style(palette_.border_, background);
+        color outline = palette_.border_;
+        if (title.find("CPU") != string_view::npos) {
+            outline = palette_.cpu_box_;
+        } else if (title.find("MEM") != string_view::npos || title.find("DISK") != string_view::npos) {
+            outline = palette_.mem_box_;
+        } else if (title.find("NET") != string_view::npos) {
+            outline = palette_.net_box_;
+        } else if (title.find("PROC") != string_view::npos) {
+            outline = palette_.proc_box_;
+        }
+        const tui::style border = make_style(outline, background);
         const bool ascii = ascii_;
         const bool rounded = rounded_ && !ascii;
         put(area.x_, area.y_, codepoint(ascii ? U'+' : (rounded ? U'╭' : U'┌')), border);
         put(area.right() - 1, area.y_, codepoint(ascii ? U'+' : (rounded ? U'╮' : U'┐')), border);
         put(area.x_, area.bottom() - 1, codepoint(ascii ? U'+' : (rounded ? U'╰' : U'└')), border);
         put(area.right() - 1, area.bottom() - 1, codepoint(ascii ? U'+' : (rounded ? U'╯' : U'┘')), border);
-        hline(area.x_ + 1, area.y_, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
-        hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", palette_.border_, background);
-        vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
-        vline(area.right() - 1, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", palette_.border_, background);
+        hline(area.x_ + 1, area.y_, area.w_ - 2, ascii ? "-" : "─", outline, background);
+        hline(area.x_ + 1, area.bottom() - 1, area.w_ - 2, ascii ? "-" : "─", outline, background);
+        vline(area.x_, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", outline, background);
+        vline(area.right() - 1, area.y_ + 1, area.h_ - 2, ascii ? "|" : "│", outline, background);
         const string clipped_title = title.empty() ? string{} : truncate_display(title, neforce::max(0, area.w_ - 6));
         if (grid_ != nullptr) {
             pane entry;

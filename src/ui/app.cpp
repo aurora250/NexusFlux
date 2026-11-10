@@ -15,6 +15,7 @@
 #include <NeFlux/session.hpp>
 #include <NeFlux/util.hpp>
 #include "platform/platform_backend.hpp"
+#include "net_tools.hpp"
 #include <NeForce/core/async/atomic.hpp>
 #include <NeForce/core/async/io_context.hpp>
 #include <NeForce/core/async/mutex.hpp>
@@ -198,6 +199,11 @@ namespace neforce::neflux::ui {
                 string target;
                 if (key == "main_bg") {
                     target = "background";
+                    // btop has one global background; keep panel backgrounds in sync unless
+                    // the user explicitly supplied a panel color.
+                    if (!custom.contains("panel")) {
+                        custom.set("panel", json(value));
+                    }
                 } else if (key == "main_fg") {
                     target = "text";
                 } else if (key == "title") {
@@ -209,10 +215,10 @@ namespace neforce::neflux::ui {
                 } else if (key == "inactive_fg") {
                     target = "muted";
                 } else if (key == "proc_misc") {
-                    target = "amber";
+                    target = "proc_misc";
                 } else if (key == "div_line" || key == "cpu_box" || key == "mem_box" || key == "net_box" ||
                            key == "proc_box") {
-                    target = "border";
+                    target = key;
                 } else if (key == "selected_fg") {
                     target = "text";
                 } else if (key == "graph_text" || key == "meter_bg" || key == "followed_bg" || key == "followed_fg" ||
@@ -234,6 +240,17 @@ namespace neforce::neflux::ui {
                     target = "net_mid";
                 } else if (key == "download_end") {
                     target = "net_end";
+                } else if (key == "upload_start") {
+                    target = "upload_start";
+                } else if (key == "upload_mid") {
+                    target = "upload_mid";
+                } else if (key == "upload_end") {
+                    target = "upload_end";
+                } else if (key == "free_start" || key == "free_mid" || key == "free_end" || key == "cached_start" ||
+                           key == "cached_mid" || key == "cached_end" || key == "available_start" ||
+                           key == "available_mid" || key == "available_end" || key == "used_start" ||
+                           key == "used_mid" || key == "used_end") {
+                    target = key;
                 }
                 if (!target.empty()) {
                     custom.set(target, json(value));
@@ -247,9 +264,11 @@ namespace neforce::neflux::ui {
             vector<string> dirs;
             if (const auto xdg = environment::get("XDG_CONFIG_HOME"); !xdg.empty()) {
                 dirs.push_back(xdg + "/neflux/themes");
+                dirs.push_back(xdg + "/btop/themes");
             }
             if (const auto home = environment::get("HOME"); !home.empty()) {
                 dirs.push_back(home + "/.config/neflux/themes");
+                dirs.push_back(home + "/.config/btop/themes");
             }
             if (const auto appdata = environment::get("APPDATA"); !appdata.empty()) {
                 dirs.push_back(appdata + "/neflux/themes");
@@ -263,6 +282,9 @@ namespace neforce::neflux::ui {
             dirs.push_back("/usr/local/share/btop/themes");
             dirs.push_back("/usr/share/btop/themes");
             if (const auto custom = environment::get("NEFLUX_THEME_DIR"); !custom.empty()) {
+                dirs.push_back(custom);
+            }
+            if (const auto custom = environment::get("BTOP_THEME_DIR"); !custom.empty()) {
                 dirs.push_back(custom);
             }
             vector<string> out;
@@ -452,6 +474,10 @@ namespace neforce::neflux::ui {
             none,
             nice,
             affinity,
+            network_target,
+            capture_path,
+            capture_open,
+            io_priority,
         };
 
         struct process_row {
@@ -712,6 +738,8 @@ namespace neforce::neflux::ui {
             int item_detail_outside_y_ = -1;
             size_t detail_scroll_ = 0;
             size_t settings_index_ = 0;
+            size_t settings_scroll_ = 0;
+            bool settings_free_scroll_ = false;
             size_t setting_choice_row_ = 0;
             size_t commands_index_ = 0;
             string command_text_;

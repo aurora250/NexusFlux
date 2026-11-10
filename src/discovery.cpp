@@ -166,9 +166,7 @@ namespace neforce::neflux {
         return discover_selected(cfg, sources.containers_, sources.services_, sources.extras_);
     }
 
-    namespace {
-
-    } // namespace
+    namespace {} // namespace
 
     inventory discover_selected(const config& cfg, bool containers, bool services, bool extras) {
         inventory data;

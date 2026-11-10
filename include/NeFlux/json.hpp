@@ -17,7 +17,6 @@
 #include <NeForce/core/utility/optional.hpp>
 
 namespace neforce::neflux {
-    // TODO: you may could use neforce::json_value instead
     /**
      * @brief 有序 JSON 值
      *

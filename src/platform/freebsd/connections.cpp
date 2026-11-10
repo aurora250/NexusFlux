@@ -17,42 +17,42 @@ namespace neforce::neflux::platform {
         static_cast<void>(text);
     }
 
-        vector<connection> collect_posix_netstat() {
-            vector<connection> rows;
-            for (const auto& spec: vector<pair<const char*, const char*>>{{"tcp", "tcp"}, {"udp", "udp"}}) {
-                string output;
-                try {
-                    output = run_command("netstat", {"-an", "-p", spec.first}, 2000);
-                } catch (const exception&) {
+    vector<connection> collect_posix_netstat() {
+        vector<connection> rows;
+        for (const auto& spec: vector<pair<const char*, const char*>>{{"tcp", "tcp"}, {"udp", "udp"}}) {
+            string output;
+            try {
+                output = run_command("netstat", {"-an", "-p", spec.first}, 2000);
+            } catch (const exception&) {
+                continue;
+            }
+            for (const auto& line: split_lines(output)) {
+                const auto parts = split_whitespace(line.view());
+                if (parts.size() < 4) {
                     continue;
                 }
-                for (const auto& line: split_lines(output)) {
-                    const auto parts = split_whitespace(line.view());
-                    if (parts.size() < 4) {
-                        continue;
-                    }
-                    const string_view proto = parts[0].view();
-                    if (!proto.starts_with("tcp") && !proto.starts_with("udp")) {
-                        continue;
-                    }
-                    connection row;
-                    row.protocol_ = string(proto);
-                    row.local_ = string(parts[3]);
-                    row.remote_ = string(parts[4]);
-                    if (parts.size() >= 6) {
-                        row.state_ = string(parts.back());
-                    } else {
-                        row.state_ = "UNKNOWN";
-                    }
-                    row.receive_queue_ = parse_u64(parts[1].view());
-                    row.send_queue_ = parse_u64(parts[2].view());
-                    row.id_ = format("{}:{}:{}:{}", row.protocol_, row.local_, row.remote_,
-                                     static_cast<uint64_t>(rows.size()));
-                    rows.push_back(move(row));
+                const string_view proto = parts[0].view();
+                if (!proto.starts_with("tcp") && !proto.starts_with("udp")) {
+                    continue;
                 }
+                connection row;
+                row.protocol_ = string(proto);
+                row.local_ = string(parts[3]);
+                row.remote_ = string(parts[4]);
+                if (parts.size() >= 6) {
+                    row.state_ = string(parts.back());
+                } else {
+                    row.state_ = "UNKNOWN";
+                }
+                row.receive_queue_ = parse_u64(parts[1].view());
+                row.send_queue_ = parse_u64(parts[2].view());
+                row.id_ = format("{}:{}:{}:{}", row.protocol_, row.local_, row.remote_,
+                                 static_cast<uint64_t>(rows.size()));
+                rows.push_back(move(row));
             }
-            return rows;
         }
+        return rows;
+    }
 
     void collect_connections(connection_sample& sample, connection_owner_state& state) {
         static_cast<void>(state);

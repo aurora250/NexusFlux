@@ -10,9 +10,7 @@
 #include <NeForce/network/socket_base.hpp>
 namespace neforce::neflux {
 
-    namespace {
-
-    } // namespace
+    namespace {} // namespace
 
     string format_ipv6(const uint8_t (&bytes)[16]) {
         uint16_t groups[8] = {};
@@ -117,9 +115,7 @@ namespace neforce::neflux {
         return platform::parse_proc_connections(protocol, text);
     }
 
-    void apply_tcp_info(vector<connection>& rows, const string& text) {
-        platform::apply_tcp_info(rows, text);
-    }
+    void apply_tcp_info(vector<connection>& rows, const string& text) { platform::apply_tcp_info(rows, text); }
 
     string state_help(const string& state) {
         if (state == "ESTABLISHED") {

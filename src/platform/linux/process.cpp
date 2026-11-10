@@ -100,11 +100,76 @@ namespace neforce::neflux::platform {
 
     vector<string> service_logs(const string& name, size_t max_lines, string& error) {
         try {
-            return split_lines(run_command("journalctl",
-                                           {"-u", name, "-n", format("{}", max_lines), "--no-pager"}, 5000));
+            return split_lines(
+                    run_command("journalctl", {"-u", name, "-n", format("{}", max_lines), "--no-pager"}, 5000));
         } catch (const exception& failure) {
             error = failure.what();
             return {};
+        }
+    }
+
+    vector<string> process_file_locks(uint32_t pid, string& error) {
+        const auto text = read_text_file("/proc/locks");
+        if (!text.has_value()) {
+            error = "Cannot read /proc/locks.";
+            return {};
+        }
+        vector<string> lines;
+        const string needle = format(" {}", pid);
+        for (const auto& line: split_lines(*text)) {
+            if (line.find(needle) != string::npos) {
+                lines.push_back(line);
+            }
+        }
+        if (lines.empty()) {
+            lines.push_back("No advisory file locks for this process.");
+        }
+        return lines;
+    }
+
+    vector<string> process_trace(uint32_t pid, string& error) {
+        try {
+            return split_lines(run_command(
+                    "timeout", {"3", "strace", "-p", format("{}", pid), "-f", "-e", "trace=file,network"}, 5000, true));
+        } catch (const exception& failure) {
+            error = format("strace unavailable or denied: {}", failure.what());
+            return {};
+        }
+    }
+
+    vector<string> process_backtrace(uint32_t pid, string& error) {
+        try {
+            return split_lines(run_command(
+                    "timeout", {"5", "gdb", "-batch", "-p", format("{}", pid), "-ex", "thread apply all bt"}, 7000,
+                    true));
+        } catch (const exception& failure) {
+            error = format("gdb unavailable or denied: {}", failure.what());
+            return {};
+        }
+    }
+
+    vector<string> kernel_messages(string& error) {
+        try {
+            return split_lines(run_command("journalctl", {"-k", "-n", "200", "--no-pager"}, 3000, true));
+        } catch (const exception&) {
+            try {
+                return split_lines(run_command("dmesg", {}, 3000, true));
+            } catch (const exception& failure) {
+                error = format("Kernel messages unavailable: {}", failure.what());
+                return {};
+            }
+        }
+    }
+
+    void set_io_priority(uint32_t pid, int priority, string& error) {
+        if (priority < 0 || priority > 7) {
+            error = "I/O priority must be 0..7.";
+            return;
+        }
+        try {
+            run_command("ionice", {"-c", "2", "-n", format("{}", priority), "-p", format("{}", pid)}, 3000);
+        } catch (const exception& failure) {
+            error = format("ionice failed: {}", failure.what());
         }
     }
 

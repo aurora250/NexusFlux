@@ -10,6 +10,9 @@
   `--machine-port`, `--agent-path`, `--machine-start`, `--allow-actions`,
   and `nexus-flux machines`.
 - QEMU user-net `hostfwd` discovery for SSH endpoints.
+- Rich right-click menus for process and network rows: process inspect/logs/environment/files, marks/descendants, tree/filter/column/sort controls, signals/nice/affinity, I/O priority, file locks, syscall trace/backtrace, resource diagnostics and kernel/OOM messages; network details, filters, owner lookup, URL/TCP checks, packet capture/PCAP preview, routes/DNS, diagnostics and independent sorting.
+- 40+ btop-derived built-in themes, default `btop` palette, btop `.theme` syntax (`theme[...]`), box-outline colors, `BTOP_THEME_DIR` and btop theme directories.
+- Migrated JSON and TOML integration to the new NexusForce DOM API (`json_document`, `toml_document`, value views), preserving ordered JSON output and config compatibility.
 - Remote process actions, disabled by default on both server and agent.
 - Remote `signal`, `nice` and `affinity` action RPC with explicit capability flags.
 - `--machine-start-command` / `--machine-start-arg` for explicit unmanaged QEMU startup.

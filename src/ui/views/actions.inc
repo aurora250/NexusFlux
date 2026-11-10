@@ -383,6 +383,322 @@
                 }
             }
 
+            void toggle_mark_selected() {
+                if (!selected_process_.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                if (!marked_processes_.insert(*selected_process_).second) {
+                    marked_processes_.erase(*selected_process_);
+                }
+                status_ = format("{} processes marked", static_cast<uint64_t>(marked_processes_.size()));
+            }
+
+            void mark_selected_descendants() {
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                set<uint32_t> descendants;
+                vector<uint32_t> pending{value->pid_};
+                while (!pending.empty()) {
+                    const uint32_t parent = pending.back();
+                    pending.pop_back();
+                    for (const auto& item: snap_.processes_) {
+                        if (item.parent_.has_value() && *item.parent_ == parent &&
+                            descendants.insert(item.pid_).second) {
+                            pending.push_back(item.pid_);
+                        }
+                    }
+                }
+                for (const auto& item: snap_.processes_) {
+                    if (descendants.count(item.pid_) != 0) {
+                        marked_processes_.insert({item.pid_, item.start_time_});
+                    }
+                }
+                status_ = format("{} processes marked", static_cast<uint64_t>(marked_processes_.size()));
+            }
+
+            void clear_process_marks() {
+                marked_processes_.clear();
+                status_ = "Marks cleared";
+            }
+
+            void run_network_check(const string& target) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: network checks run from the host.";
+                    return;
+                }
+                if (target.empty()) {
+                    status_ = "Enter a URL or host:port.";
+                    return;
+                }
+                status_ = format("Checking {}…", target);
+                detail_lines_ = split_lines(check_target(target));
+                popup_ = popup_kind::info;
+                popup_title_ = format("NETWORK CHECK · {}", target);
+                popup_scroll_ = 0;
+            }
+
+            void run_network_capture(const string& file_path) {
+                if (args_.read_only_) {
+                    status_ = "Read-only: packet capture is disabled.";
+                    return;
+                }
+                if (remote_mode()) {
+                    status_ = "Remote mode: packet capture runs from the host.";
+                    return;
+                }
+                if (file_path.empty()) {
+                    status_ = "Enter a capture path.";
+                    return;
+                }
+                cli_args options;
+                options.file_ = file_path;
+                options.interface_ = "any";
+                options.packets_ = 200;
+                options.seconds_ = 5;
+                try {
+                    const auto output = platform::capture_packets(options);
+                    detail_lines_.clear();
+                    detail_lines_.push_back(format("Capture written to {}", file_path));
+                    for (const auto& line: output) {
+                        if (!line.empty()) {
+                            detail_lines_.push_back(line);
+                        }
+                    }
+                    detail_lines_.push_back("");
+                    for (const auto& line: split_lines(summarize_capture(file_path))) {
+                        detail_lines_.push_back(line);
+                    }
+                    popup_ = popup_kind::info;
+                    popup_title_ = "PACKET CAPTURE";
+                    popup_scroll_ = 0;
+                } catch (const exception& error) {
+                    status_ = format("Capture failed: {}", error.what());
+                }
+            }
+
+            void show_capture_file(const string& file_path) {
+                if (remote_mode()) {
+                    status_ = "Remote mode: local capture files are unavailable.";
+                    return;
+                }
+                if (file_path.empty()) {
+                    status_ = "Enter a PCAP path.";
+                    return;
+                }
+                detail_lines_ = split_lines(summarize_capture(file_path));
+                popup_ = popup_kind::info;
+                popup_title_ = format("PCAP · {}", file_path);
+                popup_scroll_ = 0;
+            }
+
+            void show_connection_labels() {
+                const auto rows = filtered_connections();
+                if (rows.empty() || selected_connection_ >= rows.size()) {
+                    status_ = "Select a connection first.";
+                    return;
+                }
+                const auto& item = snap_.connections_.connections_[rows[selected_connection_]];
+                detail_lines_ = split_lines(tag_explain(item.tags_));
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No labels for this connection.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = format("CONNECTION LABELS · {}", item.local_);
+                popup_scroll_ = 0;
+            }
+
+            void filter_connection_label() {
+                const auto rows = filtered_connections();
+                if (rows.empty() || selected_connection_ >= rows.size()) {
+                    status_ = "Select a connection first.";
+                    return;
+                }
+                const auto& item = snap_.connections_.connections_[rows[selected_connection_]];
+                if (item.tags_.empty()) {
+                    status_ = "This connection has no labels.";
+                    return;
+                }
+                filter_ = format("tag:{}", item.tags_.front().display());
+                status_ = format("Filter: {}", filter_);
+                popup_ = popup_kind::none;
+            }
+
+            void show_network_routes() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: host routes and DNS are unavailable.";
+                    return;
+                }
+                detail_lines_ = split_lines(platform::network_routes_dns());
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No route or DNS information available.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = "ROUTES / DNS";
+                popup_scroll_ = 0;
+            }
+
+            void show_network_diagnostics() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: diagnostics are unavailable.";
+                    return;
+                }
+                detail_lines_ = split_lines(report(snap_, cfg_));
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No diagnostic findings.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = "NETWORK DIAGNOSIS";
+                popup_scroll_ = 0;
+            }
+
+            void show_process_labels() {
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                detail_lines_ = split_lines(tag_explain(value->tags_));
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No workload labels for this process.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = format("LABELS · PID {}", static_cast<uint64_t>(value->pid_));
+                popup_scroll_ = 0;
+            }
+
+            void filter_by_label() {
+                const auto value = selected_process_value();
+                if (!value.has_value() || value->tags_.empty()) {
+                    status_ = "This process has no labels.";
+                    return;
+                }
+                filter_ = format("tag:{}", value->tags_.front().display());
+                status_ = format("Filter: {}", filter_);
+                popup_ = popup_kind::none;
+            }
+
+            void show_process_locks() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: process locks are unavailable.";
+                    return;
+                }
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                string error;
+                detail_lines_ = platform::process_file_locks(value->pid_, error);
+                if (!error.empty()) {
+                    detail_lines_.push_back(error);
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = format("FILE LOCKS · PID {}", static_cast<uint64_t>(value->pid_));
+                popup_scroll_ = 0;
+            }
+
+            void show_process_trace() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: system-call tracing is unavailable.";
+                    return;
+                }
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                status_ = "Tracing for up to 3 s…";
+                string error;
+                detail_lines_ = platform::process_trace(value->pid_, error);
+                if (!error.empty()) {
+                    detail_lines_.push_back(error);
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = format("SYSCALL TRACE · PID {}", static_cast<uint64_t>(value->pid_));
+                popup_scroll_ = 0;
+            }
+
+            void show_process_backtrace() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: process backtraces are unavailable.";
+                    return;
+                }
+                const auto value = selected_process_value();
+                if (!value.has_value()) {
+                    status_ = "Select a process first.";
+                    return;
+                }
+                status_ = "Collecting backtrace…";
+                string error;
+                detail_lines_ = platform::process_backtrace(value->pid_, error);
+                if (!error.empty()) {
+                    detail_lines_.push_back(error);
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = format("BACKTRACE · PID {}", static_cast<uint64_t>(value->pid_));
+                popup_scroll_ = 0;
+            }
+
+            void show_kernel_messages() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: kernel messages are unavailable.";
+                    return;
+                }
+                string error;
+                detail_lines_ = platform::kernel_messages(error);
+                if (!error.empty()) {
+                    detail_lines_.push_back(error);
+                }
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No kernel messages available.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = "KERNEL / OOM MESSAGES";
+                popup_scroll_ = 0;
+            }
+
+            void show_process_diagnostics() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: diagnostics are unavailable.";
+                    return;
+                }
+                detail_lines_ = split_lines(report(snap_, cfg_));
+                if (detail_lines_.empty()) {
+                    detail_lines_.push_back("No diagnostic findings.");
+                }
+                popup_ = popup_kind::info;
+                popup_title_ = "RESOURCE DIAGNOSIS";
+                popup_scroll_ = 0;
+            }
+
+            void apply_io_priority() {
+                if (remote_mode()) {
+                    status_ = "Remote mode: I/O priority is unavailable.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                const auto value = parse_i64(prompt_text_.view());
+                if (!value.has_value() || *value < 0 || *value > 7) {
+                    status_ = "I/O priority must be 0..7.";
+                    popup_ = popup_kind::none;
+                    return;
+                }
+                string error;
+                for (const auto& identity: action_targets()) {
+                    platform::set_io_priority(identity.first, static_cast<int>(*value), error);
+                    if (!error.empty()) {
+                        break;
+                    }
+                }
+                status_ = error.empty() ? format("I/O priority set to {}", *value)
+                                        : format("I/O priority failed: {}", error);
+                popup_ = popup_kind::none;
+            }
+
             void open_context_detail() {
                 reconcile_current_selection();
                 if (current_ == view::network) {
@@ -795,19 +1111,19 @@
                            colors_.panel_);
                 const auto rows = settings_rows();
                 const int visible = height - 3;
-                if (!free_scroll_) {
+                if (!settings_free_scroll_) {
                     if (compare_greater_equal(settings_index_, visible)) {
-                        popup_scroll_ = settings_index_ + 1 - static_cast<size_t>(visible);
+                        settings_scroll_ = settings_index_ + 1 - static_cast<size_t>(visible);
                     } else {
-                        popup_scroll_ = 0;
+                        settings_scroll_ = 0;
                     }
                 } else {
-                    popup_scroll_ = rows.size() > static_cast<size_t>(visible)
-                                            ? neforce::min(popup_scroll_, rows.size() - static_cast<size_t>(visible))
-                                            : 0;
+                    settings_scroll_ = rows.size() > static_cast<size_t>(visible)
+                                                ? neforce::min(settings_scroll_, rows.size() - static_cast<size_t>(visible))
+                                                : 0;
                 }
-                for (int row = 0; row < visible && popup_scroll_ + static_cast<size_t>(row) < rows.size(); ++row) {
-                    const size_t index = popup_scroll_ + static_cast<size_t>(row);
+                for (int row = 0; row < visible && settings_scroll_ + static_cast<size_t>(row) < rows.size(); ++row) {
+                    const size_t index = settings_scroll_ + static_cast<size_t>(row);
                     const int y = area.y_ + 1 + row;
                     const bool active = index == settings_index_;
                     brush.fill(rect{area.x_ + 1, y, area.w_ - 2, 1}, " ", colors_.text_,
@@ -819,7 +1135,7 @@
                 }
                 const rect settings_scrollbar{area.right() - 2, area.y_ + 1, 2, neforce::max(0, height - 3)};
                 hits_.push_back({settings_scrollbar, hit_action::settings_scroll, 0});
-                brush.scrollbar(settings_scrollbar, rows.size(), static_cast<size_t>(visible), popup_scroll_);
+                brush.scrollbar(settings_scrollbar, rows.size(), static_cast<size_t>(visible), settings_scroll_);
                 brush.text(area.x_ + 2, area.bottom() - 2, "Enter choose · ←/→ adjust · w save · Esc close",
                            colors_.border_, colors_.panel_);
             }
@@ -835,6 +1151,8 @@
                         "F5                          View options",
                         "Enter, d                    Open details",
                         "F6                          Context tools (details/logs/signals/priority/actions)",
+                        "Right-click process row     Full process context menu (marks/filters/locks/trace/diagnostics)",
+                        "Right-click connection      Network context menu (check/capture/routes/diagnose)",
                         "F7, l                       Logs: process output, container logs, service journal",
                         "Shift+←/→                   Horizontal process-column window",
                         ", / .                       Replay: previous / next frame",
@@ -1439,18 +1757,40 @@
                 if (network_section_ == 1) {
                     popup_title_ = "Network interface";
                     popup_entries_ = {
-                            {"Interface", "Enter", "net_interface_detail"},
-                            {"Sort RX", "d", "net_sort_rx"},
-                            {"Sort TX", "u", "net_sort_tx"},
-                            {"Sort name", "n", "net_sort_name"},
+                            {"Interface details", "Enter", "net_interface_detail"},
+                            {"Sort by RX", "d", "net_sort_rx"},
+                            {"Sort by TX", "u", "net_sort_tx"},
+                            {"Sort by name", "n", "net_sort_name"},
+                            {"Sort by state", "", "net_sort_state"},
+                            {"Sort by speed", "", "net_sort_speed"},
                             {"Toggle loopback", "i", "net_toggle_loopback"},
+                            {"Routes and DNS", "O", "net_routes"},
+                            {"Diagnose network", "R", "net_diagnose"},
+                            {"Show connections", "N", "net_toggle_section"},
+                            {"Copy selection", "Ctrl+C", "tool_copy_selection"},
                     };
                 } else {
                     popup_title_ = "Network connection";
                     popup_entries_ = {
-                            {"Connection", "Enter", "net_connection_detail"}, {"Filter port", "p", "net_filter_port"},
-                            {"Filter this PID", "o", "net_filter_pid"},       {"Show owner", "P", "net_owner"},
+                            {"Connection details", "Enter", "net_connection_detail"},
+                            {"Filter this port", "p", "net_filter_port"},
+                            {"Filter this PID", "o", "net_filter_pid"},
+                            {"Open owning process", "P", "net_owner"},
+                            {"Labels / evidence", "Y", "net_labels"},
+                            {"Filter by label", "f", "net_filter_label"},
+                            {"Test website or service…", "N", "net_test"},
+                            {"Capture packets…", "C", "net_capture"},
+                            {"Open packet capture…", "F", "net_open_capture"},
+                            {"Routes and DNS", "O", "net_routes"},
+                            {"Diagnose network", "R", "net_diagnose"},
+                            {"Sort by RX", "d", "net_sort_rx"},
+                            {"Sort by TX", "u", "net_sort_tx"},
+                            {"Sort by state", "", "net_sort_state"},
+                            {"Sort by local port", "", "net_sort_local"},
+                            {"Sort by PID", "", "net_sort_pid"},
                             {"Toggle loopback", "i", "net_toggle_loopback"},
+                            {"Show interfaces", "N", "net_toggle_section"},
+                            {"Copy selection", "Ctrl+C", "tool_copy_selection"},
                     };
                 }
                 popup_selected_ = 0;

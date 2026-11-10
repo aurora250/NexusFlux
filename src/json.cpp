@@ -6,7 +6,6 @@
 #include <NeForce/core/utility/pair.hpp>
 #include <NeForce/core/string/format.hpp>
 #include <NeFlux/util.hpp>
-#include <NeForce/core/numeric/math.hpp>
 namespace neforce::neflux {
 
     namespace {
@@ -14,32 +13,38 @@ namespace neforce::neflux {
         string_view view_of(const string& value) { return string_view(value.data(), value.size()); }
 
         json convert(const json_value& value) {
-            switch (value.type()) {
-                case json_value::types::Null:
+            switch (value.kind()) {
+                case json_kind::null_:
                     return json();
-                case json_value::types::Bool:
-                    return json(value.as_bool()->get_value());
-                case json_value::types::Number: {
-                    const double number = value.as_number()->get_value();
-                    if (neforce::is_finite(number) && number >= -9007199254740992.0 && number <= 9007199254740992.0 &&
-                        neforce::floor(number) == number) {
+                case json_kind::boolean:
+                    return json(value.as_bool().get_value());
+                case json_kind::integer:
+                    return json(value.as_number().as_integer());
+                case json_kind::uinteger: {
+                    const uint64_t number = value.as_number().as_uinteger();
+                    if (number <= static_cast<uint64_t>(numeric_traits<int64_t>::max())) {
                         return json(static_cast<int64_t>(number));
                     }
-                    return json(number);
+                    return json(static_cast<double>(number));
                 }
-                case json_value::types::String:
-                    return json(value.as_string()->get_value());
-                case json_value::types::Array: {
+                case json_kind::real:
+                    return json(value.as_number().as_real());
+                case json_kind::string: {
+                    const auto text = value.as_string().get_value();
+                    return json(string_view(text.data(), text.size()));
+                }
+                case json_kind::array: {
                     json out = json::array();
-                    for (const auto& element: value.as_array()->get_elements()) {
-                        out.push(convert(*element));
+                    for (const auto& element: value.as_array()) {
+                        out.push(convert(element));
                     }
                     return out;
                 }
-                case json_value::types::Object: {
+                case json_kind::object: {
                     json out = json::object();
-                    for (const auto& member: value.as_object()->get_members()) {
-                        out.set(member.first, convert(*member.second));
+                    for (const auto& member: value.as_object()) {
+                        const auto key = member.key();
+                        out.set(string(key.data(), key.size()), convert(member.value));
                     }
                     return out;
                 }
@@ -433,12 +438,12 @@ namespace neforce::neflux {
     }
 
     json json::parse(string_view text) {
-        json_parser parser(string(text.data(), text.size()));
-        auto parsed = parser.parse();
-        if (parsed == nullptr) {
+        json_parser parser(text);
+        const auto parsed = parser.try_parse();
+        if (!parsed.has_value()) {
             return json();
         }
-        return convert(*parsed);
+        return convert(parsed->root());
     }
 
     string json::string_or(const string& key, const string& fallback) const {

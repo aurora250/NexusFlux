@@ -33,7 +33,7 @@ namespace neforce::neflux {
             if (!value->is_boolean()) {
                 fail(format("Invalid boolean for {}", key));
             }
-            out = value->as_boolean()->get_value();
+            out = value->as_boolean().get_value();
             return true;
         }
 
@@ -45,7 +45,7 @@ namespace neforce::neflux {
             if (!value->is_string()) {
                 fail(format("Invalid string for {}", key));
             }
-            out = value->as_string()->get_value();
+            out = value->as_string().get_value();
             return true;
         }
 
@@ -57,7 +57,7 @@ namespace neforce::neflux {
             if (!value->is_integer()) {
                 fail(format("Invalid integer for {}", key));
             }
-            out = value->as_integer()->get_value();
+            out = value->as_integer().get_value();
             return true;
         }
 
@@ -67,11 +67,11 @@ namespace neforce::neflux {
                 return false;
             }
             if (value->is_float()) {
-                out = value->as_float()->get_value();
+                out = value->as_float().get_value();
                 return true;
             }
             if (value->is_integer()) {
-                out = static_cast<double>(value->as_integer()->get_value());
+                out = static_cast<double>(value->as_integer().get_value());
                 return true;
             }
             fail(format("Invalid float for {}", key));
@@ -86,26 +86,27 @@ namespace neforce::neflux {
                 fail(format("Invalid array for {}", key));
             }
             out.clear();
-            for (const auto& element: value->as_array()->get_elements()) {
-                if (!element->is_string()) {
+            for (const auto& element: value->as_array()) {
+                if (!element.is_string()) {
                     fail(format("Invalid string in {}", key));
                 }
-                out.push_back(element->as_string()->get_value());
+                out.push_back(element.as_string().get_value());
             }
             return true;
         }
 
         void check_keys(const toml_table& table, const char* section, const vector<const char*>& allowed) {
-            for (const auto& entry: table.get_members()) {
+            for (const auto& entry: table) {
+                const string key(entry.key().data(), entry.key().size());
                 bool known = false;
-                for (const char* key: allowed) {
-                    if (entry.first == key) {
+                for (const char* item: allowed) {
+                    if (key == item) {
                         known = true;
                         break;
                     }
                 }
                 if (!known) {
-                    fail(format("Unknown configuration field: {}.{}", section, entry.first));
+                    fail(format("Unknown configuration field: {}.{}", section, key));
                 }
             }
         }
@@ -120,7 +121,7 @@ namespace neforce::neflux {
                     fail("Layout panel must be a string");
                 }
                 node.kind_ = layout_node::kind::panel;
-                node.panel_ = panel_value->as_string()->get_value();
+                node.panel_ = panel_value->as_string().get_value();
                 if (!(node.panel_ == "cpu" || node.panel_ == "memory" || node.panel_ == "gpu" ||
                       node.panel_ == "storage" || node.panel_ == "network" || node.panel_ == "processes")) {
                     fail(format("Unknown panel: {}", node.panel_));
@@ -133,29 +134,29 @@ namespace neforce::neflux {
                 fail("Invalid layout split");
             }
             node.kind_ = layout_node::kind::split;
-            node.direction_ = direction->as_string()->get_value();
+            node.direction_ = direction->as_string().get_value();
             if (node.direction_ != "horizontal" && node.direction_ != "vertical") {
                 fail("Layout direction must be horizontal or vertical");
             }
-            const auto& elements = children->as_array()->get_elements();
+            const auto elements = children->as_array();
             if (elements.empty() || elements.size() > 8) {
                 fail("Layout split requires 1..=8 children");
             }
             for (const auto& element: elements) {
-                if (!element->is_table()) {
+                if (!element.is_table()) {
                     fail("Layout child must be a table");
                 }
-                node.children_.push_back(parse_layout(*element->as_table(), depth + 1));
+                node.children_.push_back(parse_layout(element.as_table(), depth + 1));
             }
             if (const toml_value* weights = table.get_member("weights"); weights != nullptr) {
                 if (!weights->is_array()) {
                     fail("Layout weights must be an array");
                 }
-                for (const auto& element: weights->as_array()->get_elements()) {
-                    if (!element->is_integer() || element->as_integer()->get_value() <= 0) {
+                for (const auto& element: weights->as_array()) {
+                    if (!element.is_integer() || element.as_integer().get_value() <= 0) {
                         fail("Layout weights must be positive");
                     }
-                    node.weights_.push_back(static_cast<uint16_t>(element->as_integer()->get_value()));
+                    node.weights_.push_back(static_cast<uint16_t>(element.as_integer().get_value()));
                 }
                 if (node.weights_.size() != node.children_.size()) {
                     fail("Layout weights must match children");
@@ -191,7 +192,58 @@ namespace neforce::neflux {
     } // namespace
 
     vector<string> config::themes() {
-        return {"midnight", "nord", "ember", "black", "white", "graphite", "ocean", "forest", "sand"};
+        return {
+                "midnight",
+                "ember",
+                "black",
+                "white",
+                "graphite",
+                "ocean",
+                "forest",
+                "sand",
+                "btop",
+                "HotPurpleTrafficLight",
+                "adapta",
+                "adwaita-dark",
+                "adwaita",
+                "ayu",
+                "dracula",
+                "dusklight",
+                "elementarish",
+                "everforest-dark-hard",
+                "everforest-dark-medium",
+                "everforest-light-medium",
+                "flat-remix-light",
+                "flat-remix",
+                "flexoki-dark",
+                "flexoki-light",
+                "gotham",
+                "greyscale",
+                "gruvbox_dark",
+                "gruvbox_dark_v2",
+                "gruvbox_light",
+                "gruvbox_material_dark",
+                "horizon",
+                "kanagawa-dragon",
+                "kanagawa-lotus",
+                "kanagawa-wave",
+                "kyli0x",
+                "matcha-dark-sea",
+                "monokai",
+                "night-owl",
+                "nord",
+                "onedark",
+                "orange",
+                "paper",
+                "phoenix-night",
+                "solarized_dark",
+                "solarized_light",
+                "tokyo-night",
+                "tokyo-storm",
+                "tomorrow-night",
+                "twilight",
+                "whiteout",
+        };
     }
 
     void config::cycle_theme(bool forward) {
@@ -246,7 +298,14 @@ namespace neforce::neflux {
             }
         }
         if (!theme_ok) {
-            fail("theme must be one of: midnight, nord, ember, black, white, graphite, ocean, forest, sand");
+            string names_text;
+            for (const auto& available: names) {
+                if (!names_text.empty()) {
+                    names_text.append(", ");
+                }
+                names_text.append(available);
+            }
+            fail(format("theme must be one of: {}", names_text));
         }
         if (view_ >= 12) {
             fail("view must be 0..=11");
@@ -466,19 +525,20 @@ namespace neforce::neflux {
         builder.key("graph_symbol_gpu").value(display_.graph_symbol_gpu_);
         builder.end_table();
 
-        const auto root = builder.build();
-        return root->to_document();
+        return builder.build().root().to_document();
     }
 
     config config::from_toml(const string& text) {
         toml_parser parser(text);
-        const auto root = parser.parse();
-        if (root == nullptr) {
+        const auto document = parser.parse();
+        const auto& root = document.root();
+        if (!root.is_table()) {
             fail("Invalid configuration");
         }
+        const auto table = root.as_table();
         config value;
 
-        check_keys(*root, "root",
+        check_keys(table, "root",
                    {"interval_ms",
                     "collect_gpu",
                     "theme",
@@ -518,114 +578,115 @@ namespace neforce::neflux {
                     "ignored_update_version"});
 
         int64_t number = 0;
-        if (read_integer(*root, "interval_ms", number)) {
+        if (read_integer(table, "interval_ms", number)) {
             value.collection_.interval_ms_ = static_cast<uint64_t>(number);
         }
-        read_bool(*root, "collect_gpu", value.collection_.collect_gpu_);
-        read_string(*root, "theme", value.theme_);
-        read_string(*root, "theme_file", value.theme_file_);
-        if (read_integer(*root, "view", number)) {
+        read_bool(table, "collect_gpu", value.collection_.collect_gpu_);
+        read_string(table, "theme", value.theme_);
+        read_string(table, "theme_file", value.theme_file_);
+        if (read_integer(table, "view", number)) {
             value.view_ = static_cast<size_t>(number);
         }
-        if (read_integer(*root, "sort_index", number)) {
+        if (read_integer(table, "sort_index", number)) {
             value.sort_index_ = static_cast<size_t>(number);
         }
-        read_bool(*root, "reverse_sort", value.reverse_sort_);
-        read_bool(*root, "tree", value.tree_);
-        if (read_integer(*root, "tree_auto_collapse", number)) {
+        read_bool(table, "reverse_sort", value.reverse_sort_);
+        read_bool(table, "tree", value.tree_);
+        if (read_integer(table, "tree_auto_collapse", number)) {
             value.tree_auto_collapse_ = static_cast<size_t>(neforce::max<int64_t>(0, number));
         }
-        read_bool(*root, "tree_aggregate", value.tree_aggregate_);
-        if (read_integer(*root, "history", number)) {
+        read_bool(table, "tree_aggregate", value.tree_aggregate_);
+        if (read_integer(table, "history", number)) {
             value.history_ = static_cast<size_t>(number);
         }
-        if (read_integer(*root, "time_window_seconds", number)) {
+        if (read_integer(table, "time_window_seconds", number)) {
             value.time_window_seconds_ = static_cast<uint64_t>(number);
         }
-        read_bool(*root, "show_loopback", value.show_loopback_);
+        read_bool(table, "show_loopback", value.show_loopback_);
         double real = 0.0;
-        if (read_float(*root, "cpu_warning", real)) {
+        if (read_float(table, "cpu_warning", real)) {
             value.cpu_warning_ = static_cast<float>(real);
         }
-        if (read_float(*root, "memory_warning", real)) {
+        if (read_float(table, "memory_warning", real)) {
             value.memory_warning_ = real;
         }
-        if (read_integer(*root, "gpu_temperature_warning", number)) {
+        if (read_integer(table, "gpu_temperature_warning", number)) {
             value.gpu_temperature_warning_ = static_cast<uint32_t>(number);
         }
-        read_bool(*root, "show_threads", value.collection_.show_threads_);
-        read_bool(*root, "show_kernel_threads", value.collection_.show_kernel_threads_);
-        read_bool(*root, "ascii", value.ascii_);
-        read_bool(*root, "no_color", value.no_color_);
-        read_string(*root, "layout", value.layout_);
-        if (read_integer(*root, "overview_preset", number)) {
+        read_bool(table, "show_threads", value.collection_.show_threads_);
+        read_bool(table, "show_kernel_threads", value.collection_.show_kernel_threads_);
+        read_bool(table, "ascii", value.ascii_);
+        read_bool(table, "no_color", value.no_color_);
+        read_string(table, "layout", value.layout_);
+        if (read_integer(table, "overview_preset", number)) {
             value.overview_preset_ = static_cast<size_t>(neforce::max<int64_t>(0, number));
         }
-        read_string_array(*root, "overview_presets", value.overview_presets_);
-        if (const toml_value* layout = root->get_member("custom_layout"); layout != nullptr && layout->is_table()) {
-            value.custom_layout_ = parse_layout(*layout->as_table(), 0);
+        read_string_array(table, "overview_presets", value.overview_presets_);
+        if (const toml_value* layout = table.get_member("custom_layout"); layout != nullptr && layout->is_table()) {
+            value.custom_layout_ = parse_layout(layout->as_table(), 0);
         }
-        read_string_array(*root, "columns", value.columns_);
-        if (const toml_value* colors = root->get_member("custom_colors"); colors != nullptr && colors->is_table()) {
+        read_string_array(table, "columns", value.columns_);
+        if (const toml_value* colors = table.get_member("custom_colors"); colors != nullptr && colors->is_table()) {
             value.custom_colors_ = json::object();
-            for (const auto& entry: colors->as_table()->get_members()) {
-                if (!entry.second->is_string()) {
+            for (const auto& entry: colors->as_table()) {
+                if (!entry.value.is_string()) {
                     fail("custom_colors values must be strings");
                 }
-                value.custom_colors_.set(entry.first, json(entry.second->as_string()->get_value()));
+                value.custom_colors_.set(string(entry.key().data(), entry.key().size()),
+                                         json(entry.value.as_string().get_value()));
             }
         }
-        read_string_array(*root, "monitored_folders", value.collection_.monitored_folders_);
-        read_bool(*root, "process_network", value.collection_.process_network_);
-        if (read_integer(*root, "alert_hold_seconds", number)) {
+        read_string_array(table, "monitored_folders", value.collection_.monitored_folders_);
+        read_bool(table, "process_network", value.collection_.process_network_);
+        if (read_integer(table, "alert_hold_seconds", number)) {
             value.alert_hold_seconds_ = static_cast<uint64_t>(number);
         }
-        if (read_integer(*root, "alert_history", number)) {
+        if (read_integer(table, "alert_history", number)) {
             value.alert_history_ = static_cast<size_t>(number);
         }
-        if (const toml_value* commands = root->get_member("alert_commands");
+        if (const toml_value* commands = table.get_member("alert_commands");
             commands != nullptr && commands->is_array()) {
-            for (const auto& item: commands->as_array()->get_elements()) {
-                if (!item->is_array()) {
+            for (const auto& item: commands->as_array()) {
+                if (!item.is_array()) {
                     fail("alert_commands must be arrays of strings");
                 }
                 vector<string> command;
-                for (const auto& argument: item->as_array()->get_elements()) {
-                    if (!argument->is_string()) {
+                for (const auto& argument: item.as_array()) {
+                    if (!argument.is_string()) {
                         fail("alert_commands must be arrays of strings");
                     }
-                    command.push_back(argument->as_string()->get_value());
+                    command.push_back(argument.as_string().get_value());
                 }
                 value.alert_commands_.push_back(move(command));
             }
         }
-        if (read_integer(*root, "log_lines", number)) {
+        if (read_integer(table, "log_lines", number)) {
             value.log_lines_ = static_cast<size_t>(number);
         }
-        if (read_integer(*root, "record_max_mib", number)) {
+        if (read_integer(table, "record_max_mib", number)) {
             value.record_max_mib_ = static_cast<uint64_t>(number);
         }
-        if (const toml_value* probes = root->get_member("probes"); probes != nullptr && probes->is_array()) {
-            for (const auto& item: probes->as_array()->get_elements()) {
-                if (!item->is_table()) {
+        if (const toml_value* probes = table.get_member("probes"); probes != nullptr && probes->is_array()) {
+            for (const auto& item: probes->as_array()) {
+                if (!item.is_table()) {
                     fail("probes must be tables");
                 }
                 probe_config probe;
-                if (!read_string(*item->as_table(), "name", probe.name_)) {
+                if (!read_string(item.as_table(), "name", probe.name_)) {
                     fail("probe requires a name");
                 }
-                if (!read_string_array(*item->as_table(), "command", probe.command_)) {
+                if (!read_string_array(item.as_table(), "command", probe.command_)) {
                     fail("probe requires a command");
                 }
-                if (read_integer(*item->as_table(), "timeout_seconds", number)) {
+                if (read_integer(item.as_table(), "timeout_seconds", number)) {
                     probe.timeout_seconds_ = static_cast<uint64_t>(number);
                 }
                 value.collection_.probes_.push_back(move(probe));
             }
         }
-        if (const toml_value* display = root->get_member("display"); display != nullptr && display->is_table()) {
-            const toml_table& table = *display->as_table();
-            check_keys(table, "display",
+        if (const toml_value* display = table.get_member("display"); display != nullptr && display->is_table()) {
+            const auto display_table = display->as_table();
+            check_keys(display_table, "display",
                        {"cpu_graph",          "cpu_graph_lower",    "temperature_unit",       "cpu_sensor",
                         "network_interface",  "network_bits",       "network_binary",         "network_logarithmic",
                         "network_start_zero", "network_sync_scale", "network_scale",          "network_swap",
@@ -635,43 +696,43 @@ namespace neforce::neflux {
                         "graph_gradient",     "gpu_in_cpu_box",     "multi_gpu_overview",     "graph_symbol_cpu",
                         "graph_symbol_mem",   "graph_symbol_net",   "graph_symbol_proc",      "graph_symbol_gpu"});
             display_config& d = value.display_;
-            read_string(table, "cpu_graph", d.cpu_graph_);
-            read_string(table, "cpu_graph_lower", d.cpu_graph_lower_);
-            read_string(table, "temperature_unit", d.temperature_unit_);
-            read_string(table, "cpu_sensor", d.cpu_sensor_);
-            read_string(table, "network_interface", d.network_interface_);
-            read_bool(table, "network_bits", d.network_bits_);
-            read_bool(table, "network_binary", d.network_binary_);
-            read_bool(table, "network_logarithmic", d.network_logarithmic_);
-            read_bool(table, "network_start_zero", d.network_start_zero_);
-            read_bool(table, "network_sync_scale", d.network_sync_scale_);
-            if (read_integer(table, "network_scale", number)) {
+            read_string(display_table, "cpu_graph", d.cpu_graph_);
+            read_string(display_table, "cpu_graph_lower", d.cpu_graph_lower_);
+            read_string(display_table, "temperature_unit", d.temperature_unit_);
+            read_string(display_table, "cpu_sensor", d.cpu_sensor_);
+            read_string(display_table, "network_interface", d.network_interface_);
+            read_bool(display_table, "network_bits", d.network_bits_);
+            read_bool(display_table, "network_binary", d.network_binary_);
+            read_bool(display_table, "network_logarithmic", d.network_logarithmic_);
+            read_bool(display_table, "network_start_zero", d.network_start_zero_);
+            read_bool(display_table, "network_sync_scale", d.network_sync_scale_);
+            if (read_integer(display_table, "network_scale", number)) {
                 d.network_scale_ = static_cast<uint64_t>(number);
             }
-            read_bool(table, "network_swap", d.network_swap_);
-            read_bool(table, "memory_graphs", d.memory_graphs_);
-            read_bool(table, "show_swap", d.show_swap_);
-            read_bool(table, "show_battery", d.show_battery_);
-            read_bool(table, "process_basename", d.process_basename_);
-            read_bool(table, "group_processes", d.group_processes_);
-            read_string(table, "overview_panel", d.overview_panel_);
-            read_bool(table, "transparent_background", d.transparent_background_);
-            read_string(table, "graph_symbol", d.graph_symbol_);
-            read_bool(table, "cpu_lazy_sort", d.cpu_lazy_sort_);
-            read_bool(table, "rounded_corners", d.rounded_corners_);
-            read_bool(table, "process_colors", d.process_colors_);
-            read_bool(table, "process_gradient", d.process_gradient_);
-            read_bool(table, "graph_gradient", d.graph_gradient_);
-            read_bool(table, "gpu_in_cpu_box", d.gpu_in_cpu_box_);
-            read_bool(table, "multi_gpu_overview", d.multi_gpu_overview_);
-            read_string(table, "graph_symbol_cpu", d.graph_symbol_cpu_);
-            read_string(table, "graph_symbol_mem", d.graph_symbol_mem_);
-            read_string(table, "graph_symbol_net", d.graph_symbol_net_);
-            read_string(table, "graph_symbol_proc", d.graph_symbol_proc_);
-            read_string(table, "graph_symbol_gpu", d.graph_symbol_gpu_);
+            read_bool(display_table, "network_swap", d.network_swap_);
+            read_bool(display_table, "memory_graphs", d.memory_graphs_);
+            read_bool(display_table, "show_swap", d.show_swap_);
+            read_bool(display_table, "show_battery", d.show_battery_);
+            read_bool(display_table, "process_basename", d.process_basename_);
+            read_bool(display_table, "group_processes", d.group_processes_);
+            read_string(display_table, "overview_panel", d.overview_panel_);
+            read_bool(display_table, "transparent_background", d.transparent_background_);
+            read_string(display_table, "graph_symbol", d.graph_symbol_);
+            read_bool(display_table, "cpu_lazy_sort", d.cpu_lazy_sort_);
+            read_bool(display_table, "rounded_corners", d.rounded_corners_);
+            read_bool(display_table, "process_colors", d.process_colors_);
+            read_bool(display_table, "process_gradient", d.process_gradient_);
+            read_bool(display_table, "graph_gradient", d.graph_gradient_);
+            read_bool(display_table, "gpu_in_cpu_box", d.gpu_in_cpu_box_);
+            read_bool(display_table, "multi_gpu_overview", d.multi_gpu_overview_);
+            read_string(display_table, "graph_symbol_cpu", d.graph_symbol_cpu_);
+            read_string(display_table, "graph_symbol_mem", d.graph_symbol_mem_);
+            read_string(display_table, "graph_symbol_net", d.graph_symbol_net_);
+            read_string(display_table, "graph_symbol_proc", d.graph_symbol_proc_);
+            read_string(display_table, "graph_symbol_gpu", d.graph_symbol_gpu_);
         }
-        read_bool(*root, "check_updates", value.check_updates_);
-        if (const toml_value* ignored = root->get_member("ignored_update_version");
+        read_bool(table, "check_updates", value.check_updates_);
+        if (const toml_value* ignored = table.get_member("ignored_update_version");
             ignored != nullptr && ignored->is_string()) {
             value.ignored_update_version_ = ignored->as_string()->get_value();
         }

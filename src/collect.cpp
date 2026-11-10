@@ -660,8 +660,8 @@ namespace neforce::neflux {
                 auto& previous = previous_processes[entry.pid];
                 if (previous.valid && previous.start_ms == entry.start_time_ms && seconds > 0.0) {
                     if (item.cpu_time_ms_ >= previous.cpu_ms) {
-                        item.cpu_ = static_cast<float>(
-                                static_cast<double>(item.cpu_time_ms_ - previous.cpu_ms) * 100.0 / (seconds * 1000.0));
+                        item.cpu_ = static_cast<float>(static_cast<double>(item.cpu_time_ms_ - previous.cpu_ms) *
+                                                       100.0 / (seconds * 1000.0));
                     }
                     if (item.read_total_ >= previous.read_bytes) {
                         item.read_per_sec_ =
@@ -763,7 +763,6 @@ namespace neforce::neflux {
             });
             return out;
         }
-
     };
 
     snapshot initial_snapshot() {

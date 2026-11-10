@@ -142,11 +142,11 @@ namespace neforce::neflux {
      * @brief 采集配置
      */
     struct collection_config {
-        uint64_t interval_ms_ = 1000;     ///< 采样间隔
-        bool collect_gpu_ = true;         ///< 采集 GPU
-        bool show_threads_ = false;       ///< 显示线程
-        bool show_kernel_threads_ = true; ///< 显示内核线程
-        bool process_network_ = false;    ///< 进程网络
+        uint64_t interval_ms_ = 1000;      ///< 采样间隔
+        bool collect_gpu_ = true;          ///< 采集 GPU
+        bool show_threads_ = false;        ///< 显示线程
+        bool show_kernel_threads_ = true;  ///< 显示内核线程
+        bool process_network_ = false;     ///< 进程网络
         vector<string> monitored_folders_; ///< 监控目录
         vector<probe_config> probes_;      ///< 本地探针
         bool config_exec_ = true;          ///< 是否允许执行配置命令
@@ -159,7 +159,7 @@ namespace neforce::neflux {
         static constexpr size_t settings_count = 32; ///< 总设置项数量
 
         collection_config collection_;          ///< 采集选项
-        string theme_ = "midnight";             ///< 主题
+        string theme_ = "btop";                 ///< 主题
         string theme_file_;                     ///< 外部 .theme 文件路径
         size_t view_ = 0;                       ///< 启动页面
         size_t sort_index_ = 0;                 ///< 排序索引

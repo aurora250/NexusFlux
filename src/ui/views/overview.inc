@@ -371,7 +371,7 @@
                     const color tint = value >= 90 ? colors_.red_ : (value >= 70 ? colors_.amber_ : colors_.mint_);
                     brush.text(x, y, format("C{:02}", static_cast<uint64_t>(index)).view(), colors_.muted_);
                     brush.track(x + 4, y, neforce::max(1, cell_width - 14), value, 100.0, tint);
-                    brush.text_right(x, y, cell_width - 1, format("{:5.1}%", value).view(), tint);
+                    brush.text_right(x, y, cell_width - 1, format("{:5.1f}%", value).view(), tint);
                 }
             }
 
@@ -545,7 +545,7 @@
                                                      bytes(static_cast<double>(memory.swap_total_)));
                     brush.text(inner.x_, swap_y, truncate_display(swap_label.view(), inner.w_ - 7).view(), swap_tint);
                     brush.text_right(inner.x_, swap_y, inner.w_,
-                                     format("{:5.1}%", percent(memory.swap_used_, memory.swap_total_)).view(),
+                                     format("{:5.1f}%", percent(memory.swap_used_, memory.swap_total_)).view(),
                                      swap_tint);
                     const int graph_y = swap_y + 1;
                     const int graph_h = neforce::min(per_row - 1, inner.bottom() - graph_y);

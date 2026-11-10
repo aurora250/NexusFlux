@@ -90,7 +90,7 @@ Intel/AMD DRM backend collects per-process memory and engine usage from `fdinfo`
 - `[` / `]` select the previous or next GPU.
 - `G` opens device details; `D` toggles device details.
 - Click a card to select it; click a process row to select it, and double-click or `Enter` to open the same detail popup as PROCESSES.
-- Right-click a card for device actions; right-click a process row to reuse the PROCESSES process menu (details/follow/pause/terminate/signal).
+- Right-click a card for device actions; right-click a process row for the full PROCESSES context menu (inspect, logs, environment, files, marks, tree, filters, signal/nice/affinity, locks, trace/backtrace, diagnostics).
 - `--gpu-panel` selects the initial GPU panel.
 
 ### Storage
@@ -121,7 +121,9 @@ Download/upload history, interface counters, connections and socket ownership.
 - `S` cycles the sort key for the active section.
 - `i` toggles loopback interfaces.
 - `p` opens the process that owns a connection.
-- Right click provides filtering and owner actions.
+- Right-click a connection for details, filtering, owner lookup, website/TCP checks,
+  packet capture, PCAP preview, routes/DNS, diagnostics, sorting and interface switching.
+- Right-click an interface for details, sorting, loopback, routes/DNS and diagnostics.
 
 ### System
 
@@ -269,10 +271,21 @@ Since-selection CPU, RAM, GPU and VRAM charts next to the process table.
 
 ![Theme chooser](docs/images/theme.png)
 
-The theme chooser lists built-in and `.theme` files. The highlighted theme is applied immediately;
-`Esc` returns to the main menu. 
-Put `.theme` files in `~/.config/neflux/themes` (Linux), `%APPDATA%\neflux\themes` (Windows),
-set `NEFLUX_THEME_DIR`, or point `theme_file = "…"` at a specific file.
+The default palette is `btop`. Built-in palettes are derived from the btop community themes
+(Apache-2.0). The theme chooser lists 40+ built-in palettes derived from btop (including `btop`, `dracula`,
+`nord`, `gruvbox_dark`, `tokyo-night`, `kanagawa-wave`, `everforest-*` and `solarized-*`)
+plus user `.theme` files. The highlighted theme is applied immediately;
+`Esc` returns to the main menu.
+
+NexusFlux reads btop `.theme` syntax (`theme[main_bg]`, `theme[cpu_start]`, `theme[upload_end]`,
+`theme[proc_misc]`, etc.), including `#RRGGBB`, `#BW` and decimal RGB values. Put btop themes in
+`~/.config/btop/themes`, `~/.config/neflux/themes`, set `BTOP_THEME_DIR`/`NEFLUX_THEME_DIR`, or
+point `theme_file = "…"` at a single file. Box outlines follow btop's `cpu_box`, `mem_box`,
+`net_box` and `proc_box` colors; rounded corners, gradients, transparent background and graph
+symbols remain configurable in `[display]`.
+Put `.theme` files in `~/.config/neflux/themes` or `~/.config/btop/themes` (Linux),
+`%APPDATA%\neflux\themes` (Windows), set `NEFLUX_THEME_DIR`/`BTOP_THEME_DIR`, or point
+`theme_file = "…"` at a specific file.
 Themes may override CPU/memory/network/GPU/temperature/process gradient stops,
 `graph_text`, `meter_bg`, followed/pause/banner attributes, plus the base palette.
 `graph_gradient` enables vertical graph gradients.
@@ -314,7 +327,7 @@ can chain pre-existing POSIX handlers; `can_send()` exposes platform send capabi
 | Double-click a table row         | Open that item's detail side panel on the table side                     |
 | Single-click another table row   | Select it and update the open side panel                                 |
 | Double-click outside the panel   | Close the detail side panel                                              |
-| Right click                      | Open the item's control/context menu                                     |
+| Right click                      | Open the item's full process/network/storage/GPU/VM context menu         |
 | `Ctrl+C` / `Ctrl+Shift+C`       | Copy selection (OSC52/clipboard); quit when nothing is selected          |
 | `q`, double `Esc`               | Quit                                                                     |
 

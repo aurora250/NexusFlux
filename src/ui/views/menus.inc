@@ -1,11 +1,14 @@
             void open_process_menu() {
                 if (!selected_process_.has_value()) {
+                    status_ = "Select a process first.";
                     return;
                 }
                 string name = format("PID {}", selected_process_->first);
+                bool marked = false;
                 for (const auto& item: snap_.processes_) {
                     if (item.pid_ == selected_process_->first && item.start_time_ == selected_process_->second) {
                         name = format("{} · {}", item.pid_, item.name_);
+                        marked = marked_processes_.count({item.pid_, item.start_time_}) != 0;
                         break;
                     }
                 }
@@ -13,8 +16,41 @@
                 popup_ = popup_kind::main_menu;
                 popup_title_ = name;
                 popup_entries_ = {
-                        {"Details", "Enter", "detail"},  {"Follow", "F", "follow"},     {"Pause list", "P", "pause"},
-                        {"Terminate", "t", "terminate"}, {"Kill", "k", "kill_process"}, {"Send signal", "s", "signal_menu"},
+                        {"Details", "Enter", "detail"},
+                        {"Full process details", "d", "tool_detail"},
+                        {"Output / logs", "F7", "tool_logs"},
+                        {"Environment", "e", "tool_env"},
+                        {"Open files", "o", "tool_files"},
+                        {"Send signal / stop / continue", "s", "signal_menu"},
+                        {"Terminate (SIGTERM)", "t", "terminate"},
+                        {"Kill (SIGKILL)", "k", "kill_process"},
+                        {"Set priority (nice)", "n", "tool_nice"},
+                        {"Set CPU affinity", "a", "tool_affinity"},
+                        {"Set I/O priority…", "I", "io_priority"},
+                        {"File locks", "L", "file_locks"},
+                        {"Trace system calls", "x", "trace_process"},
+                        {"Backtrace", "B", "backtrace_process"},
+                        {"Diagnose resource", "R", "diagnose_process"},
+                        {"Kernel / OOM messages", "J", "kernel_messages"},
+                        {"Labels / evidence", "Y", "labels"},
+                        {"Filter by label", "f", "filter_label"},
+                        {"Follow process", "F", "tool_follow"},
+                        {"Pause / resume list", "P", "tool_pause"},
+                        {marked ? "Unmark process" : "Mark process", "Space", "mark_process"},
+                        {"Mark descendants", "V", "mark_descendants"},
+                        {"Clear marks", "U", "clear_marks"},
+                        {tree_ ? "Hide process tree" : "Show process tree", "T", "tree"},
+                        {own_only_ ? "Show all users" : "Only my processes", "u", "own_only"},
+                        {gpu_only_ ? "Show all processes" : "GPU processes only", "g", "gpu_only"},
+                        {cfg_.collection_.show_threads_ ? "Hide threads" : "Show threads", "H", "threads"},
+                        {cfg_.collection_.show_kernel_threads_ ? "Hide kernel threads" : "Show kernel threads", "h",
+                         "kernel_threads"},
+                        {"Choose process columns", "C", "columns"},
+                        {"Sort by CPU", "P", "sort_cpu"},
+                        {"Sort by RAM", "M", "sort_memory"},
+                        {"Sort processes", "S", "sort"},
+                        {process_side_panel_ ? "Hide side panel" : "Show side panel", "D", "process_side_panel"},
+                        {"Copy selection", "Ctrl+C", "tool_copy_selection"},
                 };
                 popup_selected_ = 0;
                 popup_scroll_ = 0;

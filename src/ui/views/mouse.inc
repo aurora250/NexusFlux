@@ -71,8 +71,8 @@
                                 } else if (dragging_scroll_action_ == hit_action::settings_scroll) {
                                     const size_t maximum =
                                             count > popup_visible_rows_ ? count - popup_visible_rows_ : 0;
-                                    popup_scroll_ = neforce::min(target, maximum);
-                                    free_scroll_ = true;
+                                    settings_scroll_ = neforce::min(target, maximum);
+                                    settings_free_scroll_ = true;
                                 } else {
                                     selected_ = target;
                                 }
@@ -100,10 +100,10 @@
                             const size_t visible = popup_visible_rows_;
                             const size_t maximum = count > visible ? count - visible : 0;
                             const int delta = event.button == tui::mouse_button::wheelup ? -1 : 1;
-                            const int64_t target = static_cast<int64_t>(popup_scroll_) + delta;
-                            popup_scroll_ = static_cast<size_t>(
+                            const int64_t target = static_cast<int64_t>(settings_scroll_) + delta;
+                            settings_scroll_ = static_cast<size_t>(
                                     neforce::clamp(target, static_cast<int64_t>(0), static_cast<int64_t>(maximum)));
-                            free_scroll_ = true;
+                            settings_free_scroll_ = true;
                         } else {
                             popup_scroll_ = event.button == tui::mouse_button::wheelup
                                                     ? (popup_scroll_ > 3 ? popup_scroll_ - 3 : 0)
@@ -124,10 +124,10 @@
                                     activate_popup();
                                 }
                             } else if (popup_ == popup_kind::settings) {
-                                const size_t index = popup_scroll_ + static_cast<size_t>(row);
+                                const size_t index = settings_scroll_ + static_cast<size_t>(row);
                                 if (index < settings_rows().size()) {
                                     settings_index_ = index;
-                                    free_scroll_ = false;
+                                    settings_free_scroll_ = false;
                                     open_setting_choice();
                                 }
                             }
@@ -291,9 +291,10 @@
                                     break;
                                 case 5:
                                     popup_parent_ = popup_kind::none;
-                                    free_scroll_ = false;
+                                    settings_free_scroll_ = false;
                                     popup_ = popup_kind::settings;
                                     settings_index_ = 0;
+                                    settings_scroll_ = 0;
                                     break;
                                 case 6:
                                     open_commands();
@@ -348,8 +349,8 @@
                                 } else if (hit->action_ == hit_action::settings_scroll) {
                                     const size_t maximum =
                                             count > popup_visible_rows_ ? count - popup_visible_rows_ : 0;
-                                    popup_scroll_ = neforce::min(target, maximum);
-                                    free_scroll_ = true;
+                                    settings_scroll_ = neforce::min(target, maximum);
+                                    settings_free_scroll_ = true;
                                 } else {
                                     selected_ = target;
                                     remember_current_list_selection();
